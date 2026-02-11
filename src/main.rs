@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 
-use lang::typescript::TypeScriptSupport;
+use lang::LanguageSupport;
 
 #[derive(Parser)]
 #[command(name = "chainsaw", about = "TypeScript/JavaScript dependency graph analyzer")]
@@ -98,12 +98,15 @@ fn main() {
                 std::process::exit(1);
             });
 
-            let root = find_project_root(&entry).unwrap_or_else(|| {
-                entry.parent().unwrap_or(&entry).to_path_buf()
-            });
+            let (root, kind) = lang::detect_project(&entry);
+            let lang_support: Box<dyn LanguageSupport> = match kind {
+                lang::ProjectKind::TypeScript => {
+                    Box::new(lang::typescript::TypeScriptSupport::new(&root))
+                }
+            };
 
             // Load or build graph
-            let (graph, from_cache) = load_or_build_graph(&root, no_cache);
+            let (graph, from_cache) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
             eprintln!(
                 "{} ({} modules) in {:.1}ms",
                 if from_cache { "Loaded cached graph" } else { "Built graph" },
@@ -221,10 +224,13 @@ fn main() {
                     query::trace(&graph, diff_id, &opts).to_snapshot()
                 } else {
                     // Different package — build a second graph from its root
-                    let diff_root = find_project_root(&diff_entry).unwrap_or_else(|| {
-                        diff_entry.parent().unwrap_or(&diff_entry).to_path_buf()
-                    });
-                    let (diff_graph, _) = load_or_build_graph(&diff_root, no_cache);
+                    let (diff_root, diff_kind) = lang::detect_project(&diff_entry);
+                    let diff_lang: Box<dyn LanguageSupport> = match diff_kind {
+                        lang::ProjectKind::TypeScript => {
+                            Box::new(lang::typescript::TypeScriptSupport::new(&diff_root))
+                        }
+                    };
+                    let (diff_graph, _) = load_or_build_graph(&diff_root, no_cache, diff_lang.as_ref());
                     let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
                         Some(&id) => id,
                         None => {
@@ -244,8 +250,7 @@ fn main() {
                     .strip_prefix(&root)
                     .unwrap_or(&entry)
                     .to_string_lossy();
-                let diff_root = find_project_root(&diff_entry)
-                    .unwrap_or_else(|| root.clone());
+                let diff_root = lang::detect_project(&diff_entry).0;
                 let diff_rel = diff_entry
                     .strip_prefix(&diff_root)
                     .unwrap_or(&diff_entry)
@@ -268,25 +273,17 @@ fn main() {
 }
 
 /// Returns (graph, from_cache).
-fn load_or_build_graph(root: &Path, no_cache: bool) -> (graph::ModuleGraph, bool) {
+fn load_or_build_graph(
+    root: &Path,
+    no_cache: bool,
+    lang: &dyn LanguageSupport,
+) -> (graph::ModuleGraph, bool) {
     if !no_cache {
         if let Some(g) = cache::load_cache(root) {
             return (g, true);
         }
     }
-    let lang = TypeScriptSupport::new(root);
-    let g = walker::build_graph(root, &lang);
+    let g = walker::build_graph(root, lang);
     cache::save_cache(root, &g);
     (g, false)
-}
-
-/// Walk up from the entry file to find the project root (directory containing package.json).
-fn find_project_root(entry: &Path) -> Option<PathBuf> {
-    let mut dir = entry.parent()?;
-    loop {
-        if dir.join("package.json").exists() {
-            return Some(dir.to_path_buf());
-        }
-        dir = dir.parent()?;
-    }
 }
