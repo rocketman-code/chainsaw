@@ -15,6 +15,8 @@ pub struct TraceResult {
     pub heavy_packages: Vec<HeavyPackage>,
     /// All reachable modules with their transitive cost, sorted descending
     pub modules_by_cost: Vec<ModuleCost>,
+    /// All statically reachable package names (for accurate diff)
+    pub all_packages: HashSet<String>,
 }
 
 pub struct HeavyPackage {
@@ -183,6 +185,8 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         }
     }
 
+    let all_packages: HashSet<String> = package_sizes.keys().cloned().collect();
+
     let mut heavy_packages: Vec<HeavyPackage> = package_sizes
         .into_iter()
         .map(|(name, (total_size, file_count))| {
@@ -228,6 +232,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         dynamic_only_module_count: dynamic_only.len(),
         heavy_packages,
         modules_by_cost,
+        all_packages,
     }
 }
 
@@ -459,16 +464,8 @@ pub struct DiffResult {
 }
 
 pub fn diff_traces(a: &TraceResult, b: &TraceResult) -> DiffResult {
-    let pkgs_a: HashSet<&str> = a
-        .heavy_packages
-        .iter()
-        .map(|p| p.name.as_str())
-        .collect();
-    let pkgs_b: HashSet<&str> = b
-        .heavy_packages
-        .iter()
-        .map(|p| p.name.as_str())
-        .collect();
+    let pkgs_a: HashSet<&str> = a.all_packages.iter().map(|s| s.as_str()).collect();
+    let pkgs_b: HashSet<&str> = b.all_packages.iter().map(|s| s.as_str()).collect();
 
     DiffResult {
         entry_a_weight: a.static_weight,
