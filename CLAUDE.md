@@ -7,11 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # debug build
 cargo build --release          # optimized build (~3.9 MB binary, LTO enabled)
-cargo test                     # run all 44 tests (~0.01s)
-cargo test parser              # run parser tests only (15 tests)
+cargo test                     # run all 45 tests (~0.01s)
+cargo test lang::typescript::parser  # run parser tests only (15 tests)
 cargo test query               # run query tests only (11 tests)
 cargo test graph               # run graph tests only (2 tests)
-cargo test walker              # run walker tests only (8 tests)
+cargo test lang::typescript::tests   # run TypeScript support tests (8 tests)
+cargo test walker              # run walker tests only (1 test)
 cargo test test_name           # run a single test by name
 ```
 
@@ -24,25 +25,28 @@ Chainsaw is a Rust CLI that traces transitive import weight in TypeScript/JavaSc
 ### Data flow
 
 ```
-discover_source_files (walker.rs)
-  → parallel SWC parsing (parser.rs, rayon)
-    → import resolution (resolver.rs, oxc_resolver)
-      → iterative graph building (walker.rs, BFS into node_modules)
-        → bitcode cache write (cache.rs)
-          → BFS query (query.rs)
-            → formatted output (report.rs)
+detect_project (lang/mod.rs)
+  → discover_source_files (walker.rs)
+    → parallel parsing (lang trait, rayon)
+      → import resolution (lang trait)
+        → iterative graph building (walker.rs, BFS)
+          → bitcode cache write (cache.rs)
+            → BFS query (query.rs)
+              → formatted output (report.rs)
 ```
 
 ### Module responsibilities
 
-- **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`. Edge dedup by `(from, to, kind)` in `add_edge`
-- **parser.rs** - SWC-based import extraction. Handles static imports, dynamic `import()`, `require()`, re-exports, type-only imports. Tests use `parse_ts()` helper (parses source strings, no filesystem)
-- **resolver.rs** - `ImportResolver` wrapping oxc_resolver with 3-tier pnpm fallback: oxc_resolver → `.pnpm/node_modules/` → virtual store glob. Reads `.modules.yaml` for `virtualStoreDir`
-- **walker.rs** - `build_graph()` orchestrates discovery + iterative resolution. Tracks parse failures to avoid retries. Detects workspace packages by walking up to `package.json` and caching the `"name"` field
+- **lang/mod.rs** - `LanguageSupport` trait (parse, resolve, package_name, workspace_package_name, extensions, skip_dirs), `RawImport`, `ProjectKind` enum, `detect_project()` for language detection via entry file extension + project root marker
+- **lang/typescript/mod.rs** - `TypeScriptSupport` struct implementing `LanguageSupport`. Owns the oxc_resolver and workspace package cache (Mutex\<HashMap\>)
+- **lang/typescript/parser.rs** - SWC-based import extraction. Handles static imports, dynamic `import()`, `require()`, re-exports, type-only imports. Tests use `parse_ts()` helper (parses source strings, no filesystem)
+- **lang/typescript/resolver.rs** - `ImportResolver` wrapping oxc_resolver with 3-tier pnpm fallback: oxc_resolver -> `.pnpm/node_modules/` -> virtual store glob. Reads `.modules.yaml` for `virtualStoreDir`
+- **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`. Edge dedup by `(from, to, kind)` in `add_edge`. Language-agnostic
+- **walker.rs** - `build_graph(root, &dyn LanguageSupport)` orchestrates discovery + iterative resolution via trait methods. Tracks parse failures to avoid retries. Language-agnostic
 - **cache.rs** - Bitcode serialization with per-file mtime validation
-- **query.rs** - BFS traversal, weight aggregation, shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper (in-memory graphs)
-- **report.rs** - Human-readable and `--json` output formatting. Uses `display_name()` helper for module display
-- **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`. Uses `load_or_build_graph()` helper for cache/build logic
+- **query.rs** - BFS traversal, weight aggregation, shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper (in-memory graphs). Language-agnostic
+- **report.rs** - Human-readable and `--json` output formatting. Uses `display_name()` helper for module display. Language-agnostic
+- **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`. Calls `detect_project()` to determine language, constructs the appropriate `LanguageSupport` impl, passes it through to `load_or_build_graph()`
 
 ### SWC v33 API quirks
 
@@ -53,10 +57,11 @@ discover_source_files (walker.rs)
 
 All tests are `#[cfg(test)] mod tests` inline within their source files. No separate test files or integration test directory.
 
-- **Parser tests**: Call `parse_ts(source_code)` → assert on returned `Vec<RawImport>`
-- **Query tests**: Call `make_graph(nodes, edges)` → run query functions → assert results
-- **Graph tests**: Test edge dedup (same kind deduped, different kinds kept)
-- **Walker tests**: Use `tempfile` crate for workspace detection + parse failure tracking
+- **Parser tests** (15): Call `parse_ts(source_code)` -> assert on returned `Vec<RawImport>`
+- **Query tests** (11): Call `make_graph(nodes, edges)` -> run query functions -> assert results
+- **Graph tests** (2): Test edge dedup (same kind deduped, different kinds kept)
+- **TypeScript support tests** (8): Test trait impl -- extensions, skip_dirs, workspace package detection via `TypeScriptSupport`
+- **Walker tests** (1): Parse failure tracking with `tempfile`
 
 ## CLI flags
 
