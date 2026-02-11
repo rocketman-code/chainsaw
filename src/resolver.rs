@@ -1,4 +1,4 @@
-use oxc_resolver::{ResolveError, ResolveOptions, Resolver};
+use oxc_resolver::{ResolveOptions, Resolver};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -154,19 +154,17 @@ impl ImportResolver {
 
         // Try standard resolution first (handles npm, yarn, pnpm with symlinks,
         // relative imports, and .pnpm/node_modules/ hoisted deps)
-        match self.resolver.resolve(source_dir, specifier) {
-            Ok(resolution) => return Some(resolution.into_path_buf()),
-            Err(ResolveError::NotFound(_)) => {}
-            Err(_) => {}
+        if let Ok(resolution) = self.resolver.resolve(source_dir, specifier) {
+            return Some(resolution.into_path_buf());
         }
 
         // Fallback: glob the pnpm virtual store directly.
         // Handles cases where packages aren't in .pnpm/node_modules/ (e.g. custom
         // hoist-pattern, missing top-level symlinks, or strict isolation edge cases).
-        if let Some(ref vs) = self.pnpm_virtual_store {
-            if let Some(path) = self.resolve_pnpm_virtual_store(vs, specifier) {
-                return Some(path);
-            }
+        if let Some(ref vs) = self.pnpm_virtual_store
+            && let Some(path) = self.resolve_pnpm_virtual_store(vs, specifier)
+        {
+            return Some(path);
         }
 
         None

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 
-use crate::graph::{EdgeKind, ModuleGraph};
+use crate::graph::{EdgeKind, ModuleGraph, ModuleId, PackageInfo};
 use crate::parser::{self, RawImport};
 use crate::resolver::{package_name_from_path, ImportResolver};
 
@@ -327,11 +327,8 @@ mod tests {
 /// Compute aggregated package info (total reachable size + file count).
 /// For each package, BFS from its entry module following only edges within the same package.
 fn compute_package_info(graph: &mut ModuleGraph) {
-    use std::collections::{HashMap, HashSet};
-    use crate::graph::PackageInfo;
-
     // Group modules by package
-    let mut package_entries: HashMap<String, Vec<crate::graph::ModuleId>> = HashMap::new();
+    let mut package_entries: HashMap<String, Vec<ModuleId>> = HashMap::new();
     for module in &graph.modules {
         if let Some(ref pkg) = module.package {
             package_entries.entry(pkg.clone()).or_default().push(module.id);
@@ -344,7 +341,7 @@ fn compute_package_info(graph: &mut ModuleGraph) {
         let mut visited: HashSet<u32> = HashSet::new();
 
         // BFS from all entry points into this package
-        let mut queue: VecDeque<crate::graph::ModuleId> = module_ids.iter().copied().collect();
+        let mut queue: VecDeque<ModuleId> = module_ids.iter().copied().collect();
         for &id in module_ids {
             visited.insert(id.0);
         }

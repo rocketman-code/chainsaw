@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleId};
 use crate::query::{CutModule, DiffResult, TraceResult};
 
 fn format_size(bytes: u64) -> String {
@@ -20,6 +20,14 @@ fn relative_path(path: &Path, root: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned()
+}
+
+fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
+    let m = graph.module(mid);
+    match m.package {
+        Some(ref pkg) => pkg.clone(),
+        None => relative_path(&m.path, root),
+    }
 }
 
 pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top_modules: i32) {
@@ -51,14 +59,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
                 let chain_str: Vec<String> = pkg
                     .chain
                     .iter()
-                    .map(|&mid| {
-                        let m = graph.module(mid);
-                        if let Some(ref pkg_name) = m.package {
-                            pkg_name.clone()
-                        } else {
-                            relative_path(&m.path, root)
-                        }
-                    })
+                    .map(|&mid| display_name(graph, mid, root))
                     .collect();
                 println!("    -> {}", chain_str.join(" -> "));
             }
@@ -134,7 +135,7 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str) {
 
 pub fn print_chains(
     graph: &ModuleGraph,
-    chains: &[Vec<crate::graph::ModuleId>],
+    chains: &[Vec<ModuleId>],
     package_name: &str,
     root: &Path,
     package_exists: bool,
@@ -159,14 +160,7 @@ pub fn print_chains(
     for (i, chain) in chains.iter().enumerate() {
         let chain_str: Vec<String> = chain
             .iter()
-            .map(|&mid| {
-                let m = graph.module(mid);
-                if let Some(ref pkg) = m.package {
-                    pkg.clone()
-                } else {
-                    relative_path(&m.path, root)
-                }
-            })
+            .map(|&mid| display_name(graph, mid, root))
             .collect();
         println!("  {}. {}", i + 1, chain_str.join(" -> "));
     }
@@ -174,7 +168,7 @@ pub fn print_chains(
 
 pub fn print_chains_json(
     graph: &ModuleGraph,
-    chains: &[Vec<crate::graph::ModuleId>],
+    chains: &[Vec<ModuleId>],
     package_name: &str,
     root: &Path,
     package_exists: bool,
@@ -198,14 +192,7 @@ pub fn print_chains_json(
             .map(|chain| {
                 chain
                     .iter()
-                    .map(|&mid| {
-                        let m = graph.module(mid);
-                        if let Some(ref pkg) = m.package {
-                            pkg.clone()
-                        } else {
-                            relative_path(&m.path, root)
-                        }
-                    })
+                    .map(|&mid| display_name(graph, mid, root))
                     .collect()
             })
             .collect(),
@@ -216,7 +203,7 @@ pub fn print_chains_json(
 pub fn print_cut(
     graph: &ModuleGraph,
     cuts: &[CutModule],
-    chains: &[Vec<crate::graph::ModuleId>],
+    chains: &[Vec<ModuleId>],
     package_name: &str,
     root: &Path,
     package_exists: bool,
@@ -249,15 +236,9 @@ pub fn print_cut(
         package_name,
     );
     for cut in cuts {
-        let m = graph.module(cut.module_id);
-        let display = if let Some(ref pkg) = m.package {
-            pkg.clone()
-        } else {
-            relative_path(&m.path, root)
-        };
         println!(
             "  {:<45} {:>8}  (breaks {}/{} chains)",
-            display,
+            display_name(graph, cut.module_id, root),
             format_size(cut.transitive_size),
             cut.chains_broken,
             chains.len()
@@ -268,7 +249,7 @@ pub fn print_cut(
 pub fn print_cut_json(
     graph: &ModuleGraph,
     cuts: &[CutModule],
-    chains: &[Vec<crate::graph::ModuleId>],
+    chains: &[Vec<ModuleId>],
     package_name: &str,
     root: &Path,
     package_exists: bool,
@@ -289,18 +270,10 @@ pub fn print_cut_json(
         chain_count: chains.len(),
         cut_points: cuts
             .iter()
-            .map(|c| {
-                let m = graph.module(c.module_id);
-                let display = if let Some(ref pkg) = m.package {
-                    pkg.clone()
-                } else {
-                    relative_path(&m.path, root)
-                };
-                JsonCutPoint {
-                    module: display,
-                    transitive_size_bytes: c.transitive_size,
-                    chains_broken: c.chains_broken,
-                }
+            .map(|c| JsonCutPoint {
+                module: display_name(graph, c.module_id, root),
+                transitive_size_bytes: c.transitive_size,
+                chains_broken: c.chains_broken,
             })
             .collect(),
     };
@@ -387,14 +360,7 @@ pub fn print_trace_json(
                 chain: pkg
                     .chain
                     .iter()
-                    .map(|&mid| {
-                        let m = graph.module(mid);
-                        if let Some(ref pkg_name) = m.package {
-                            pkg_name.clone()
-                        } else {
-                            relative_path(&m.path, root)
-                        }
-                    })
+                    .map(|&mid| display_name(graph, mid, root))
                     .collect(),
             })
             .collect(),

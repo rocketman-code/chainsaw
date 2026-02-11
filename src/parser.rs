@@ -66,7 +66,7 @@ fn extract_imports(module: &Module) -> Vec<RawImport> {
     for item in &module.body {
         match item {
             ModuleItem::ModuleDecl(decl) => extract_from_decl(decl, &mut imports),
-            ModuleItem::Stmt(stmt) => extract_from_stmt(stmt, &mut imports),
+            ModuleItem::Stmt(stmt) => walk_stmt(stmt, &mut imports),
         }
     }
 
@@ -137,10 +137,6 @@ fn extract_from_decl(decl: &ModuleDecl, imports: &mut Vec<RawImport>) {
 
         _ => {}
     }
-}
-
-fn extract_from_stmt(stmt: &Stmt, imports: &mut Vec<RawImport>) {
-    walk_stmt(stmt, imports);
 }
 
 /// Recursively walk statements to find require() and import() calls.
@@ -234,30 +230,30 @@ fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>) {
         Expr::Call(call) => {
             // Dynamic import()
             if let Callee::Import(_) = &call.callee {
-                if let Some(arg) = call.args.first() {
-                    if let Expr::Lit(Lit::Str(s)) = &*arg.expr {
-                        imports.push(RawImport {
-                            specifier: wtf8_to_string(s),
-                            kind: EdgeKind::Dynamic,
-                        });
-                    }
+                if let Some(arg) = call.args.first()
+                    && let Expr::Lit(Lit::Str(s)) = &*arg.expr
+                {
+                    imports.push(RawImport {
+                        specifier: wtf8_to_string(s),
+                        kind: EdgeKind::Dynamic,
+                    });
                 }
                 return;
             }
             // require("...")
             if let Callee::Expr(callee_expr) = &call.callee {
-                if let Expr::Ident(ident) = &**callee_expr {
-                    if ident.sym.as_str() == "require" {
-                        if let Some(arg) = call.args.first() {
-                            if let Expr::Lit(Lit::Str(s)) = &*arg.expr {
-                                imports.push(RawImport {
-                                    specifier: wtf8_to_string(s),
-                                    kind: EdgeKind::Static,
-                                });
-                            }
-                        }
-                        return;
+                if let Expr::Ident(ident) = &**callee_expr
+                    && ident.sym.as_str() == "require"
+                {
+                    if let Some(arg) = call.args.first()
+                        && let Expr::Lit(Lit::Str(s)) = &*arg.expr
+                    {
+                        imports.push(RawImport {
+                            specifier: wtf8_to_string(s),
+                            kind: EdgeKind::Static,
+                        });
                     }
+                    return;
                 }
                 walk_expr(callee_expr, imports);
             }

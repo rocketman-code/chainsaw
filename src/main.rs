@@ -6,7 +6,7 @@ mod report;
 mod resolver;
 mod walker;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
@@ -102,32 +102,13 @@ fn main() {
             });
 
             // Load or build graph
-            let graph = if no_cache {
-                let g = walker::build_graph(&root);
-                cache::save_cache(&root, &g);
-                g
-            } else {
-                match cache::load_cache(&root) {
-                    Some(g) => {
-                        eprintln!(
-                            "Loaded cached graph ({} modules) in {:.1}ms",
-                            g.module_count(),
-                            start.elapsed().as_secs_f64() * 1000.0
-                        );
-                        g
-                    }
-                    None => {
-                        let g = walker::build_graph(&root);
-                        eprintln!(
-                            "Built graph ({} modules) in {:.1}ms",
-                            g.module_count(),
-                            start.elapsed().as_secs_f64() * 1000.0
-                        );
-                        cache::save_cache(&root, &g);
-                        g
-                    }
-                }
-            };
+            let (graph, from_cache) = load_or_build_graph(&root, no_cache);
+            eprintln!(
+                "{} ({} modules) in {:.1}ms",
+                if from_cache { "Loaded cached graph" } else { "Built graph" },
+                graph.module_count(),
+                start.elapsed().as_secs_f64() * 1000.0
+            );
 
             // Resolve entry module ID
             let entry_id = match graph.path_to_id.get(&entry) {
@@ -242,20 +223,7 @@ fn main() {
                     let diff_root = find_project_root(&diff_entry).unwrap_or_else(|| {
                         diff_entry.parent().unwrap_or(&diff_entry).to_path_buf()
                     });
-                    let diff_graph = if no_cache {
-                        let g = walker::build_graph(&diff_root);
-                        cache::save_cache(&diff_root, &g);
-                        g
-                    } else {
-                        match cache::load_cache(&diff_root) {
-                            Some(g) => g,
-                            None => {
-                                let g = walker::build_graph(&diff_root);
-                                cache::save_cache(&diff_root, &g);
-                                g
-                            }
-                        }
-                    };
+                    let (diff_graph, _) = load_or_build_graph(&diff_root, no_cache);
                     let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
                         Some(&id) => id,
                         None => {
@@ -298,8 +266,20 @@ fn main() {
     }
 }
 
+/// Returns (graph, from_cache).
+fn load_or_build_graph(root: &Path, no_cache: bool) -> (graph::ModuleGraph, bool) {
+    if !no_cache {
+        if let Some(g) = cache::load_cache(root) {
+            return (g, true);
+        }
+    }
+    let g = walker::build_graph(root);
+    cache::save_cache(root, &g);
+    (g, false)
+}
+
 /// Walk up from the entry file to find the project root (directory containing package.json).
-fn find_project_root(entry: &PathBuf) -> Option<PathBuf> {
+fn find_project_root(entry: &Path) -> Option<PathBuf> {
     let mut dir = entry.parent()?;
     loop {
         if dir.join("package.json").exists() {

@@ -306,10 +306,10 @@ fn all_shortest_chains_to_package(
         let d = depth[&mid];
 
         // If we've found targets and moved past their depth, stop
-        if let Some(td) = target_depth {
-            if d > td {
-                break;
-            }
+        if let Some(td) = target_depth
+            && d > td
+        {
+            break;
         }
 
         // Check if this module is in the target package
