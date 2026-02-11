@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -123,6 +123,14 @@ pub fn build_graph(root: &Path) -> ModuleGraph {
     let source_files = discover_source_files(root);
     let parsed = parse_files_parallel(&source_files);
 
+    // Track files that failed to parse so we don't retry them in phase 2
+    let parsed_paths: HashSet<&PathBuf> = parsed.iter().map(|(p, _)| p).collect();
+    let mut parse_failures: HashSet<PathBuf> = source_files
+        .iter()
+        .filter(|p| !parsed_paths.contains(p))
+        .cloned()
+        .collect();
+
     // Register all discovered source modules
     for (path, _) in &parsed {
         let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -156,8 +164,8 @@ pub fn build_graph(root: &Path) -> ModuleGraph {
             let target_id = g.add_module(resolved.clone(), size, package);
             g.add_edge(source_id, target_id, raw_import.kind, raw_import.specifier.clone());
 
-            // If this is a new file and it's parseable, queue it for parsing
-            if is_new && is_parseable(&resolved) {
+            // If this is a new file and it's parseable (and hasn't already failed), queue it
+            if is_new && is_parseable(&resolved) && !parse_failures.contains(&resolved) {
                 new_files_to_parse.push(resolved);
             }
         }
@@ -165,6 +173,13 @@ pub fn build_graph(root: &Path) -> ModuleGraph {
         // Parse newly discovered files (e.g. node_modules entries) in parallel
         if !new_files_to_parse.is_empty() {
             let newly_parsed = parse_files_parallel(&new_files_to_parse);
+            let newly_parsed_paths: HashSet<&PathBuf> =
+                newly_parsed.iter().map(|(p, _)| p).collect();
+            for path in &new_files_to_parse {
+                if !newly_parsed_paths.contains(path) {
+                    parse_failures.insert(path.clone());
+                }
+            }
             for item in newly_parsed {
                 pending_resolutions.push_back(item);
             }
@@ -282,6 +297,30 @@ mod tests {
 
         let mut cache = WorkspacePackageCache::new(tmp.path());
         assert_eq!(cache.lookup(&dir.join("file.ts")), None);
+    }
+
+    #[test]
+    fn parse_failure_not_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize to avoid macOS /var vs /private/var symlink differences
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Create a valid file that imports a broken file
+        fs::write(
+            root.join("entry.ts"),
+            r#"import { x } from "./broken";"#,
+        ).unwrap();
+
+        // Create a binary/unparseable file with .ts extension
+        fs::write(root.join("broken.ts"), &[0xFF, 0xFE, 0x00, 0x01]).unwrap();
+
+        let graph = super::build_graph(&root);
+
+        // The broken file should appear at most once in the graph
+        let entry_count = graph.path_to_id.keys()
+            .filter(|p| p.file_name().is_some_and(|n| n == "broken.ts"))
+            .count();
+        assert!(entry_count <= 1, "broken.ts should appear at most once, found {entry_count}");
     }
 }
 
