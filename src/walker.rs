@@ -8,7 +8,7 @@ use rayon::prelude::*;
 
 use crate::graph::{EdgeKind, ModuleGraph};
 use crate::parser::{self, RawImport};
-use crate::resolver::{self, package_name_from_path};
+use crate::resolver::{package_name_from_path, ImportResolver};
 
 const PARSEABLE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 
@@ -64,7 +64,7 @@ fn parse_files_parallel(files: &[PathBuf]) -> Vec<(PathBuf, Vec<RawImport>)> {
 /// and builds the graph iteratively.
 pub fn build_graph(root: &Path) -> ModuleGraph {
     let graph = Mutex::new(ModuleGraph::new());
-    let resolver = resolver::create_resolver(root);
+    let resolver = ImportResolver::new(root);
 
     // Phase 1: Discover and parse source files
     let source_files = discover_source_files(root);
@@ -88,7 +88,7 @@ pub fn build_graph(root: &Path) -> ModuleGraph {
         let mut new_files_to_parse: Vec<PathBuf> = Vec::new();
 
         for raw_import in &imports {
-            let resolved = match resolver::resolve_import(&resolver, source_dir, &raw_import.specifier) {
+            let resolved = match resolver.resolve(source_dir, &raw_import.specifier) {
                 Some(p) => p,
                 None => continue,
             };
