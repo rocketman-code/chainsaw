@@ -7,10 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # debug build
 cargo build --release          # optimized build (~3.9 MB binary, LTO enabled)
-cargo test                     # run all 33 tests (~0.01s)
+cargo test                     # run all 44 tests (~0.01s)
 cargo test parser              # run parser tests only (15 tests)
 cargo test query               # run query tests only (11 tests)
-cargo test walker              # run walker tests only (7 tests)
+cargo test graph               # run graph tests only (2 tests)
+cargo test walker              # run walker tests only (8 tests)
 cargo test test_name           # run a single test by name
 ```
 
@@ -34,14 +35,14 @@ discover_source_files (walker.rs)
 
 ### Module responsibilities
 
-- **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`
+- **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`. Edge dedup by `(from, to, kind)` in `add_edge`
 - **parser.rs** - SWC-based import extraction. Handles static imports, dynamic `import()`, `require()`, re-exports, type-only imports. Tests use `parse_ts()` helper (parses source strings, no filesystem)
 - **resolver.rs** - `ImportResolver` wrapping oxc_resolver with 3-tier pnpm fallback: oxc_resolver → `.pnpm/node_modules/` → virtual store glob. Reads `.modules.yaml` for `virtualStoreDir`
-- **walker.rs** - `build_module_graph()` orchestrates discovery + iterative resolution. Detects workspace packages by walking up to `package.json` and caching the `"name"` field
+- **walker.rs** - `build_graph()` orchestrates discovery + iterative resolution. Tracks parse failures to avoid retries. Detects workspace packages by walking up to `package.json` and caching the `"name"` field
 - **cache.rs** - Bitcode serialization with per-file mtime validation
 - **query.rs** - BFS traversal, weight aggregation, shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper (in-memory graphs)
-- **report.rs** - Human-readable and `--json` output formatting
-- **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`
+- **report.rs** - Human-readable and `--json` output formatting. Uses `display_name()` helper for module display
+- **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`. Uses `load_or_build_graph()` helper for cache/build logic
 
 ### SWC v33 API quirks
 
@@ -54,7 +55,8 @@ All tests are `#[cfg(test)] mod tests` inline within their source files. No sepa
 
 - **Parser tests**: Call `parse_ts(source_code)` → assert on returned `Vec<RawImport>`
 - **Query tests**: Call `make_graph(nodes, edges)` → run query functions → assert results
-- **Walker tests**: Use `tempfile` crate to create temporary `package.json` files for workspace detection
+- **Graph tests**: Test edge dedup (same kind deduped, different kinds kept)
+- **Walker tests**: Use `tempfile` crate for workspace detection + parse failure tracking
 
 ## CLI flags
 
