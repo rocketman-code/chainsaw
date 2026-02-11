@@ -1,0 +1,71 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Test Commands
+
+```bash
+cargo build                    # debug build
+cargo build --release          # optimized build (~3.9 MB binary, LTO enabled)
+cargo test                     # run all 33 tests (~0.01s)
+cargo test parser              # run parser tests only (15 tests)
+cargo test query               # run query tests only (11 tests)
+cargo test walker              # run walker tests only (7 tests)
+cargo test test_name           # run a single test by name
+```
+
+Requires rustc 1.85+ (edition = 2024).
+
+## Architecture
+
+Chainsaw is a Rust CLI that traces transitive import weight in TypeScript/JavaScript codebases. Given an entry file, it builds a dependency graph and reports which npm packages contribute the most code loaded at initialization.
+
+### Data flow
+
+```
+discover_source_files (walker.rs)
+  → parallel SWC parsing (parser.rs, rayon)
+    → import resolution (resolver.rs, oxc_resolver)
+      → iterative graph building (walker.rs, BFS into node_modules)
+        → bitcode cache write (cache.rs)
+          → BFS query (query.rs)
+            → formatted output (report.rs)
+```
+
+### Module responsibilities
+
+- **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`
+- **parser.rs** - SWC-based import extraction. Handles static imports, dynamic `import()`, `require()`, re-exports, type-only imports. Tests use `parse_ts()` helper (parses source strings, no filesystem)
+- **resolver.rs** - `ImportResolver` wrapping oxc_resolver with 3-tier pnpm fallback: oxc_resolver → `.pnpm/node_modules/` → virtual store glob. Reads `.modules.yaml` for `virtualStoreDir`
+- **walker.rs** - `build_module_graph()` orchestrates discovery + iterative resolution. Detects workspace packages by walking up to `package.json` and caching the `"name"` field
+- **cache.rs** - Bitcode serialization with per-file mtime validation
+- **query.rs** - BFS traversal, weight aggregation, shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper (in-memory graphs)
+- **report.rs** - Human-readable and `--json` output formatting
+- **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`
+
+### SWC v33 API quirks
+
+- `Str.value` is `Wtf8Atom` — use `.to_string_lossy()` to get `String`
+- `Ident.sym` is `Atom` — use `.as_str()` to get `&str`
+
+### Test patterns
+
+All tests are `#[cfg(test)] mod tests` inline within their source files. No separate test files or integration test directory.
+
+- **Parser tests**: Call `parse_ts(source_code)` → assert on returned `Vec<RawImport>`
+- **Query tests**: Call `make_graph(nodes, edges)` → run query functions → assert results
+- **Walker tests**: Use `tempfile` crate to create temporary `package.json` files for workspace detection
+
+## CLI flags
+
+`chainsaw trace <ENTRY>` with: `--chain`, `--cut`, `--diff`, `--diff-from`, `--save`, `--include-dynamic`, `--top`, `--top-modules`, `--json`, `--no-cache`
+
+Mutually exclusive pairs: `--chain`/`--cut`, `--diff`/`--diff-from`.
+
+## pnpm support
+
+Three-tier resolution strategy when oxc_resolver fails for pnpm virtual stores:
+1. Try `<project_root>/.pnpm/node_modules/<pkg>`
+2. Glob the pnpm virtual store directory for the package
+
+Supports all pnpm layouts (isolated, hoisted, shamefully-hoisted) and workspaces.
