@@ -225,13 +225,48 @@ pub fn find_chain(graph: &ModuleGraph, entry: ModuleId, package_name: &str) -> V
 }
 
 /// Find ALL shortest chains from entry to a specific package.
-/// Returns up to `max_chains` distinct shortest paths (all same hop count).
+/// Returns up to `max_chains` distinct shortest paths (all same hop count),
+/// deduplicated at the package-name level so chains that differ only by
+/// internal node_modules file paths are collapsed into one.
 pub fn find_all_chains(
     graph: &ModuleGraph,
     entry: ModuleId,
     package_name: &str,
 ) -> Vec<Vec<ModuleId>> {
-    all_shortest_chains_to_package(graph, entry, package_name, 10)
+    let raw = all_shortest_chains_to_package(graph, entry, package_name, 10);
+    dedup_chains_by_package(graph, raw)
+}
+
+/// Deduplicate chains that look identical at the package-name level.
+/// Two chains that differ only by which internal file within a package
+/// they pass through will have the same package-level key and only the
+/// first is kept.
+fn dedup_chains_by_package(
+    graph: &ModuleGraph,
+    chains: Vec<Vec<ModuleId>>,
+) -> Vec<Vec<ModuleId>> {
+    let mut seen: HashSet<Vec<String>> = HashSet::new();
+    let mut result = Vec::new();
+
+    for chain in chains {
+        let key: Vec<String> = chain
+            .iter()
+            .map(|&mid| {
+                let m = graph.module(mid);
+                if let Some(ref pkg) = m.package {
+                    pkg.clone()
+                } else {
+                    m.path.to_string_lossy().into_owned()
+                }
+            })
+            .collect();
+
+        if seen.insert(key) {
+            result.push(chain);
+        }
+    }
+
+    result
 }
 
 /// BFS with multi-parent tracking to find all shortest paths to a package.
