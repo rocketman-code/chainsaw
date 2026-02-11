@@ -103,6 +103,9 @@ fn main() {
                 lang::ProjectKind::TypeScript => {
                     Box::new(lang::typescript::TypeScriptSupport::new(&root))
                 }
+                lang::ProjectKind::Python => {
+                    Box::new(lang::python::PythonSupport::new(&root))
+                }
             };
 
             // Load or build graph
@@ -228,6 +231,9 @@ fn main() {
                     let diff_lang: Box<dyn LanguageSupport> = match diff_kind {
                         lang::ProjectKind::TypeScript => {
                             Box::new(lang::typescript::TypeScriptSupport::new(&diff_root))
+                        }
+                        lang::ProjectKind::Python => {
+                            Box::new(lang::python::PythonSupport::new(&diff_root))
                         }
                     };
                     let (diff_graph, _) = load_or_build_graph(&diff_root, no_cache, diff_lang.as_ref());

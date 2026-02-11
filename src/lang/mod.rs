@@ -1,3 +1,4 @@
+pub mod python;
 pub mod typescript;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ pub trait LanguageSupport: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectKind {
     TypeScript,
+    Python,
 }
 
 /// Detect the project kind from the entry file extension, then walk up
@@ -31,25 +33,78 @@ pub fn detect_project(entry: &Path) -> (PathBuf, ProjectKind) {
         Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts") => {
             ProjectKind::TypeScript
         }
+        Some("py") => ProjectKind::Python,
         _ => ProjectKind::TypeScript,
     };
 
-    let marker = match kind {
-        ProjectKind::TypeScript => "package.json",
+    let markers: &[&str] = match kind {
+        ProjectKind::TypeScript => &["package.json"],
+        ProjectKind::Python => &["pyproject.toml", "setup.py", "setup.cfg"],
     };
 
-    let root = find_root_with_marker(entry, marker)
+    let root = find_root_with_markers(entry, markers)
         .unwrap_or_else(|| entry.parent().unwrap_or(entry).to_path_buf());
 
     (root, kind)
 }
 
-fn find_root_with_marker(entry: &Path, marker: &str) -> Option<PathBuf> {
+fn find_root_with_markers(entry: &Path, markers: &[&str]) -> Option<PathBuf> {
     let mut dir = entry.parent()?;
     loop {
-        if dir.join(marker).exists() {
-            return Some(dir.to_path_buf());
+        for marker in markers {
+            if dir.join(marker).exists() {
+                return Some(dir.to_path_buf());
+            }
         }
         dir = dir.parent()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn detect_typescript_from_ts_extension() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        let entry = root.join("src/index.ts");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "").unwrap();
+
+        let (detected_root, kind) = detect_project(&entry);
+        assert_eq!(kind, ProjectKind::TypeScript);
+        assert_eq!(detected_root, root);
+    }
+
+    #[test]
+    fn detect_python_from_py_extension() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("pyproject.toml"), "").unwrap();
+        let entry = root.join("src/main.py");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "").unwrap();
+
+        let (detected_root, kind) = detect_project(&entry);
+        assert_eq!(kind, ProjectKind::Python);
+        assert_eq!(detected_root, root);
+    }
+
+    #[test]
+    fn detect_python_setup_py_fallback() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // No pyproject.toml — only setup.py
+        fs::write(root.join("setup.py"), "").unwrap();
+        let entry = root.join("app.py");
+        fs::write(&entry, "").unwrap();
+
+        let (detected_root, kind) = detect_project(&entry);
+        assert_eq!(kind, ProjectKind::Python);
+        assert_eq!(detected_root, root);
     }
 }
