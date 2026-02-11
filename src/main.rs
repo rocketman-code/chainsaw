@@ -3,7 +3,6 @@ mod graph;
 mod lang;
 mod query;
 mod report;
-mod resolver;
 mod walker;
 
 use std::path::{Path, PathBuf};
