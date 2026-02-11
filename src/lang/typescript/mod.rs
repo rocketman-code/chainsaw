@@ -1,5 +1,5 @@
-pub(crate) mod parser;
-pub(crate) mod resolver;
+mod parser;
+mod resolver;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
