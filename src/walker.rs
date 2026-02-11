@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::graph::{EdgeKind, ModuleGraph, ModuleId, PackageInfo};
 use crate::lang::RawImport;
 use crate::lang::typescript::parser;
-use crate::resolver::{package_name_from_path, ImportResolver};
+use crate::lang::typescript::resolver::{package_name_from_path, ImportResolver};
 
 const PARSEABLE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 
