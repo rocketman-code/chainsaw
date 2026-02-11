@@ -300,3 +300,9 @@ pub fn package_name_from_path(path: &Path) -> Option<String> {
         Some(first.to_string())
     }
 }
+
+pub(super) fn read_package_name(pkg_json: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(pkg_json).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parsed.get("name")?.as_str().map(|s| s.to_string())
+}
