@@ -233,25 +233,52 @@ fn main() {
                     );
                     std::process::exit(1);
                 });
-                let diff_id = match graph.path_to_id.get(&diff_entry) {
-                    Some(&id) => id,
-                    None => {
-                        eprintln!(
-                            "error: diff entry file '{}' not found in graph",
-                            diff_entry.display()
-                        );
-                        std::process::exit(1);
-                    }
+
+                let diff_snapshot = if let Some(&diff_id) = graph.path_to_id.get(&diff_entry) {
+                    // Same graph — trace directly
+                    query::trace(&graph, diff_id, &opts).to_snapshot()
+                } else {
+                    // Different package — build a second graph from its root
+                    let diff_root = find_project_root(&diff_entry).unwrap_or_else(|| {
+                        diff_entry.parent().unwrap_or(&diff_entry).to_path_buf()
+                    });
+                    let diff_graph = if no_cache {
+                        let g = walker::build_graph(&diff_root);
+                        cache::save_cache(&diff_root, &g);
+                        g
+                    } else {
+                        match cache::load_cache(&diff_root) {
+                            Some(g) => g,
+                            None => {
+                                let g = walker::build_graph(&diff_root);
+                                cache::save_cache(&diff_root, &g);
+                                g
+                            }
+                        }
+                    };
+                    let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
+                        Some(&id) => id,
+                        None => {
+                            eprintln!(
+                                "error: diff entry file '{}' not found in graph",
+                                diff_entry.display()
+                            );
+                            std::process::exit(1);
+                        }
+                    };
+                    query::trace(&diff_graph, diff_id, &opts).to_snapshot()
                 };
-                let diff_result = query::trace(&graph, diff_id, &opts);
-                let diff_output = query::diff_snapshots(&result.to_snapshot(), &diff_result.to_snapshot());
+
+                let diff_output = query::diff_snapshots(&result.to_snapshot(), &diff_snapshot);
 
                 let entry_rel = entry
                     .strip_prefix(&root)
                     .unwrap_or(&entry)
                     .to_string_lossy();
+                let diff_root = find_project_root(&diff_entry)
+                    .unwrap_or_else(|| root.clone());
                 let diff_rel = diff_entry
-                    .strip_prefix(&root)
+                    .strip_prefix(&diff_root)
                     .unwrap_or(&diff_entry)
                     .to_string_lossy();
                 report::print_diff(&diff_output, &entry_rel, &diff_rel);
