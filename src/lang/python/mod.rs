@@ -54,3 +54,33 @@ impl LanguageSupport for PythonSupport {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extensions_includes_py() {
+        let support = PythonSupport::new(Path::new("/tmp"));
+        assert_eq!(support.extensions(), &["py"]);
+    }
+
+    #[test]
+    fn skip_dirs_includes_pycache_and_venv() {
+        let support = PythonSupport::new(Path::new("/tmp"));
+        let dirs = support.skip_dirs();
+        assert!(dirs.contains(&"__pycache__"));
+        assert!(dirs.contains(&".venv"));
+        assert!(dirs.contains(&"venv"));
+        assert!(dirs.contains(&".git"));
+    }
+
+    #[test]
+    fn workspace_package_name_returns_none() {
+        let support = PythonSupport::new(Path::new("/tmp"));
+        assert_eq!(
+            support.workspace_package_name(Path::new("/tmp/foo.py"), Path::new("/tmp")),
+            None
+        );
+    }
+}
