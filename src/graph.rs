@@ -80,6 +80,16 @@ impl ModuleGraph {
     }
 
     pub fn add_edge(&mut self, from: ModuleId, to: ModuleId, kind: EdgeKind, specifier: String) -> EdgeId {
+        // Deduplicate by (from, to, kind) — scan outgoing edges (typically <30)
+        if let Some(&existing) = self.forward_adj[from.0 as usize]
+            .iter()
+            .find(|&&eid| {
+                let e = &self.edges[eid.0 as usize];
+                e.to == to && e.kind == kind
+            })
+        {
+            return existing;
+        }
         let id = EdgeId(self.edges.len() as u32);
         self.edges.push(Edge {
             id,
@@ -106,5 +116,39 @@ impl ModuleGraph {
 
     pub fn module_count(&self) -> usize {
         self.modules.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_edge_deduplicates_same_from_to_kind() {
+        let mut g = ModuleGraph::new();
+        let a = g.add_module("a.ts".into(), 100, None);
+        let b = g.add_module("b.ts".into(), 200, None);
+
+        // Add same edge three times (simulating symlink-resolved duplicates)
+        g.add_edge(a, b, EdgeKind::Static, "./b".to_string());
+        g.add_edge(a, b, EdgeKind::Static, "./link-to-b".to_string());
+        g.add_edge(a, b, EdgeKind::Static, "./double-link".to_string());
+
+        // Should have only one edge (deduped by from+to+kind)
+        assert_eq!(g.edges.len(), 1, "duplicate edges should be deduped");
+        assert_eq!(g.forward_adj[a.0 as usize].len(), 1);
+    }
+
+    #[test]
+    fn add_edge_allows_different_kinds() {
+        let mut g = ModuleGraph::new();
+        let a = g.add_module("a.ts".into(), 100, None);
+        let b = g.add_module("b.ts".into(), 200, None);
+
+        // Static and Dynamic edges between same nodes should both exist
+        g.add_edge(a, b, EdgeKind::Static, "./b".to_string());
+        g.add_edge(a, b, EdgeKind::Dynamic, "./b".to_string());
+
+        assert_eq!(g.edges.len(), 2, "different edge kinds should not be deduped");
     }
 }
