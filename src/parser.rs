@@ -498,4 +498,79 @@ mod tests {
         assert_eq!(imports[3].specifier, "require-dep");
         assert_eq!(imports[3].kind, EdgeKind::Static);
     }
+
+    // --- Negative cases (should NOT extract) ---
+
+    #[test]
+    fn require_resolve_not_extracted() {
+        let imports = parse_ts(r#"const p = require.resolve("pkg");"#);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn require_concatenated_arg_not_extracted() {
+        let imports = parse_ts(r#"const x = require("base-" + "path");"#);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn dynamic_import_variable_not_extracted() {
+        let imports = parse_ts(r#"const p = "./foo"; const m = import(p);"#);
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn dynamic_import_template_with_expressions_not_extracted() {
+        let imports = parse_ts(r#"const x = "foo"; const m = import(`./dir/${x}`);"#);
+        assert!(imports.is_empty());
+    }
+
+    // --- Statement position coverage ---
+
+    #[test]
+    fn require_in_switch_case() {
+        let imports = parse_ts(
+            r#"switch (env) { case "a": const x = require("switch-dep"); break; }"#,
+        );
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].specifier, "switch-dep");
+    }
+
+    #[test]
+    fn require_in_try_catch_finally() {
+        let imports = parse_ts(
+            r#"
+            try { require("try-dep"); }
+            catch (e) { require("catch-dep"); }
+            finally { require("finally-dep"); }
+            "#,
+        );
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].specifier, "try-dep");
+        assert_eq!(imports[1].specifier, "catch-dep");
+        assert_eq!(imports[2].specifier, "finally-dep");
+    }
+
+    // --- Expression position coverage ---
+
+    #[test]
+    fn require_in_spread_and_array() {
+        let imports = parse_ts(
+            r#"
+            const merged = { ...require("spread-dep") };
+            const arr = [require("array-dep")];
+            "#,
+        );
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].specifier, "spread-dep");
+        assert_eq!(imports[1].specifier, "array-dep");
+    }
+
+    #[test]
+    fn import_in_sequence_expression() {
+        let imports = parse_ts(r#"const x = (0, import("seq-dep"));"#);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].specifier, "seq-dep");
+        assert_eq!(imports[0].kind, EdgeKind::Dynamic);
+    }
 }
