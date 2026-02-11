@@ -438,7 +438,7 @@ pub fn find_cut_modules(
 
     // Deduplicate at package level -- multiple files within the same
     // node_modules package are the same cut point from the user's perspective.
-    // Keep the one with the highest transitive size.
+    // Sort descending first so we keep the highest-weight entry per package.
     cuts.sort_by(|a, b| b.transitive_size.cmp(&a.transitive_size));
     let mut seen_packages: HashSet<String> = HashSet::new();
     cuts.retain(|c| {
@@ -448,6 +448,12 @@ pub fn find_cut_modules(
             None => true,
         }
     });
+
+    // Single chain: sort ascending (most surgical/targeted cut first).
+    // Multiple chains: sort descending (highest-impact convergence point first).
+    if chains.len() == 1 {
+        cuts.sort_by(|a, b| a.transitive_size.cmp(&b.transitive_size));
+    }
 
     cuts.truncate(top_n);
     cuts
