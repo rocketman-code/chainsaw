@@ -10,6 +10,8 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 
+use lang::typescript::TypeScriptSupport;
+
 #[derive(Parser)]
 #[command(name = "chainsaw", about = "TypeScript/JavaScript dependency graph analyzer")]
 struct Cli {
@@ -272,7 +274,8 @@ fn load_or_build_graph(root: &Path, no_cache: bool) -> (graph::ModuleGraph, bool
             return (g, true);
         }
     }
-    let g = walker::build_graph(root);
+    let lang = TypeScriptSupport::new(root);
+    let g = walker::build_graph(root, &lang);
     cache::save_cache(root, &g);
     (g, false)
 }
