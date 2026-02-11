@@ -29,6 +29,14 @@ enum Commands {
         #[arg(long)]
         diff: Option<PathBuf>,
 
+        /// Save a trace snapshot to a file for later comparison
+        #[arg(long)]
+        save: Option<PathBuf>,
+
+        /// Compare current trace against a previously saved snapshot
+        #[arg(long)]
+        diff_from: Option<PathBuf>,
+
         /// Only follow static edges (default behavior)
         #[arg(long, default_value_t = true)]
         static_only: bool,
@@ -66,6 +74,8 @@ fn main() {
         Commands::Trace {
             entry,
             diff,
+            save,
+            diff_from,
             include_dynamic,
             top,
             chain,
@@ -157,7 +167,43 @@ fn main() {
                 top_n: top,
             };
 
+            // Validate mutually exclusive flags
+            if diff.is_some() && diff_from.is_some() {
+                eprintln!("error: --diff and --diff-from cannot be used together");
+                std::process::exit(1);
+            }
+
             let result = query::trace(&graph, entry_id, &opts);
+
+            // Handle --diff-from mode (compare against saved snapshot)
+            if let Some(ref snapshot_path) = diff_from {
+                let data = std::fs::read_to_string(snapshot_path).unwrap_or_else(|e| {
+                    eprintln!(
+                        "error: cannot read snapshot '{}': {e}",
+                        snapshot_path.display()
+                    );
+                    std::process::exit(1);
+                });
+                let saved: query::TraceSnapshot = serde_json::from_str(&data).unwrap_or_else(|e| {
+                    eprintln!(
+                        "error: invalid snapshot '{}': {e}",
+                        snapshot_path.display()
+                    );
+                    std::process::exit(1);
+                });
+                let diff_output = query::diff_snapshots(&saved, &result.to_snapshot());
+
+                let entry_rel = entry
+                    .strip_prefix(&root)
+                    .unwrap_or(&entry)
+                    .to_string_lossy();
+                let snapshot_label = snapshot_path
+                    .file_name()
+                    .unwrap_or(snapshot_path.as_os_str())
+                    .to_string_lossy();
+                report::print_diff(&diff_output, &snapshot_label, &entry_rel);
+                return;
+            }
 
             // Handle --diff mode
             if let Some(diff_path) = diff {
@@ -179,7 +225,7 @@ fn main() {
                     }
                 };
                 let diff_result = query::trace(&graph, diff_id, &opts);
-                let diff_output = query::diff_traces(&result, &diff_result);
+                let diff_output = query::diff_snapshots(&result.to_snapshot(), &diff_result.to_snapshot());
 
                 let entry_rel = entry
                     .strip_prefix(&root)
@@ -198,6 +244,17 @@ fn main() {
                 report::print_trace_json(&graph, &result, &entry, &root);
             } else {
                 report::print_trace(&graph, &result, &entry, &root);
+            }
+
+            // Save snapshot if requested
+            if let Some(ref save_path) = save {
+                let snapshot = result.to_snapshot();
+                let data = serde_json::to_string_pretty(&snapshot).unwrap();
+                std::fs::write(save_path, data).unwrap_or_else(|e| {
+                    eprintln!("error: cannot write snapshot '{}': {e}", save_path.display());
+                    std::process::exit(1);
+                });
+                eprintln!("Snapshot saved to {}", save_path.display());
             }
 
             let elapsed = start.elapsed();

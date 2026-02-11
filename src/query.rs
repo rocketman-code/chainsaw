@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use serde::{Deserialize, Serialize};
+
 use crate::graph::{EdgeKind, ModuleGraph, ModuleId};
 
 pub struct TraceResult {
@@ -459,7 +461,23 @@ pub fn find_cut_modules(
     cuts
 }
 
-/// Compute a diff between two trace results.
+/// Minimal snapshot of a trace result for before/after comparison.
+#[derive(Serialize, Deserialize)]
+pub struct TraceSnapshot {
+    pub static_weight: u64,
+    pub all_packages: HashSet<String>,
+}
+
+impl TraceResult {
+    pub fn to_snapshot(&self) -> TraceSnapshot {
+        TraceSnapshot {
+            static_weight: self.static_weight,
+            all_packages: self.all_packages.clone(),
+        }
+    }
+}
+
+/// Compute a diff between two trace snapshots.
 pub struct DiffResult {
     pub entry_a_weight: u64,
     pub entry_b_weight: u64,
@@ -469,7 +487,7 @@ pub struct DiffResult {
     pub only_in_b: Vec<String>,
 }
 
-pub fn diff_traces(a: &TraceResult, b: &TraceResult) -> DiffResult {
+pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
     let pkgs_a: HashSet<&str> = a.all_packages.iter().map(|s| s.as_str()).collect();
     let pkgs_b: HashSet<&str> = b.all_packages.iter().map(|s| s.as_str()).collect();
 
