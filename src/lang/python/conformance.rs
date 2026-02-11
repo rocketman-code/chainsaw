@@ -125,8 +125,6 @@ fn resolver_conformance() {
     // Compare and categorize
     let mut matches = 0u32;
     let mut both_none = 0u32;
-    let mut stdlib_misses = 0u32;
-    let mut builtin_misses = 0u32;
     let mut oracle_errors = 0u32;
     let mut local_misses: Vec<(String, String, String)> = Vec::new();
     let mut third_party_misses: Vec<(String, String, String)> = Vec::new();
@@ -165,9 +163,8 @@ fn resolver_conformance() {
                 both_none += 1;
             }
 
-            // We missed, Python found in stdlib/builtin (expected for MVP)
-            (None, _, "stdlib") => stdlib_misses += 1,
-            (None, _, "builtin") => builtin_misses += 1,
+            // Stdlib/builtin — we intentionally don't resolve these
+            (None, _, "stdlib" | "builtin") => both_none += 1,
 
             // We missed, Python found locally — real bug
             (None, Some(path), "local") => {
@@ -200,9 +197,7 @@ fn resolver_conformance() {
     eprintln!("\n=== Conformance Report ===");
     eprintln!("Total imports:              {}", imports.len());
     eprintln!("Matches:                    {matches}");
-    eprintln!("Both unresolved:            {both_none}");
-    eprintln!("Stdlib misses (expected):   {stdlib_misses}");
-    eprintln!("Builtin misses (expected):  {builtin_misses}");
+    eprintln!("Skipped (stdlib/unresolved): {both_none}");
     eprintln!("Oracle errors:              {oracle_errors}");
 
     if !local_misses.is_empty() {
