@@ -99,9 +99,7 @@ Diff: before.json vs src/cli/program/config-guard.ts
 
 Removed since before.json:
   - zod
-Shared:
-    chalk
-    tslog
+Shared: 2 packages
 ```
 
 ### Compare two entry points
@@ -124,7 +122,36 @@ Only in src/cli/program/config-guard.ts:
 Only in src/cli/program/preaction.ts:
   + chalk
   + tslog
+Shared: 139 packages
 ```
+
+### Monorepo support
+
+chainsaw works across packages in a monorepo. Workspace dependencies display as their package name (not filesystem paths), and `--diff` works across package boundaries:
+
+```bash
+# Compare entry points in different packages
+chainsaw trace packages/create-cloudflare/src/cli.ts --diff packages/miniflare/src/index.ts
+```
+
+```
+Diff: src/cli.ts vs src/index.ts
+
+  src/cli.ts                               793 KB
+  src/index.ts                             3.8 MB
+  Delta                                    +3.1 MB
+
+Only in src/cli.ts:
+  - degit
+  - smol-toml
+Only in src/index.ts:
+  + undici
+  + workerd
+  + zod
+Shared: 21 packages
+```
+
+When the diff target is in a different package, chainsaw automatically builds a second graph from that package's root. Each package retains its own resolution context.
 
 ### JSON output
 
@@ -141,7 +168,7 @@ Arguments:
   <ENTRY>  Entry point file to trace from
 
 Options:
-      --diff <DIFF>          Compare against another entry point
+      --diff <DIFF>          Compare against another entry point (works across monorepo packages)
       --save <PATH>          Save a trace snapshot for later comparison
       --diff-from <PATH>     Compare against a previously saved snapshot
       --include-dynamic      Also traverse dynamic imports
@@ -179,9 +206,11 @@ Options:
 
 ## Package manager support
 
-- npm
-- yarn
+- npm (with workspaces)
+- yarn (with workspaces)
 - pnpm (all layouts: isolated/strict, hoisted, shamefully-hoist, workspaces)
+
+Workspace packages are detected automatically and display as their package name in output (e.g., `@cloudflare/cli` instead of an absolute path).
 
 ## Performance
 
