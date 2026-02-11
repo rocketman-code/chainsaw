@@ -172,7 +172,7 @@ fn main() {
             // Handle --chain mode
             if let Some(ref package_name) = chain {
                 let package_exists = graph.package_map.contains_key(package_name.as_str());
-                let chains = query::find_all_chains(&graph, entry_id, package_name);
+                let chains = query::find_all_chains(&graph, entry_id, package_name, include_dynamic);
                 if json {
                     report::print_chains_json(&graph, &chains, package_name, &root, package_exists);
                 } else {
@@ -184,7 +184,7 @@ fn main() {
             // Handle --cut mode
             if let Some(ref package_name) = cut {
                 let package_exists = graph.package_map.contains_key(package_name.as_str());
-                let chains = query::find_all_chains(&graph, entry_id, package_name);
+                let chains = query::find_all_chains(&graph, entry_id, package_name, include_dynamic);
                 let cuts = query::find_cut_modules(&graph, &chains, entry_id, package_name, top);
                 if json {
                     report::print_cut_json(&graph, &cuts, &chains, package_name, &root, package_exists);

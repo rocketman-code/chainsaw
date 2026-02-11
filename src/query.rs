@@ -246,8 +246,9 @@ pub fn find_all_chains(
     graph: &ModuleGraph,
     entry: ModuleId,
     package_name: &str,
+    include_dynamic: bool,
 ) -> Vec<Vec<ModuleId>> {
-    let raw = all_shortest_chains_to_package(graph, entry, package_name, 10);
+    let raw = all_shortest_chains_to_package(graph, entry, package_name, 10, include_dynamic);
     dedup_chains_by_package(graph, raw)
 }
 
@@ -289,6 +290,7 @@ fn all_shortest_chains_to_package(
     entry: ModuleId,
     package_name: &str,
     max_chains: usize,
+    include_dynamic: bool,
 ) -> Vec<Vec<ModuleId>> {
     let mut parents: HashMap<ModuleId, Vec<ModuleId>> = HashMap::new();
     let mut depth: HashMap<ModuleId, u32> = HashMap::new();
@@ -322,8 +324,10 @@ fn all_shortest_chains_to_package(
 
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
-            if edge.kind != EdgeKind::Static {
-                continue;
+            match edge.kind {
+                EdgeKind::Static => {}
+                EdgeKind::Dynamic if include_dynamic => {}
+                _ => continue,
             }
 
             let next_depth = d + 1;
@@ -603,7 +607,7 @@ mod tests {
                 (2, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod");
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0], vec![ModuleId(0), ModuleId(1), ModuleId(2), ModuleId(3)]);
     }
@@ -627,7 +631,7 @@ mod tests {
                 (1, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod");
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert_eq!(chains.len(), 1);
     }
 
@@ -642,8 +646,31 @@ mod tests {
             ],
             &[(0, 1, EdgeKind::Static)],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod");
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert!(chains.is_empty());
+    }
+
+    #[test]
+    fn chain_through_dynamic_edge() {
+        // A -dynamic-> B -static-> zod
+        // Without include_dynamic: no chain. With: chain found.
+        let graph = make_graph(
+            &[
+                ("a.ts", 100, None),
+                ("b.ts", 100, None),
+                ("node_modules/zod/index.js", 500, Some("zod")),
+            ],
+            &[
+                (0, 1, EdgeKind::Dynamic),
+                (1, 2, EdgeKind::Static),
+            ],
+        );
+        let chains_static = find_all_chains(&graph, ModuleId(0), "zod", false);
+        assert!(chains_static.is_empty());
+
+        let chains_dynamic = find_all_chains(&graph, ModuleId(0), "zod", true);
+        assert_eq!(chains_dynamic.len(), 1);
+        assert_eq!(chains_dynamic[0], vec![ModuleId(0), ModuleId(1), ModuleId(2)]);
     }
 
     // --- Cut points ---
@@ -669,7 +696,7 @@ mod tests {
                 (3, 4, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod");
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert_eq!(chains.len(), 2);
 
         let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
@@ -698,7 +725,7 @@ mod tests {
                 (2, 4, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod");
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
         assert!(cuts.is_empty());
     }
@@ -720,7 +747,7 @@ mod tests {
                 (2, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod");
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert_eq!(chains.len(), 1);
 
         let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
