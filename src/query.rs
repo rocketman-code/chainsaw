@@ -201,12 +201,24 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     // Compute transitive cost for all statically reachable source modules
     let mut modules_by_cost: Vec<ModuleCost> = static_reachable
         .iter()
-        .filter(|&&mid| graph.module(mid).package.is_none()) // Only source files
+        .filter(|&&mid| graph.module(mid).package.is_none())
         .map(|&mid| ModuleCost {
             module_id: mid,
             transitive_size: transitive_cost(graph, mid),
         })
         .collect();
+
+    if opts.include_dynamic {
+        let dynamic_costs = dynamic_only
+            .iter()
+            .filter(|&&mid| graph.module(mid).package.is_none())
+            .map(|&mid| ModuleCost {
+                module_id: mid,
+                transitive_size: transitive_cost(graph, mid),
+            });
+        modules_by_cost.extend(dynamic_costs);
+    }
+
     modules_by_cost.sort_by(|a, b| b.transitive_size.cmp(&a.transitive_size));
 
     TraceResult {
