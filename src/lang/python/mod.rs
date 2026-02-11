@@ -1,6 +1,9 @@
 mod parser;
 mod resolver;
 
+#[cfg(test)]
+mod conformance;
+
 use std::path::{Path, PathBuf};
 
 use crate::lang::{LanguageSupport, RawImport};
