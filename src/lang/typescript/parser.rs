@@ -8,17 +8,12 @@ use swc_ecma_ast::{
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
 use crate::graph::EdgeKind;
+use crate::lang::RawImport;
 
 /// Convert a WTF-8 atom (from SWC's Str.value) to a String.
 /// Import specifiers are always valid UTF-8, so lossy conversion is safe.
 fn wtf8_to_string(atom: &swc_ecma_ast::Str) -> String {
     atom.value.to_string_lossy().into_owned()
-}
-
-#[derive(Debug, Clone)]
-pub struct RawImport {
-    pub specifier: String,
-    pub kind: EdgeKind,
 }
 
 fn syntax_for_path(path: &Path) -> Syntax {

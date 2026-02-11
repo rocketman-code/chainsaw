@@ -1,7 +1,6 @@
 mod cache;
 mod graph;
 mod lang;
-mod parser;
 mod query;
 mod report;
 mod resolver;
