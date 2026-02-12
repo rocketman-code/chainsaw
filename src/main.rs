@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use lang::LanguageSupport;
 
 #[derive(Parser)]
-#[command(name = "chainsaw", about = "TypeScript/JavaScript dependency graph analyzer")]
+#[command(name = "chainsaw", about = "TypeScript/JavaScript and Python dependency graph analyzer")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
