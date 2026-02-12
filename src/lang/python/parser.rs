@@ -23,17 +23,19 @@ fn parse_source(source: &str) -> Result<Vec<RawImport>, String> {
         .ok_or_else(|| "tree-sitter returned no parse tree".to_string())?;
 
     let mut imports = Vec::new();
-    collect_imports(tree.root_node(), source.as_bytes(), &mut imports, false);
+    collect_imports(tree.root_node(), source.as_bytes(), &mut imports, false, false);
     Ok(imports)
 }
 
 /// Recursively walk the tree-sitter AST, collecting import statements.
 /// `in_type_checking` is true when we are inside an `if TYPE_CHECKING:` block.
+/// `in_function` is true when we are inside a function/method body.
 fn collect_imports(
     node: tree_sitter::Node,
     source: &[u8],
     imports: &mut Vec<RawImport>,
     in_type_checking: bool,
+    in_function: bool,
 ) {
     let kind_str = node.kind();
 
@@ -41,6 +43,8 @@ fn collect_imports(
         "import_statement" => {
             let edge_kind = if in_type_checking {
                 EdgeKind::TypeOnly
+            } else if in_function {
+                EdgeKind::Dynamic
             } else {
                 EdgeKind::Static
             };
@@ -80,6 +84,8 @@ fn collect_imports(
 
             let edge_kind = if in_type_checking {
                 EdgeKind::TypeOnly
+            } else if in_function {
+                EdgeKind::Dynamic
             } else {
                 EdgeKind::Static
             };
@@ -134,13 +140,20 @@ fn collect_imports(
             let is_tc = is_type_checking_guard(node, source);
             let propagated = in_type_checking || is_tc;
 
-            // Recurse into children manually with the updated flag
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i) {
-                    collect_imports(child, source, imports, propagated);
+                    collect_imports(child, source, imports, propagated, in_function);
                 }
             }
-            // Return early to avoid double-visiting via the generic recursion below
+            return;
+        }
+
+        "function_definition" => {
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    collect_imports(child, source, imports, in_type_checking, true);
+                }
+            }
             return;
         }
 
@@ -160,7 +173,7 @@ fn collect_imports(
     // Generic recursion: visit all named children
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            collect_imports(child, source, imports, in_type_checking);
+            collect_imports(child, source, imports, in_type_checking, in_function);
         }
     }
 }
@@ -422,6 +435,51 @@ mod tests {
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].specifier, "foo");
         assert_eq!(imports[0].kind, EdgeKind::Static);
+    }
+
+    #[test]
+    fn import_inside_function_is_dynamic() {
+        let imports = parse_py("def foo():\n    import bar");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].specifier, "bar");
+        assert_eq!(imports[0].kind, EdgeKind::Dynamic);
+    }
+
+    #[test]
+    fn from_import_inside_function_is_dynamic() {
+        let imports = parse_py("def foo():\n    from bar import baz");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].specifier, "bar");
+        assert_eq!(imports[0].kind, EdgeKind::Dynamic);
+    }
+
+    #[test]
+    fn import_inside_method_is_dynamic() {
+        let imports = parse_py("class Foo:\n    def bar(self):\n        from baz import qux");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].specifier, "baz");
+        assert_eq!(imports[0].kind, EdgeKind::Dynamic);
+    }
+
+    #[test]
+    fn import_inside_nested_function_is_dynamic() {
+        let imports = parse_py("def outer():\n    def inner():\n        import foo\n    import bar");
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].kind, EdgeKind::Dynamic);
+        assert_eq!(imports[1].kind, EdgeKind::Dynamic);
+    }
+
+    #[test]
+    fn top_level_static_function_level_dynamic() {
+        let imports =
+            parse_py("import os\nfrom pathlib import Path\ndef foo():\n    import requests");
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].specifier, "os");
+        assert_eq!(imports[0].kind, EdgeKind::Static);
+        assert_eq!(imports[1].specifier, "pathlib");
+        assert_eq!(imports[1].kind, EdgeKind::Static);
+        assert_eq!(imports[2].specifier, "requests");
+        assert_eq!(imports[2].kind, EdgeKind::Dynamic);
     }
 
     #[test]
