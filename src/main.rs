@@ -50,7 +50,7 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         top: usize,
 
-        /// Show top N modules by transitive cost (0 to hide, -1 for all)
+        /// Show top N modules by exclusive weight (0 to hide, -1 for all)
         #[arg(long, default_value_t = 20, allow_hyphen_values = true)]
         top_modules: i32,
 
@@ -177,7 +177,7 @@ fn main() {
             if let Some(ref package_name) = cut {
                 let package_exists = graph.package_map.contains_key(package_name.as_str());
                 let chains = query::find_all_chains(&graph, entry_id, package_name, include_dynamic);
-                let cuts = query::find_cut_modules(&graph, &chains, entry_id, package_name, top);
+                let cuts = query::find_cut_modules(&graph, &chains, entry_id, package_name, top, include_dynamic);
                 if json {
                     report::print_cut_json(&graph, &cuts, &chains, package_name, &root, package_exists);
                 } else {

@@ -15,7 +15,7 @@ pub struct TraceResult {
     pub dynamic_only_module_count: usize,
     /// Heavy packages found via static imports, sorted by total reachable size descending
     pub heavy_packages: Vec<HeavyPackage>,
-    /// All reachable modules with their transitive cost, sorted descending
+    /// All reachable modules with their exclusive weight, sorted descending
     pub modules_by_cost: Vec<ModuleCost>,
     /// All statically reachable package names (for accurate diff)
     pub all_packages: HashSet<String>,
@@ -31,7 +31,7 @@ pub struct HeavyPackage {
 
 pub struct ModuleCost {
     pub module_id: ModuleId,
-    pub transitive_size: u64,
+    pub exclusive_size: u64,
 }
 
 pub struct TraceOptions {
@@ -46,6 +46,157 @@ impl Default for TraceOptions {
             top_n: 10,
         }
     }
+}
+
+/// Whether to follow an edge based on its kind and the include_dynamic flag.
+fn should_follow(kind: EdgeKind, include_dynamic: bool) -> bool {
+    match kind {
+        EdgeKind::Static => true,
+        EdgeKind::Dynamic if include_dynamic => true,
+        _ => false,
+    }
+}
+
+/// Iterative DFS to compute reverse postorder of reachable modules.
+fn reverse_postorder(
+    graph: &ModuleGraph,
+    entry: ModuleId,
+    include_dynamic: bool,
+) -> Vec<ModuleId> {
+    let n = graph.modules.len();
+    let mut visited = vec![false; n];
+    let mut postorder = Vec::new();
+    let mut stack: Vec<(ModuleId, bool)> = vec![(entry, false)];
+
+    while let Some((mid, post_visit)) = stack.pop() {
+        let idx = mid.0 as usize;
+        if post_visit {
+            postorder.push(mid);
+            continue;
+        }
+        if visited[idx] {
+            continue;
+        }
+        visited[idx] = true;
+        stack.push((mid, true));
+        for &edge_id in graph.outgoing_edges(mid) {
+            let edge = graph.edge(edge_id);
+            if should_follow(edge.kind, include_dynamic) && !visited[edge.to.0 as usize] {
+                stack.push((edge.to, false));
+            }
+        }
+    }
+
+    postorder.reverse();
+    postorder
+}
+
+/// Walk up dominator tree to find common dominator of a and b.
+fn intersect_idom(idom: &[u32], rpo_num: &[u32], mut a: u32, mut b: u32) -> u32 {
+    while a != b {
+        while rpo_num[a as usize] > rpo_num[b as usize] {
+            a = idom[a as usize];
+        }
+        while rpo_num[b as usize] > rpo_num[a as usize] {
+            b = idom[b as usize];
+        }
+    }
+    a
+}
+
+/// Compute exclusive weight for every reachable module using a dominator tree.
+///
+/// Exclusive weight of module M = total size of all modules in M's dominator
+/// subtree (modules that become unreachable if M is removed from the graph).
+/// Uses the Cooper-Harvey-Kennedy iterative dominator algorithm: O(N).
+fn compute_exclusive_weights(
+    graph: &ModuleGraph,
+    entry: ModuleId,
+    include_dynamic: bool,
+) -> Vec<u64> {
+    let n = graph.modules.len();
+
+    // Step 1: Reverse postorder DFS
+    let rpo = reverse_postorder(graph, entry, include_dynamic);
+    if rpo.is_empty() {
+        return vec![0; n];
+    }
+
+    // Step 2: RPO numbering (lower = earlier)
+    let mut rpo_num = vec![u32::MAX; n];
+    for (i, &mid) in rpo.iter().enumerate() {
+        rpo_num[mid.0 as usize] = i as u32;
+    }
+
+    // Step 3: Build predecessor lists
+    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for &mid in &rpo {
+        for &edge_id in graph.outgoing_edges(mid) {
+            let edge = graph.edge(edge_id);
+            if should_follow(edge.kind, include_dynamic)
+                && rpo_num[edge.to.0 as usize] != u32::MAX
+            {
+                preds[edge.to.0 as usize].push(mid.0);
+            }
+        }
+    }
+
+    // Step 4: Cooper-Harvey-Kennedy iterative idom computation
+    let entry_idx = entry.0;
+    let mut idom = vec![u32::MAX; n];
+    idom[entry_idx as usize] = entry_idx;
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &mid in rpo.iter().skip(1) {
+            let idx = mid.0 as usize;
+            let mut new_idom: Option<u32> = None;
+            for &p in &preds[idx] {
+                if idom[p as usize] != u32::MAX {
+                    new_idom = Some(match new_idom {
+                        None => p,
+                        Some(current) => intersect_idom(&idom, &rpo_num, current, p),
+                    });
+                }
+            }
+            if let Some(ni) = new_idom {
+                if idom[idx] != ni {
+                    idom[idx] = ni;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    // Step 5: Build dominator tree children
+    let mut children: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for &mid in &rpo {
+        let idx = mid.0 as usize;
+        let dom = idom[idx];
+        if dom != u32::MAX && dom != idx as u32 {
+            children[dom as usize].push(idx as u32);
+        }
+    }
+
+    // Step 6: Post-order DFS of dominator tree to accumulate subtree sums
+    let mut weights = vec![0u64; n];
+    let mut stack: Vec<(u32, bool)> = vec![(entry_idx, false)];
+    while let Some((node, post_visit)) = stack.pop() {
+        if post_visit {
+            weights[node as usize] = graph.modules[node as usize].size_bytes;
+            for &child in &children[node as usize] {
+                weights[node as usize] += weights[child as usize];
+            }
+            continue;
+        }
+        stack.push((node, true));
+        for &child in &children[node as usize] {
+            stack.push((child, false));
+        }
+    }
+
+    weights
 }
 
 /// BFS from entry point, collecting all reachable modules.
@@ -141,29 +292,6 @@ fn shortest_chain_to_package(
     Vec::new()
 }
 
-/// Compute the transitive cost of a module: total size of all modules
-/// reachable from it via static imports.
-fn transitive_cost(graph: &ModuleGraph, start: ModuleId) -> u64 {
-    let mut visited: HashSet<ModuleId> = HashSet::new();
-    let mut queue: VecDeque<ModuleId> = VecDeque::new();
-    let mut total: u64 = 0;
-
-    visited.insert(start);
-    queue.push_back(start);
-
-    while let Some(mid) = queue.pop_front() {
-        total += graph.module(mid).size_bytes;
-        for &edge_id in graph.outgoing_edges(mid) {
-            let edge = graph.edge(edge_id);
-            if edge.kind == EdgeKind::Static && visited.insert(edge.to) {
-                queue.push_back(edge.to);
-            }
-        }
-    }
-
-    total
-}
-
 pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> TraceResult {
     let (static_reachable, dynamic_only) = bfs_reachable(graph, entry);
 
@@ -204,13 +332,15 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     heavy_packages.sort_by(|a, b| b.total_size.cmp(&a.total_size));
     heavy_packages.truncate(opts.top_n);
 
-    // Compute transitive cost for all statically reachable source modules
+    // Compute exclusive weight for all reachable modules via dominator tree
+    let exclusive = compute_exclusive_weights(graph, entry, opts.include_dynamic);
+
     let mut modules_by_cost: Vec<ModuleCost> = static_reachable
         .iter()
         .filter(|&&mid| graph.module(mid).package.is_none())
         .map(|&mid| ModuleCost {
             module_id: mid,
-            transitive_size: transitive_cost(graph, mid),
+            exclusive_size: exclusive[mid.0 as usize],
         })
         .collect();
 
@@ -220,12 +350,12 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
             .filter(|&&mid| graph.module(mid).package.is_none())
             .map(|&mid| ModuleCost {
                 module_id: mid,
-                transitive_size: transitive_cost(graph, mid),
+                exclusive_size: exclusive[mid.0 as usize],
             });
         modules_by_cost.extend(dynamic_costs);
     }
 
-    modules_by_cost.sort_by(|a, b| b.transitive_size.cmp(&a.transitive_size));
+    modules_by_cost.sort_by(|a, b| b.exclusive_size.cmp(&a.exclusive_size));
 
     TraceResult {
         static_weight,
@@ -402,12 +532,12 @@ fn all_shortest_chains_to_package(
 pub struct CutModule {
     pub module_id: ModuleId,
     pub chains_broken: usize,
-    pub transitive_size: u64,
+    pub exclusive_size: u64,
 }
 
 /// Find modules that appear in all chains from entry to a package.
 /// Removing any one of these severs every import path to the target.
-/// Sorted by transitive weight descending (highest-impact first),
+/// Sorted by exclusive weight descending (highest-impact first),
 /// truncated to `top_n`.
 pub fn find_cut_modules(
     graph: &ModuleGraph,
@@ -415,10 +545,13 @@ pub fn find_cut_modules(
     entry: ModuleId,
     target_package: &str,
     top_n: usize,
+    include_dynamic: bool,
 ) -> Vec<CutModule> {
     if chains.is_empty() {
         return Vec::new();
     }
+
+    let exclusive = compute_exclusive_weights(graph, entry, include_dynamic);
 
     let total = chains.len();
     let mut frequency: HashMap<ModuleId, usize> = HashMap::new();
@@ -438,14 +571,14 @@ pub fn find_cut_modules(
         .map(|(mid, count)| CutModule {
             module_id: mid,
             chains_broken: count,
-            transitive_size: transitive_cost(graph, mid),
+            exclusive_size: exclusive[mid.0 as usize],
         })
         .collect();
 
     // Deduplicate at package level -- multiple files within the same
     // node_modules package are the same cut point from the user's perspective.
     // Sort descending first so we keep the highest-weight entry per package.
-    cuts.sort_by(|a, b| b.transitive_size.cmp(&a.transitive_size));
+    cuts.sort_by(|a, b| b.exclusive_size.cmp(&a.exclusive_size));
     let mut seen_packages: HashSet<String> = HashSet::new();
     cuts.retain(|c| {
         let m = graph.module(c.module_id);
@@ -458,7 +591,7 @@ pub fn find_cut_modules(
     // Single chain: sort ascending (most surgical/targeted cut first).
     // Multiple chains: sort descending (highest-impact convergence point first).
     if chains.len() == 1 {
-        cuts.sort_by(|a, b| a.transitive_size.cmp(&b.transitive_size));
+        cuts.sort_by(|a, b| a.exclusive_size.cmp(&b.exclusive_size));
     }
 
     cuts.truncate(top_n);
@@ -699,7 +832,7 @@ mod tests {
         let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert_eq!(chains.len(), 2);
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
         assert!(!cuts.is_empty());
         assert!(cuts.iter().any(|c| c.module_id == ModuleId(3)));
     }
@@ -726,7 +859,7 @@ mod tests {
             ],
         );
         let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
         assert!(cuts.is_empty());
     }
 
@@ -745,7 +878,7 @@ mod tests {
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].len(), 2); // 1 hop = 2 nodes
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
         assert!(cuts.is_empty());
     }
 
@@ -769,10 +902,10 @@ mod tests {
         let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
         assert_eq!(chains.len(), 1);
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
         assert!(cuts.len() >= 2);
-        // First cut should have smaller transitive_size (more surgical)
-        assert!(cuts[0].transitive_size <= cuts[1].transitive_size);
+        // First cut should have smaller exclusive_size (more surgical)
+        assert!(cuts[0].exclusive_size <= cuts[1].exclusive_size);
     }
 
     // --- Diff ---
@@ -804,5 +937,94 @@ mod tests {
         assert!(diff.shared_packages.contains(&"tslog".to_string()));
         assert!(!diff.shared_packages.contains(&"zod".to_string()));
         assert!(!diff.shared_packages.contains(&"ajv".to_string()));
+    }
+
+    // --- Exclusive weight ---
+
+    #[test]
+    fn exclusive_weight_linear_chain() {
+        // Entry(100) -> A(200) -> B(300)
+        // No sharing: exclusive == full subtree
+        let graph = make_graph(
+            &[("entry.ts", 100, None), ("a.ts", 200, None), ("b.ts", 300, None)],
+            &[(0, 1, EdgeKind::Static), (1, 2, EdgeKind::Static)],
+        );
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        assert_eq!(weights[0], 600); // entry: entire graph
+        assert_eq!(weights[1], 500); // a: a + b
+        assert_eq!(weights[2], 300); // b: just b
+    }
+
+    #[test]
+    fn exclusive_weight_diamond_shared() {
+        // Entry(100) -> A(200) -> D(500)
+        // Entry(100) -> B(300) -> D(500)
+        // D is shared: not in A's or B's exclusive subtree
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None), ("a.ts", 200, None),
+                ("b.ts", 300, None), ("d.ts", 500, None),
+            ],
+            &[
+                (0, 1, EdgeKind::Static), (0, 2, EdgeKind::Static),
+                (1, 3, EdgeKind::Static), (2, 3, EdgeKind::Static),
+            ],
+        );
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        assert_eq!(weights[0], 1100); // entry: everything
+        assert_eq!(weights[1], 200);  // a: only itself (D shared)
+        assert_eq!(weights[2], 300);  // b: only itself (D shared)
+        assert_eq!(weights[3], 500);  // d: only itself
+    }
+
+    #[test]
+    fn exclusive_weight_mixed_exclusive_and_shared() {
+        // Entry(100) -> A(200) -> D(500)
+        // Entry(100) -> B(300) -> D(500)
+        // A(200) -> E(600)  -- E only reachable through A
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None), ("a.ts", 200, None),
+                ("b.ts", 300, None), ("d.ts", 500, None),
+                ("e.ts", 600, None),
+            ],
+            &[
+                (0, 1, EdgeKind::Static), (0, 2, EdgeKind::Static),
+                (1, 3, EdgeKind::Static), (2, 3, EdgeKind::Static),
+                (1, 4, EdgeKind::Static),
+            ],
+        );
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        assert_eq!(weights[0], 1700); // entry: everything
+        assert_eq!(weights[1], 800);  // a: a(200) + e(600), not d
+        assert_eq!(weights[2], 300);  // b: only itself
+        assert_eq!(weights[3], 500);  // d: only itself (shared)
+        assert_eq!(weights[4], 600);  // e: only itself
+    }
+
+    #[test]
+    fn exclusive_weight_with_dynamic_edges() {
+        // Entry(100) -static-> A(200) -static-> C(400)
+        // Entry(100) -dynamic-> B(300) -static-> C(400)
+        // Static only: C exclusively through A
+        // With dynamic: C shared between A and B
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None), ("a.ts", 200, None),
+                ("b.ts", 300, None), ("c.ts", 400, None),
+            ],
+            &[
+                (0, 1, EdgeKind::Static), (0, 2, EdgeKind::Dynamic),
+                (1, 3, EdgeKind::Static), (2, 3, EdgeKind::Static),
+            ],
+        );
+        // Static only: B unreachable, C exclusively through A
+        let static_weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        assert_eq!(static_weights[1], 600); // a: a(200) + c(400)
+
+        // With dynamic: C shared between A and B
+        let all_weights = compute_exclusive_weights(&graph, ModuleId(0), true);
+        assert_eq!(all_weights[1], 200); // a: only itself (c shared with b)
+        assert_eq!(all_weights[2], 300); // b: only itself (c shared with a)
     }
 }

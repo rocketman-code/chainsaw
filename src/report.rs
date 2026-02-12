@@ -106,7 +106,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
 
     if top_modules != 0 && !result.modules_by_cost.is_empty() {
-        println!("Modules (sorted by transitive cost):");
+        println!("Modules (sorted by exclusive weight):");
         let display_count = if top_modules < 0 {
             result.modules_by_cost.len()
         } else {
@@ -117,7 +117,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
             println!(
                 "  {:<55} {}",
                 relative_path(&m.path, root),
-                format_size(mc.transitive_size)
+                format_size(mc.exclusive_size)
             );
         }
         if result.modules_by_cost.len() > display_count {
@@ -276,7 +276,7 @@ pub fn print_cut(
         println!(
             "  {:<45} {:>8}  (breaks {}/{} chains)",
             display_name(graph, cut.module_id, root),
-            format_size(cut.transitive_size),
+            format_size(cut.exclusive_size),
             cut.chains_broken,
             chains.len()
         );
@@ -310,7 +310,7 @@ pub fn print_cut_json(
             .iter()
             .map(|c| JsonCutPoint {
                 module: display_name(graph, c.module_id, root),
-                transitive_size_bytes: c.transitive_size,
+                exclusive_size_bytes: c.exclusive_size,
                 chains_broken: c.chains_broken,
             })
             .collect(),
@@ -331,7 +331,7 @@ struct JsonCut {
 #[derive(Serialize)]
 struct JsonCutPoint {
     module: String,
-    transitive_size_bytes: u64,
+    exclusive_size_bytes: u64,
     chains_broken: usize,
 }
 
@@ -373,7 +373,7 @@ struct JsonPackage {
 #[derive(Serialize)]
 struct JsonModuleCost {
     path: String,
-    transitive_size_bytes: u64,
+    exclusive_size_bytes: u64,
 }
 
 pub fn print_trace_json(
@@ -411,7 +411,7 @@ pub fn print_trace_json(
                     let m = graph.module(mc.module_id);
                     JsonModuleCost {
                         path: relative_path(&m.path, root),
-                        transitive_size_bytes: mc.transitive_size,
+                        exclusive_size_bytes: mc.exclusive_size,
                     }
                 })
                 .collect()
