@@ -337,7 +337,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
 
     let mut modules_by_cost: Vec<ModuleCost> = static_reachable
         .iter()
-        .filter(|&&mid| graph.module(mid).package.is_none())
+        .filter(|&&mid| mid != entry && graph.module(mid).package.is_none())
         .map(|&mid| ModuleCost {
             module_id: mid,
             exclusive_size: exclusive[mid.0 as usize],
