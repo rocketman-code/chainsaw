@@ -107,6 +107,8 @@ fn resolver_conformance() {
         }
     }
 
+    let python = find_python(&root);
+    eprintln!("Python: {}", python.display());
     eprintln!("Parsed {} files, found {} imports", files.len(), imports.len());
 
     // Resolve each with our resolver
@@ -130,6 +132,7 @@ fn resolver_conformance() {
     let mut third_party_misses: Vec<(String, String, String)> = Vec::new();
     let mut wrong_answers: Vec<(String, String, String, String)> = Vec::new();
     let mut phantoms: Vec<(String, String, String)> = Vec::new();
+    let mut oracle_crashes = 0u32;
 
     for (i, (file, spec)) in imports.iter().enumerate() {
         let ours = &our_results[i];
@@ -176,8 +179,8 @@ fn resolver_conformance() {
                 third_party_misses.push((file_rel, spec.clone(), path.clone()));
             }
 
-            // We found something, Python didn't — phantom resolution
-            (Some(our_path), _, "not_found" | "error") => {
+            // We found something, Python said not_found — true phantom
+            (Some(our_path), _, "not_found") => {
                 phantoms.push((
                     file_rel,
                     spec.clone(),
@@ -185,11 +188,16 @@ fn resolver_conformance() {
                 ));
             }
 
-            // Oracle error
-            (_, _, "error") => oracle_errors += 1,
+            // Oracle crashed (find_spec threw), we had an answer — not our fault
+            (Some(_), _, "error") => oracle_crashes += 1,
 
-            // Catch-all
-            _ => oracle_errors += 1,
+            // Oracle crashed, we also had nothing
+            (None, _, "error") => oracle_crashes += 1,
+
+            // Unexpected category from oracle
+            _ => {
+                oracle_errors += 1;
+            }
         }
     }
 
@@ -198,6 +206,7 @@ fn resolver_conformance() {
     eprintln!("Total imports:              {}", imports.len());
     eprintln!("Matches:                    {matches}");
     eprintln!("Skipped (stdlib/unresolved): {both_none}");
+    eprintln!("Oracle crashes:             {oracle_crashes}");
     eprintln!("Oracle errors:              {oracle_errors}");
 
     if !local_misses.is_empty() {
@@ -289,6 +298,14 @@ fn find_python_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn find_python(root: &Path) -> PathBuf {
+    let venv_python = root.join(".venv/bin/python");
+    if venv_python.exists() {
+        return venv_python;
+    }
+    PathBuf::from("python3")
+}
+
 fn run_oracle(root: &Path, imports: &[(PathBuf, String)]) -> Vec<OracleResult> {
     let input = serde_json::json!({
         "project_root": root.to_string_lossy(),
@@ -305,12 +322,13 @@ fn run_oracle(root: &Path, imports: &[(PathBuf, String)]) -> Vec<OracleResult> {
     serde_json::to_writer(&mut tmp, &input).expect("failed to write oracle input");
     tmp.flush().unwrap();
 
+    let python = find_python(root);
     let input_file = std::fs::File::open(tmp.path()).unwrap();
-    let output = std::process::Command::new("python3")
+    let output = std::process::Command::new(&python)
         .args(["-c", ORACLE_SCRIPT])
         .stdin(input_file)
         .output()
-        .expect("failed to run python3");
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", python.display()));
 
     assert!(
         output.status.success(),

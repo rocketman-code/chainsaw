@@ -2,15 +2,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub struct PythonResolver {
-    project_root: PathBuf,
+    source_roots: Vec<PathBuf>,
     site_packages_dirs: Vec<PathBuf>,
 }
 
 impl PythonResolver {
     pub fn new(root: &Path) -> Self {
+        let mut source_roots = vec![root.to_path_buf()];
+        for subdir in &["src", "lib"] {
+            let candidate = root.join(subdir);
+            if candidate.is_dir() {
+                source_roots.push(candidate);
+            }
+        }
+
         Self {
-            project_root: root.to_path_buf(),
-            site_packages_dirs: discover_site_packages(),
+            source_roots,
+            site_packages_dirs: discover_site_packages(root),
         }
     }
 
@@ -39,8 +47,10 @@ impl PythonResolver {
     }
 
     fn resolve_absolute(&self, specifier: &str) -> Option<PathBuf> {
-        if let Some(path) = try_resolve_module(&self.project_root, specifier) {
-            return Some(path);
+        for root in &self.source_roots {
+            if let Some(path) = try_resolve_module(root, specifier) {
+                return Some(path);
+            }
         }
         for sp in &self.site_packages_dirs {
             if let Some(path) = try_resolve_module(sp, specifier) {
@@ -86,8 +96,17 @@ pub fn package_name_from_path(path: &Path, site_packages: &[PathBuf]) -> Option<
     None
 }
 
-fn discover_site_packages() -> Vec<PathBuf> {
-    let output = Command::new("python3")
+fn find_python(root: &Path) -> PathBuf {
+    let venv_python = root.join(".venv/bin/python");
+    if venv_python.exists() {
+        return venv_python;
+    }
+    PathBuf::from("python3")
+}
+
+fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
+    let python = find_python(root);
+    let output = Command::new(&python)
         .args(["-c", "import site; print('\\n'.join(site.getsitepackages()))"])
         .output();
 
@@ -119,7 +138,7 @@ mod tests {
 
     fn make_resolver(root: &Path) -> PythonResolver {
         PythonResolver {
-            project_root: root.to_path_buf(),
+            source_roots: vec![root.to_path_buf()],
             site_packages_dirs: vec![],
         }
     }
@@ -203,7 +222,7 @@ mod tests {
         fs::write(requests.join("__init__.py"), "").unwrap();
 
         let resolver = PythonResolver {
-            project_root: root.clone(),
+            source_roots: vec![root.clone()],
             site_packages_dirs: vec![sp.clone()],
         };
 
@@ -220,6 +239,51 @@ mod tests {
 
         let result = resolver.resolve(&root, "nonexistent");
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_src_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let src_pkg = root.join("src/mypackage");
+        fs::create_dir_all(&src_pkg).unwrap();
+        fs::write(src_pkg.join("__init__.py"), "").unwrap();
+        fs::write(src_pkg.join("core.py"), "x = 1").unwrap();
+
+        let resolver = PythonResolver::new(&root);
+        let result = resolver.resolve(&root, "mypackage.core");
+        assert_eq!(result, Some(src_pkg.join("core.py")));
+    }
+
+    #[test]
+    fn resolve_lib_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let lib_pkg = root.join("lib/mypackage");
+        fs::create_dir_all(&lib_pkg).unwrap();
+        fs::write(lib_pkg.join("__init__.py"), "").unwrap();
+        fs::write(lib_pkg.join("core.py"), "x = 1").unwrap();
+
+        let resolver = PythonResolver::new(&root);
+        let result = resolver.resolve(&root, "mypackage.core");
+        assert_eq!(result, Some(lib_pkg.join("core.py")));
+    }
+
+    #[test]
+    fn resolve_root_preferred_over_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // Package in both root and src/ — root wins
+        let root_pkg = root.join("mypackage");
+        let src_pkg = root.join("src/mypackage");
+        fs::create_dir_all(&root_pkg).unwrap();
+        fs::create_dir_all(&src_pkg).unwrap();
+        fs::write(root_pkg.join("__init__.py"), "").unwrap();
+        fs::write(src_pkg.join("__init__.py"), "").unwrap();
+
+        let resolver = PythonResolver::new(&root);
+        let result = resolver.resolve(&root, "mypackage");
+        assert_eq!(result, Some(root_pkg.join("__init__.py")));
     }
 
     #[test]
