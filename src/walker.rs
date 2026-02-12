@@ -16,10 +16,12 @@ fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
 }
 
 /// Discover source files using the ignore crate (respects .gitignore).
-fn discover_source_files(root: &Path, lang: &dyn LanguageSupport) -> Vec<PathBuf> {
+/// Also collects the set of directories visited during the walk (for cache invalidation).
+fn discover_source_files(root: &Path, lang: &dyn LanguageSupport) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let extensions = lang.extensions();
     let skip: Vec<String> = lang.skip_dirs().iter().map(|s| s.to_string()).collect();
     let mut files = Vec::new();
+    let mut dirs = Vec::new();
     let walker = WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(true)
@@ -37,11 +39,13 @@ fn discover_source_files(root: &Path, lang: &dyn LanguageSupport) -> Vec<PathBuf
 
     for entry in walker.flatten() {
         let path = entry.into_path();
-        if path.is_file() && is_parseable(&path, extensions) {
+        if path.is_dir() {
+            dirs.push(path);
+        } else if path.is_file() && is_parseable(&path, extensions) {
             files.push(path);
         }
     }
-    files
+    (files, dirs)
 }
 
 /// Parse a batch of files in parallel, returning (path, imports) pairs.
@@ -61,14 +65,28 @@ fn parse_files_parallel(
         .collect()
 }
 
+/// Result of building a module graph, including metadata for cache invalidation.
+pub struct BuildResult {
+    pub graph: ModuleGraph,
+    /// Unique import specifiers that could not be resolved during graph building.
+    /// These are tracked so the cache can re-check them on load — if any become
+    /// resolvable (e.g. after `pip install`), the cache is invalidated.
+    pub unresolved_specifiers: Vec<String>,
+    /// Directories visited during source file discovery. Stored in the cache so
+    /// that on load we can check directory mtimes to detect new/removed files
+    /// without re-walking the entire tree.
+    pub walked_dirs: Vec<PathBuf>,
+}
+
 /// Build a complete ModuleGraph starting from the given root directory.
 /// Walks source files, parses them, resolves imports (following into node_modules),
 /// and builds the graph iteratively.
-pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> ModuleGraph {
+pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
     let graph = Mutex::new(ModuleGraph::new());
+    let mut unresolved: HashSet<String> = HashSet::new();
 
     // Phase 1: Discover and parse source files
-    let source_files = discover_source_files(root, lang);
+    let (source_files, walked_dirs) = discover_source_files(root, lang);
     let parsed = parse_files_parallel(&source_files, lang);
 
     // Track files that failed to parse so we don't retry them in phase 2
@@ -99,7 +117,10 @@ pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> ModuleGraph {
         for raw_import in &imports {
             let resolved = match lang.resolve(source_dir, &raw_import.specifier) {
                 Some(p) => p,
-                None => continue,
+                None => {
+                    unresolved.insert(raw_import.specifier.clone());
+                    continue;
+                }
             };
 
             let package = lang
@@ -146,7 +167,15 @@ pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> ModuleGraph {
     // Phase 3: Compute package info
     let mut g = graph.into_inner().unwrap();
     compute_package_info(&mut g);
-    g
+
+    let mut unresolved_specifiers: Vec<String> = unresolved.into_iter().collect();
+    unresolved_specifiers.sort();
+
+    BuildResult {
+        graph: g,
+        unresolved_specifiers,
+        walked_dirs,
+    }
 }
 
 #[cfg(test)]
@@ -172,7 +201,8 @@ mod tests {
         fs::write(root.join("broken.ts"), &[0xFF, 0xFE, 0x00, 0x01]).unwrap();
 
         let lang = TypeScriptSupport::new(&root);
-        let graph = build_graph(&root, &lang);
+        let result = build_graph(&root, &lang);
+        let graph = result.graph;
 
         // The broken file should appear at most once in the graph
         let entry_count = graph
