@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # debug build
 cargo build --release          # optimized build (~3.9 MB binary, LTO enabled)
-cargo test                     # run all 82 tests (~0.02s)
+cargo test                     # run all 92 tests (~0.03s)
 cargo test lang::typescript::parser  # run TS parser tests only (15 tests)
 cargo test lang::python::parser      # run Python parser tests only (17 tests)
 cargo test lang::python::resolver    # run Python resolver tests only (14 tests)
@@ -49,8 +49,8 @@ detect_project (lang/mod.rs)
 - **lang/python/parser.rs** - tree-sitter-python import extraction. Handles `import`, `from...import`, relative imports, `TYPE_CHECKING` blocks (TypeOnly), `importlib.import_module()`/`__import__()` (Dynamic), skips `__future__`. Tests use `parse_py()` helper
 - **lang/python/resolver.rs** - `PythonResolver` resolving dotted module names to `.py`/`__init__.py` files. Searches source roots (project root, `src/`, `lib/`) then site-packages. Uses project `.venv/bin/python` for site-packages discovery (falls back to system `python3`). Extracts package names from site-packages paths
 - **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`. Edge dedup by `(from, to, kind)` in `add_edge`. Language-agnostic
-- **walker.rs** - `build_graph(root, &dyn LanguageSupport)` orchestrates discovery + iterative resolution via trait methods. Tracks parse failures to avoid retries. Language-agnostic
-- **cache.rs** - Bitcode serialization with per-file mtime validation
+- **walker.rs** - `build_graph(root, &dyn LanguageSupport)` orchestrates discovery + iterative resolution via trait methods. Returns `BuildResult` with graph, unresolved specifiers, and walked directories for cache invalidation. Tracks parse failures to avoid retries. Language-agnostic
+- **cache.rs** - Bitcode serialization with per-file mtime validation, directory mtime tracking for new file detection, and unresolved specifier re-resolution for dependency environment changes
 - **query.rs** - BFS traversal, weight aggregation, shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper. Language-agnostic
 - **report.rs** - Human-readable and `--json` output formatting. Language-agnostic
 - **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`. Calls `detect_project()` to determine language, constructs the appropriate `LanguageSupport` impl, passes it through to `load_or_build_graph()`
@@ -79,6 +79,7 @@ All tests are `#[cfg(test)] mod tests` inline within their source files. No sepa
 - **Python parser tests** (17): Call `parse_py(source_code)` -> assert on returned `Vec<RawImport>`
 - **Python resolver tests** (14): Create `PythonResolver` with struct literal (bypasses site-packages discovery), assert resolution against tempdir layouts including src/lib layouts
 - **Query tests** (11): Call `make_graph(nodes, edges)` -> run query functions -> assert results
+- **Cache tests** (5): Test cache validity, invalidation on file add/modify/delete, and unresolved import re-resolution
 - **Graph tests** (2): Test edge dedup (same kind deduped, different kinds kept)
 - **TypeScript support tests** (8): Test trait impl -- extensions, skip_dirs, workspace package detection
 - **Python support tests** (3): Test trait impl -- extensions, skip_dirs, workspace_package_name
