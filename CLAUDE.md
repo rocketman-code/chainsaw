@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # debug build
 cargo build --release          # optimized build (~3.9 MB binary, LTO enabled)
-cargo test                     # run all 79 tests (~0.02s)
+cargo test                     # run all 82 tests (~0.02s)
 cargo test lang::typescript::parser  # run TS parser tests only (15 tests)
 cargo test lang::python::parser      # run Python parser tests only (17 tests)
-cargo test lang::python::resolver    # run Python resolver tests only (11 tests)
+cargo test lang::python::resolver    # run Python resolver tests only (14 tests)
 cargo test query               # run query tests only (11 tests)
 cargo test graph               # run graph tests only (2 tests)
 cargo test lang::typescript::tests   # run TypeScript support tests (8 tests)
@@ -47,7 +47,7 @@ detect_project (lang/mod.rs)
 - **lang/typescript/resolver.rs** - `ImportResolver` wrapping oxc_resolver with 3-tier pnpm fallback
 - **lang/python/mod.rs** - `PythonSupport` struct implementing `LanguageSupport`. Delegates to tree-sitter parser and Python resolver
 - **lang/python/parser.rs** - tree-sitter-python import extraction. Handles `import`, `from...import`, relative imports, `TYPE_CHECKING` blocks (TypeOnly), `importlib.import_module()`/`__import__()` (Dynamic), skips `__future__`. Tests use `parse_py()` helper
-- **lang/python/resolver.rs** - `PythonResolver` resolving dotted module names to `.py`/`__init__.py` files. Searches project root then site-packages (discovered via `python3 -c`). Extracts package names from site-packages paths
+- **lang/python/resolver.rs** - `PythonResolver` resolving dotted module names to `.py`/`__init__.py` files. Searches source roots (project root, `src/`, `lib/`) then site-packages. Uses project `.venv/bin/python` for site-packages discovery (falls back to system `python3`). Extracts package names from site-packages paths
 - **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`. Edge dedup by `(from, to, kind)` in `add_edge`. Language-agnostic
 - **walker.rs** - `build_graph(root, &dyn LanguageSupport)` orchestrates discovery + iterative resolution via trait methods. Tracks parse failures to avoid retries. Language-agnostic
 - **cache.rs** - Bitcode serialization with per-file mtime validation
@@ -66,7 +66,8 @@ detect_project (lang/mod.rs)
 - Parser creates a new `tree_sitter::Parser` per `parse_file()` call (Parser is not Send)
 - Relative imports encoded as dot-prefixed specifiers: `.foo`, `..bar.baz`
 - `from . import foo, bar` (bare dots) emits separate specifiers `.foo`, `.bar`
-- Site-packages discovered at construction time via `python3 -c "import site; ..."`
+- Site-packages discovered at construction time via `.venv/bin/python` (or system `python3`)
+- Source roots: project root, then `src/`, `lib/` if they exist (handles PyPA src-layout and lib-layout projects)
 - Module resolution: tries `__init__.py` (package) then `.py` (module file)
 - `workspace_package_name` returns None (no Python monorepo support in MVP)
 
@@ -76,7 +77,7 @@ All tests are `#[cfg(test)] mod tests` inline within their source files. No sepa
 
 - **TS parser tests** (15): Call `parse_ts(source_code)` -> assert on returned `Vec<RawImport>`
 - **Python parser tests** (17): Call `parse_py(source_code)` -> assert on returned `Vec<RawImport>`
-- **Python resolver tests** (11): Create `PythonResolver` with struct literal (bypasses site-packages discovery), assert resolution against tempdir layouts
+- **Python resolver tests** (14): Create `PythonResolver` with struct literal (bypasses site-packages discovery), assert resolution against tempdir layouts including src/lib layouts
 - **Query tests** (11): Call `make_graph(nodes, edges)` -> run query functions -> assert results
 - **Graph tests** (2): Test edge dedup (same kind deduped, different kinds kept)
 - **TypeScript support tests** (8): Test trait impl -- extensions, skip_dirs, workspace package detection
