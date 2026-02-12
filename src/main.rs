@@ -289,11 +289,17 @@ fn load_or_build_graph(
     lang: &dyn LanguageSupport,
 ) -> (graph::ModuleGraph, bool) {
     if !no_cache {
-        if let Some(g) = cache::load_cache(root) {
+        // Re-resolve unresolved specifiers using the project root as source_dir.
+        // These are all absolute imports (stdlib, third-party) since relative imports
+        // resolve within the project and are covered by the directory mtime checks.
+        let resolve_fn = |specifier: &str| lang.resolve(root, specifier).is_some();
+
+        if let Some(g) = cache::load_cache(root, &resolve_fn) {
             return (g, true);
         }
     }
-    let g = walker::build_graph(root, lang);
-    cache::save_cache(root, &g);
-    (g, false)
+
+    let result = walker::build_graph(root, lang);
+    cache::save_cache(root, &result.graph, &result.walked_dirs, result.unresolved_specifiers);
+    (result.graph, false)
 }
