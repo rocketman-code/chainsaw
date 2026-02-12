@@ -731,6 +731,25 @@ mod tests {
     }
 
     #[test]
+    fn cut_direct_import_no_intermediate() {
+        // Entry directly imports target: A -> zod (1 hop)
+        // No intermediate module exists to cut.
+        let graph = make_graph(
+            &[
+                ("a.ts", 100, None),
+                ("node_modules/zod/index.js", 500, Some("zod")),
+            ],
+            &[(0, 1, EdgeKind::Static)],
+        );
+        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].len(), 2); // 1 hop = 2 nodes
+
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10);
+        assert!(cuts.is_empty());
+    }
+
+    #[test]
     fn cut_single_chain_ascending_sort() {
         // Single chain: A -> B(big) -> C(small) -> zod
         // With single chain, cuts should sort ascending (surgical first).
