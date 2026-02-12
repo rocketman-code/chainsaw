@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
@@ -30,6 +31,47 @@ fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
     }
 }
 
+/// Path relative to the package directory (e.g. `dateutil/__init__.py`).
+/// Falls back to the file name if the package name isn't found in path components.
+fn package_relative_path(path: &Path, package_name: &str) -> String {
+    let components: Vec<_> = path.components().collect();
+    for (i, comp) in components.iter().enumerate() {
+        if let Component::Normal(name) = comp {
+            if name.to_str() == Some(package_name) {
+                let sub: PathBuf = components[i..].iter().collect();
+                return sub.to_string_lossy().into_owned();
+            }
+        }
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// Build display names for a chain, expanding duplicate package nodes
+/// to package-relative file paths for disambiguation.
+fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> Vec<String> {
+    let names: Vec<String> = chain.iter().map(|&mid| display_name(graph, mid, root)).collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for name in &names {
+        *counts.entry(name.as_str()).or_default() += 1;
+    }
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if counts[name.as_str()] > 1 {
+                let m = graph.module(chain[i]);
+                if let Some(ref pkg) = m.package {
+                    return package_relative_path(&m.path, pkg);
+                }
+            }
+            name.clone()
+        })
+        .collect()
+}
+
 pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top_modules: i32) {
     println!("{}", relative_path(entry_path, root));
     println!(
@@ -56,11 +98,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
                 pkg.file_count
             );
             if pkg.chain.len() > 1 {
-                let chain_str: Vec<String> = pkg
-                    .chain
-                    .iter()
-                    .map(|&mid| display_name(graph, mid, root))
-                    .collect();
+                let chain_str = chain_display_names(graph, &pkg.chain, root);
                 println!("    -> {}", chain_str.join(" -> "));
             }
         }
@@ -158,10 +196,7 @@ pub fn print_chains(
         if hops == 1 { "" } else { "s" },
     );
     for (i, chain) in chains.iter().enumerate() {
-        let chain_str: Vec<String> = chain
-            .iter()
-            .map(|&mid| display_name(graph, mid, root))
-            .collect();
+        let chain_str = chain_display_names(graph, chain, root);
         println!("  {}. {}", i + 1, chain_str.join(" -> "));
     }
 }
@@ -189,12 +224,7 @@ pub fn print_chains_json(
         hop_count: chains.first().map(|c| c.len().saturating_sub(1)).unwrap_or(0),
         chains: chains
             .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|&mid| display_name(graph, mid, root))
-                    .collect()
-            })
+            .map(|chain| chain_display_names(graph, chain, root))
             .collect(),
     };
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -366,11 +396,7 @@ pub fn print_trace_json(
                 name: pkg.name.clone(),
                 total_size_bytes: pkg.total_size,
                 file_count: pkg.file_count,
-                chain: pkg
-                    .chain
-                    .iter()
-                    .map(|&mid| display_name(graph, mid, root))
-                    .collect(),
+                chain: chain_display_names(graph, &pkg.chain, root),
             })
             .collect(),
         modules_by_cost: {
