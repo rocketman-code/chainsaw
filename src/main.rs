@@ -125,7 +125,11 @@ fn main() {
                         "error: entry file '{}' not found in graph",
                         entry.display()
                     );
-                    eprintln!("hint: is it a .ts/.js/.tsx/.jsx file within the project?");
+                    let exts = match kind {
+                        lang::ProjectKind::TypeScript => ".ts/.js/.tsx/.jsx/.mjs/.cjs/.mts/.cts",
+                        lang::ProjectKind::Python => ".py",
+                    };
+                    eprintln!("hint: is it a {exts} file within the project?");
                     std::process::exit(1);
                 }
             };
