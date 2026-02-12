@@ -218,12 +218,19 @@ pub fn print_cut(
     }
 
     if cuts.is_empty() {
-        println!(
-            "No single cut point can sever all {} chain{} to \"{package_name}\".",
-            chains.len(),
-            if chains.len() == 1 { "" } else { "s" },
-        );
-        println!("Each chain takes a different path — multiple fixes needed.");
+        let is_direct = chains.iter().all(|c| c.len() == 2);
+        if is_direct {
+            println!(
+                "Entry file directly imports \"{package_name}\" — remove the import to sever the dependency."
+            );
+        } else {
+            println!(
+                "No single cut point can sever all {} chain{} to \"{package_name}\".",
+                chains.len(),
+                if chains.len() == 1 { "" } else { "s" },
+            );
+            println!("Each chain takes a different path — multiple fixes needed.");
+        }
         return;
     }
 
@@ -268,6 +275,7 @@ pub fn print_cut_json(
     let json = JsonCut {
         package: package_name.to_string(),
         chain_count: chains.len(),
+        direct_import: cuts.is_empty() && chains.iter().all(|c| c.len() == 2),
         cut_points: cuts
             .iter()
             .map(|c| JsonCutPoint {
@@ -286,6 +294,7 @@ pub fn print_cut_json(
 struct JsonCut {
     package: String,
     chain_count: usize,
+    direct_import: bool,
     cut_points: Vec<JsonCutPoint>,
 }
 
