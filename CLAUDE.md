@@ -7,11 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # debug build
 cargo build --release          # optimized build (~3.9 MB binary, LTO enabled)
-cargo test                     # run all 93 tests (~0.03s)
+cargo test                     # run all 97 tests (~0.03s)
 cargo test lang::typescript::parser  # run TS parser tests only (15 tests)
 cargo test lang::python::parser      # run Python parser tests only (17 tests)
 cargo test lang::python::resolver    # run Python resolver tests only (14 tests)
-cargo test query               # run query tests only (12 tests)
+cargo test query               # run query tests only (16 tests)
 cargo test graph               # run graph tests only (2 tests)
 cargo test lang::typescript::tests   # run TypeScript support tests (8 tests)
 cargo test lang::python::tests       # run Python support tests (3 tests)
@@ -51,7 +51,7 @@ detect_project (lang/mod.rs)
 - **graph.rs** - Core data structures: `ModuleGraph` (arena-allocated), `Module`, `Edge` (Static/Dynamic/TypeOnly), `PackageInfo`. Edge dedup by `(from, to, kind)` in `add_edge`. Language-agnostic
 - **walker.rs** - `build_graph(root, &dyn LanguageSupport)` orchestrates discovery + iterative resolution via trait methods. Returns `BuildResult` with graph, unresolved specifiers, and walked directories for cache invalidation. Tracks parse failures to avoid retries. Language-agnostic
 - **cache.rs** - Bitcode serialization with per-file mtime validation, directory mtime tracking for new file detection, and unresolved specifier re-resolution for dependency environment changes
-- **query.rs** - BFS traversal, weight aggregation, shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper. Language-agnostic
+- **query.rs** - BFS traversal, exclusive weight via dominator tree (Cooper-Harvey-Kennedy), shortest chain (`--chain`), cut point detection (`--cut`), diff between two entries or against saved snapshots. Tests use `make_graph()` helper. Language-agnostic
 - **report.rs** - Human-readable and `--json` output formatting. Chains disambiguate duplicate package names by expanding to package-relative file paths. Language-agnostic
 - **main.rs** - Clap CLI definition, `chainsaw trace <ENTRY> [OPTIONS]`. Calls `detect_project()` to determine language, constructs the appropriate `LanguageSupport` impl, passes it through to `load_or_build_graph()`
 
@@ -78,7 +78,7 @@ All tests are `#[cfg(test)] mod tests` inline within their source files. No sepa
 - **TS parser tests** (15): Call `parse_ts(source_code)` -> assert on returned `Vec<RawImport>`
 - **Python parser tests** (17): Call `parse_py(source_code)` -> assert on returned `Vec<RawImport>`
 - **Python resolver tests** (14): Create `PythonResolver` with struct literal (bypasses site-packages discovery), assert resolution against tempdir layouts including src/lib layouts
-- **Query tests** (12): Call `make_graph(nodes, edges)` -> run query functions -> assert results
+- **Query tests** (16): Call `make_graph(nodes, edges)` -> run query functions -> assert results. Includes exclusive weight tests (linear, diamond, mixed, dynamic edges)
 - **Cache tests** (5): Test cache validity, invalidation on file add/modify/delete, and unresolved import re-resolution
 - **Graph tests** (2): Test edge dedup (same kind deduped, different kinds kept)
 - **TypeScript support tests** (8): Test trait impl -- extensions, skip_dirs, workspace package detection
