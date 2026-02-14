@@ -213,10 +213,10 @@ fn extract_from_module(node: tree_sitter::Node, source: &[u8]) -> (String, Strin
 fn extract_module_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     // Look for a dotted_name among named children
     for i in 0..node.named_child_count() {
-        if let Some(child) = node.named_child(i) {
-            if child.kind() == "dotted_name" {
-                return Some(text(child, source));
-            }
+        if let Some(child) = node.named_child(i)
+            && child.kind() == "dotted_name"
+        {
+            return Some(text(child, source));
         }
     }
     None
@@ -226,10 +226,10 @@ fn extract_module_name(node: tree_sitter::Node, source: &[u8]) -> Option<String>
 /// The import_prefix node is not a named node, so we iterate over all children.
 fn extract_dot_prefix(node: tree_sitter::Node, source: &[u8]) -> String {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "import_prefix" {
-                return text(child, source);
-            }
+        if let Some(child) = node.child(i)
+            && child.kind() == "import_prefix"
+        {
+            return text(child, source);
         }
     }
     String::new()
@@ -273,14 +273,14 @@ fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<Opti
     // Extract the first string argument
     let args_node = node.child_by_field_name("arguments")?;
     for i in 0..args_node.named_child_count() {
-        if let Some(arg) = args_node.named_child(i) {
-            if arg.kind() == "string" {
-                let raw = text(arg, source);
-                // Strip surrounding quotes (single, double, or triple)
-                let stripped = strip_string_quotes(&raw);
-                if !stripped.is_empty() {
-                    return Some(Some(stripped.to_string()));
-                }
+        if let Some(arg) = args_node.named_child(i)
+            && arg.kind() == "string"
+        {
+            let raw = text(arg, source);
+            // Strip surrounding quotes (single, double, or triple)
+            let stripped = strip_string_quotes(&raw);
+            if !stripped.is_empty() {
+                return Some(Some(stripped.to_string()));
             }
         }
     }

@@ -36,11 +36,11 @@ fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
 fn package_relative_path(path: &Path, package_name: &str) -> String {
     let components: Vec<_> = path.components().collect();
     for (i, comp) in components.iter().enumerate() {
-        if let Component::Normal(name) = comp {
-            if name.to_str() == Some(package_name) {
-                let sub: PathBuf = components[i..].iter().collect();
-                return sub.to_string_lossy().into_owned();
-            }
+        if let Component::Normal(name) = comp
+            && name.to_str() == Some(package_name)
+        {
+            let sub: PathBuf = components[i..].iter().collect();
+            return sub.to_string_lossy().into_owned();
         }
     }
     path.file_name()

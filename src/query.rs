@@ -177,11 +177,11 @@ fn compute_exclusive_weights(
                     });
                 }
             }
-            if let Some(ni) = new_idom {
-                if idom[idx] != ni {
-                    idom[idx] = ni;
-                    changed = true;
-                }
+            if let Some(ni) = new_idom
+                && idom[idx] != ni
+            {
+                idom[idx] = ni;
+                changed = true;
             }
         }
     }
