@@ -19,6 +19,8 @@ pub struct BuildResult {
     pub graph: ModuleGraph,
     /// Number of dynamic imports with non-literal arguments that could not be traced.
     pub unresolvable_dynamic: usize,
+    /// Import specifiers that failed to resolve (for cache invalidation).
+    pub unresolved_specifiers: Vec<String>,
 }
 
 /// Build a complete ModuleGraph via BFS from the given entry point.
@@ -31,6 +33,7 @@ pub fn build_graph(
 ) -> BuildResult {
     let mut graph = ModuleGraph::new();
     let mut unresolvable_total: usize = 0;
+    let mut unresolved: HashSet<String> = HashSet::new();
     let mut parse_failures: HashSet<PathBuf> = HashSet::new();
     let mut pending: VecDeque<(PathBuf, Vec<RawImport>)> = VecDeque::new();
 
@@ -57,7 +60,10 @@ pub fn build_graph(
         for raw_import in &imports {
             let resolved = match lang.resolve(source_dir, &raw_import.specifier) {
                 Some(p) => p,
-                None => continue,
+                None => {
+                    unresolved.insert(raw_import.specifier.clone());
+                    continue;
+                }
             };
 
             let package = lang
@@ -96,6 +102,7 @@ pub fn build_graph(
     BuildResult {
         graph,
         unresolvable_dynamic: unresolvable_total,
+        unresolved_specifiers: unresolved.into_iter().collect(),
     }
 }
 

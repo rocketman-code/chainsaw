@@ -148,9 +148,12 @@ fn main() {
             let valid_extensions = lang_support.extensions();
 
             // Load or build graph
-            let (graph, unresolvable_dynamic) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            let graph = load_result.graph;
+            let unresolvable_dynamic = load_result.unresolvable_dynamic;
             eprintln!(
-                "Built graph ({} modules) in {:.1}ms",
+                "{} ({} modules) in {:.1}ms",
+                if load_result.from_cache { "Loaded cached graph" } else { "Built graph" },
                 graph.module_count(),
                 start.elapsed().as_secs_f64() * 1000.0
             );
@@ -362,7 +365,8 @@ fn main() {
                             Box::new(lang::python::PythonSupport::new(&diff_root))
                         }
                     };
-                    let (diff_graph, _) = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
+                    let diff_load = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
+                    let diff_graph = diff_load.graph;
                     let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
                         Some(&id) => id,
                         None => {
@@ -452,7 +456,7 @@ fn main() {
                 }
             };
 
-            let (graph, _) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            let graph = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref()).graph;
 
             if json {
                 report::print_packages_json(&graph);
@@ -463,19 +467,48 @@ fn main() {
     }
 }
 
+struct LoadResult {
+    graph: graph::ModuleGraph,
+    unresolvable_dynamic: usize,
+    from_cache: bool,
+}
+
 fn load_or_build_graph(
     entry: &Path,
     root: &Path,
     no_cache: bool,
     lang: &dyn LanguageSupport,
-) -> (graph::ModuleGraph, usize) {
+) -> LoadResult {
     let mut cache = if no_cache {
         cache::ParseCache::new()
     } else {
         cache::ParseCache::load(root)
     };
 
+    // Tier 1: try whole-graph cache (nothing changed since last run)
+    if !no_cache {
+        let resolve_fn = |spec: &str| lang.resolve(root, spec).is_some();
+        if let Some((graph, unresolvable_dynamic)) = cache.try_load_graph(entry, &resolve_fn) {
+            return LoadResult {
+                graph,
+                unresolvable_dynamic,
+                from_cache: true,
+            };
+        }
+    }
+
+    // Tier 2: BFS walk with per-file parse cache
     let result = walker::build_graph(entry, root, lang, &mut cache);
-    cache.save(root);
-    (result.graph, result.unresolvable_dynamic)
+    cache.save(
+        root,
+        entry,
+        &result.graph,
+        result.unresolved_specifiers,
+        result.unresolvable_dynamic,
+    );
+    LoadResult {
+        graph: result.graph,
+        unresolvable_dynamic: result.unresolvable_dynamic,
+        from_cache: false,
+    }
 }
