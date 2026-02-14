@@ -10,7 +10,10 @@ use crate::graph::ModuleGraph;
 use crate::lang::ParseResult;
 
 const CACHE_FILE: &str = ".chainsaw.cache";
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
+// 16-byte header: magic (4) + version (4) + graph_len (8)
+const CACHE_MAGIC: u32 = 0x4348_5357; // "CHSW"
+const HEADER_SIZE: usize = 16;
 
 pub fn cache_path(root: &Path) -> PathBuf {
     root.join(CACHE_FILE)
@@ -50,17 +53,9 @@ struct CachedGraph {
     unresolvable_dynamic: usize,
 }
 
-// --- Envelope ---
-
-#[derive(Serialize, Deserialize)]
-struct CacheEnvelope {
-    version: u32,
-    parse_entries: HashMap<PathBuf, CachedParse>,
-    graph_cache: Option<CachedGraph>,
-}
-
 pub struct ParseCache {
     entries: HashMap<PathBuf, CachedParse>,
+    deferred_parse_data: Option<Vec<u8>>,
     cached_graph: Option<CachedGraph>,
 }
 
@@ -68,30 +63,60 @@ impl ParseCache {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            deferred_parse_data: None,
             cached_graph: None,
         }
     }
 
+    /// Load cache from disk. The graph cache is deserialized immediately;
+    /// parse entries are deferred until first access (saves ~2.5ms on cache hit).
     pub fn load(root: &Path) -> Self {
         let path = cache_path(root);
         let data = match fs::read(&path) {
             Ok(d) => d,
             Err(_) => return Self::new(),
         };
-        let envelope: CacheEnvelope = match bitcode::deserialize::<CacheEnvelope>(&data) {
-            Ok(e) if e.version == CACHE_VERSION => e,
-            _ => return Self::new(),
+        if data.len() < HEADER_SIZE {
+            return Self::new();
+        }
+        let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        if magic != CACHE_MAGIC || version != CACHE_VERSION {
+            return Self::new();
+        }
+        let graph_len = u64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
+        let graph_end = HEADER_SIZE + graph_len;
+        if data.len() < graph_end {
+            return Self::new();
+        }
+
+        let cached_graph: Option<CachedGraph> =
+            bitcode::deserialize(&data[HEADER_SIZE..graph_end]).ok();
+
+        let deferred = if data.len() > graph_end {
+            Some(data[graph_end..].to_vec())
+        } else {
+            None
         };
+
         Self {
-            entries: envelope.parse_entries,
-            cached_graph: envelope.graph_cache,
+            entries: HashMap::new(),
+            deferred_parse_data: deferred,
+            cached_graph,
         }
     }
 
-    /// Try to load the cached graph (tier 1). Returns the graph and
-    /// unresolvable_dynamic count if the cache is valid for this entry point.
+    fn ensure_entries(&mut self) {
+        if let Some(bytes) = self.deferred_parse_data.take() {
+            self.entries = bitcode::deserialize(&bytes).unwrap_or_default();
+        }
+    }
+
+    /// Try to load the cached graph (tier 1). Takes ownership of the graph
+    /// to avoid a clone. Returns the graph and unresolvable_dynamic count
+    /// if the cache is valid for this entry point.
     pub fn try_load_graph(
-        &self,
+        &mut self,
         entry: &Path,
         resolve_fn: &dyn Fn(&str) -> bool,
     ) -> Option<(ModuleGraph, usize)> {
@@ -125,17 +150,20 @@ impl ParseCache {
                 return None;
             }
         }
-        Some((cached.graph.clone(), cached.unresolvable_dynamic))
+        let cached = self.cached_graph.take().unwrap();
+        Some((cached.graph, cached.unresolvable_dynamic))
     }
 
     pub fn save(
-        &self,
+        &mut self,
         root: &Path,
         entry: &Path,
         graph: &ModuleGraph,
         unresolved_specifiers: Vec<String>,
         unresolvable_dynamic: usize,
     ) {
+        self.ensure_entries();
+
         let file_mtimes: HashMap<PathBuf, CachedMtime> = graph
             .modules
             .par_iter()
@@ -160,24 +188,35 @@ impl ParseCache {
             unresolvable_dynamic,
         };
 
-        let envelope = CacheEnvelope {
-            version: CACHE_VERSION,
-            parse_entries: self.entries.clone(),
-            graph_cache: Some(graph_cache),
-        };
-        let data = match bitcode::serialize(&envelope) {
+        let graph_data = match bitcode::serialize(&graph_cache) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("warning: failed to serialize cache: {e}");
+                eprintln!("warning: failed to serialize graph cache: {e}");
                 return;
             }
         };
-        if let Err(e) = fs::write(cache_path(root), &data) {
+        let parse_data = match bitcode::serialize(&self.entries) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("warning: failed to serialize parse cache: {e}");
+                return;
+            }
+        };
+
+        let mut out = Vec::with_capacity(HEADER_SIZE + graph_data.len() + parse_data.len());
+        out.extend_from_slice(&CACHE_MAGIC.to_le_bytes());
+        out.extend_from_slice(&CACHE_VERSION.to_le_bytes());
+        out.extend_from_slice(&(graph_data.len() as u64).to_le_bytes());
+        out.extend_from_slice(&graph_data);
+        out.extend_from_slice(&parse_data);
+
+        if let Err(e) = fs::write(cache_path(root), &out) {
             eprintln!("warning: failed to write cache: {e}");
         }
     }
 
-    pub fn lookup(&self, path: &Path) -> Option<(ParseResult, Vec<Option<PathBuf>>)> {
+    pub fn lookup(&mut self, path: &Path) -> Option<(ParseResult, Vec<Option<PathBuf>>)> {
+        self.ensure_entries();
         let entry = self.entries.get(path)?;
         let meta = fs::metadata(path).ok()?;
         let current_mtime = mtime_of(&meta)?;
@@ -194,6 +233,7 @@ impl ParseCache {
         result: &ParseResult,
         resolved_paths: &[Option<PathBuf>],
     ) {
+        self.ensure_entries();
         let Ok(meta) = fs::metadata(&path) else {
             return;
         };
@@ -270,7 +310,7 @@ mod tests {
         let file = root.join("test.py");
         fs::write(&file, "import os").unwrap();
 
-        let cache = ParseCache::new();
+        let mut cache = ParseCache::new();
         assert!(cache.lookup(&file).is_none());
     }
 
@@ -297,7 +337,7 @@ mod tests {
         let graph = ModuleGraph::new();
         cache.save(&root, &file, &graph, vec![], 0);
 
-        let loaded = ParseCache::load(&root);
+        let mut loaded = ParseCache::load(&root);
         let cached = loaded.lookup(&file);
         assert!(cached.is_some());
         let (parse_result, resolved_paths) = cached.unwrap();
@@ -319,10 +359,10 @@ mod tests {
         let size = fs::metadata(&file).unwrap().len();
         graph.add_module(file.clone(), size, None);
 
-        let cache = ParseCache::new();
+        let mut cache = ParseCache::new();
         cache.save(&root, &file, &graph, vec!["os".into()], 2);
 
-        let loaded = ParseCache::load(&root);
+        let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
         let result = loaded.try_load_graph(&file, &resolve_fn);
         assert!(result.is_some());
@@ -342,12 +382,12 @@ mod tests {
         let size = fs::metadata(&file).unwrap().len();
         graph.add_module(file.clone(), size, None);
 
-        let cache = ParseCache::new();
+        let mut cache = ParseCache::new();
         cache.save(&root, &file, &graph, vec![], 0);
 
         fs::write(&file, "x = 2; y = 3").unwrap();
 
-        let loaded = ParseCache::load(&root);
+        let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
         assert!(loaded.try_load_graph(&file, &resolve_fn).is_none());
     }
@@ -363,10 +403,10 @@ mod tests {
         let size = fs::metadata(&file).unwrap().len();
         graph.add_module(file.clone(), size, None);
 
-        let cache = ParseCache::new();
+        let mut cache = ParseCache::new();
         cache.save(&root, &file, &graph, vec!["foo".into()], 0);
 
-        let loaded = ParseCache::load(&root);
+        let mut loaded = ParseCache::load(&root);
         let resolve_fn = |spec: &str| spec == "foo";
         assert!(loaded.try_load_graph(&file, &resolve_fn).is_none());
     }
@@ -384,10 +424,10 @@ mod tests {
         let size = fs::metadata(&file_a).unwrap().len();
         graph.add_module(file_a.clone(), size, None);
 
-        let cache = ParseCache::new();
+        let mut cache = ParseCache::new();
         cache.save(&root, &file_a, &graph, vec![], 0);
 
-        let loaded = ParseCache::load(&root);
+        let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
         assert!(loaded.try_load_graph(&file_b, &resolve_fn).is_none());
     }
