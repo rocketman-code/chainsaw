@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -116,6 +116,59 @@ impl ModuleGraph {
 
     pub fn module_count(&self) -> usize {
         self.modules.len()
+    }
+
+    /// Compute aggregated package info (total reachable size + file count).
+    /// For each package, BFS from its entry module following only edges within the same package.
+    pub fn compute_package_info(&mut self) {
+        let mut package_entries: HashMap<String, Vec<ModuleId>> = HashMap::new();
+        for module in &self.modules {
+            if let Some(ref pkg) = module.package {
+                package_entries.entry(pkg.clone()).or_default().push(module.id);
+            }
+        }
+
+        for (pkg_name, module_ids) in &package_entries {
+            let mut total_size: u64 = 0;
+            let mut total_files: u32 = 0;
+            let mut visited: HashSet<u32> = HashSet::new();
+
+            let mut queue: VecDeque<ModuleId> = module_ids.iter().copied().collect();
+            for &id in module_ids {
+                visited.insert(id.0);
+            }
+
+            while let Some(mid) = queue.pop_front() {
+                let module = &self.modules[mid.0 as usize];
+                if module.package.as_deref() == Some(pkg_name) {
+                    total_size += module.size_bytes;
+                    total_files += 1;
+                }
+
+                for &edge_id in &self.forward_adj[mid.0 as usize] {
+                    let edge = &self.edges[edge_id.0 as usize];
+                    if edge.kind == EdgeKind::Static {
+                        let target = &self.modules[edge.to.0 as usize];
+                        if target.package.as_deref() == Some(pkg_name)
+                            && visited.insert(edge.to.0)
+                        {
+                            queue.push_back(edge.to);
+                        }
+                    }
+                }
+            }
+
+            let entry_module = module_ids[0];
+            self.package_map.insert(
+                pkg_name.clone(),
+                PackageInfo {
+                    name: pkg_name.clone(),
+                    entry_module,
+                    total_reachable_size: total_size,
+                    total_reachable_files: total_files,
+                },
+            );
+        }
     }
 }
 
