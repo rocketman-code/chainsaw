@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 
 use crate::graph::{ModuleGraph, ModuleId};
-use crate::query::{CutModule, DiffResult, TraceResult};
+use crate::query::{CutModule, DiffPackage, DiffResult, TraceResult};
 
 fn format_size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
@@ -155,7 +155,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
 }
 
-pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str) {
+pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
     println!("Diff: {entry_a} vs {entry_b}");
     println!();
     println!(
@@ -176,23 +176,32 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str) {
     );
     println!();
 
-    if !diff.only_in_a.is_empty() {
-        println!("Only in {entry_a}:");
-        for pkg in &diff.only_in_a {
-            println!("  - {pkg}");
+    fn print_diff_section(packages: &[DiffPackage], prefix: &str, header: &str, limit: i32) {
+        if packages.is_empty() {
+            return;
+        }
+        let show = if limit < 0 {
+            packages.len()
+        } else {
+            packages.len().min(limit as usize)
+        };
+        println!("{header}");
+        for pkg in &packages[..show] {
+            println!("  {prefix} {:<35} {}", pkg.name, format_size(pkg.size));
+        }
+        let remaining = packages.len() - show;
+        if remaining > 0 {
+            println!("  {prefix} ... and {remaining} more");
         }
     }
-    if !diff.only_in_b.is_empty() {
-        println!("Only in {entry_b}:");
-        for pkg in &diff.only_in_b {
-            println!("  + {pkg}");
-        }
-    }
-    if !diff.shared_packages.is_empty() {
+
+    print_diff_section(&diff.only_in_a, "-", &format!("Only in {entry_a}:"), limit);
+    print_diff_section(&diff.only_in_b, "+", &format!("Only in {entry_b}:"), limit);
+    if diff.shared_count > 0 {
         println!(
             "Shared: {} package{}",
-            diff.shared_packages.len(),
-            if diff.shared_packages.len() == 1 { "" } else { "s" }
+            diff.shared_count,
+            if diff.shared_count == 1 { "" } else { "s" }
         );
     }
 }

@@ -17,8 +17,8 @@ pub struct TraceResult {
     pub heavy_packages: Vec<HeavyPackage>,
     /// All reachable modules with their exclusive weight, sorted descending
     pub modules_by_cost: Vec<ModuleCost>,
-    /// All statically reachable package names (for accurate diff)
-    pub all_packages: HashSet<String>,
+    /// All statically reachable packages with their total size
+    pub all_packages: HashMap<String, u64>,
 }
 
 pub struct HeavyPackage {
@@ -338,7 +338,8 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         }
     }
 
-    let all_packages: HashSet<String> = package_sizes.keys().cloned().collect();
+    let all_packages: HashMap<String, u64> =
+        package_sizes.iter().map(|(k, (size, _))| (k.clone(), *size)).collect();
 
     let mut heavy_packages: Vec<HeavyPackage> = package_sizes
         .into_iter()
@@ -634,7 +635,7 @@ pub fn find_cut_modules(
 pub struct TraceSnapshot {
     pub entry: String,
     pub static_weight: u64,
-    pub all_packages: HashSet<String>,
+    pub packages: HashMap<String, u64>,
 }
 
 impl TraceResult {
@@ -642,9 +643,15 @@ impl TraceResult {
         TraceSnapshot {
             entry: entry.to_string(),
             static_weight: self.static_weight,
-            all_packages: self.all_packages.clone(),
+            packages: self.all_packages.clone(),
         }
     }
+}
+
+/// A package that appears in only one side of a diff, with its size.
+pub struct DiffPackage {
+    pub name: String,
+    pub size: u64,
 }
 
 /// Compute a diff between two trace snapshots.
@@ -652,31 +659,40 @@ pub struct DiffResult {
     pub entry_a_weight: u64,
     pub entry_b_weight: u64,
     pub weight_delta: i64,
-    pub shared_packages: Vec<String>,
-    pub only_in_a: Vec<String>,
-    pub only_in_b: Vec<String>,
+    pub shared_count: usize,
+    pub only_in_a: Vec<DiffPackage>,
+    pub only_in_b: Vec<DiffPackage>,
 }
 
 pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
-    let pkgs_a: HashSet<&str> = a.all_packages.iter().map(|s| s.as_str()).collect();
-    let pkgs_b: HashSet<&str> = b.all_packages.iter().map(|s| s.as_str()).collect();
+    let keys_a: HashSet<&str> = a.packages.keys().map(|s| s.as_str()).collect();
+    let keys_b: HashSet<&str> = b.packages.keys().map(|s| s.as_str()).collect();
+
+    let mut only_in_a: Vec<DiffPackage> = keys_a
+        .difference(&keys_b)
+        .map(|&name| DiffPackage {
+            name: name.to_string(),
+            size: a.packages[name],
+        })
+        .collect();
+    only_in_a.sort_by(|x, y| y.size.cmp(&x.size));
+
+    let mut only_in_b: Vec<DiffPackage> = keys_b
+        .difference(&keys_a)
+        .map(|&name| DiffPackage {
+            name: name.to_string(),
+            size: b.packages[name],
+        })
+        .collect();
+    only_in_b.sort_by(|x, y| y.size.cmp(&x.size));
 
     DiffResult {
         entry_a_weight: a.static_weight,
         entry_b_weight: b.static_weight,
         weight_delta: b.static_weight as i64 - a.static_weight as i64,
-        shared_packages: pkgs_a
-            .intersection(&pkgs_b)
-            .map(|s| s.to_string())
-            .collect(),
-        only_in_a: pkgs_a
-            .difference(&pkgs_b)
-            .map(|s| s.to_string())
-            .collect(),
-        only_in_b: pkgs_b
-            .difference(&pkgs_a)
-            .map(|s| s.to_string())
-            .collect(),
+        shared_count: keys_a.intersection(&keys_b).count(),
+        only_in_a,
+        only_in_b,
     }
 }
 
@@ -953,17 +969,17 @@ mod tests {
         let a = TraceSnapshot {
             entry: "a.ts".to_string(),
             static_weight: 1000,
-            all_packages: ["zod", "chalk", "tslog"]
-                .iter()
-                .map(|s| s.to_string())
+            packages: [("zod", 500), ("chalk", 200), ("tslog", 300)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
                 .collect(),
         };
         let b = TraceSnapshot {
             entry: "b.ts".to_string(),
             static_weight: 800,
-            all_packages: ["chalk", "tslog", "ajv"]
-                .iter()
-                .map(|s| s.to_string())
+            packages: [("chalk", 200), ("tslog", 300), ("ajv", 100)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
                 .collect(),
         };
         let diff = diff_snapshots(&a, &b);
@@ -971,12 +987,36 @@ mod tests {
         assert_eq!(diff.entry_a_weight, 1000);
         assert_eq!(diff.entry_b_weight, 800);
         assert_eq!(diff.weight_delta, -200);
-        assert!(diff.only_in_a.contains(&"zod".to_string()));
-        assert!(diff.only_in_b.contains(&"ajv".to_string()));
-        assert!(diff.shared_packages.contains(&"chalk".to_string()));
-        assert!(diff.shared_packages.contains(&"tslog".to_string()));
-        assert!(!diff.shared_packages.contains(&"zod".to_string()));
-        assert!(!diff.shared_packages.contains(&"ajv".to_string()));
+        assert_eq!(diff.only_in_a.len(), 1);
+        assert_eq!(diff.only_in_a[0].name, "zod");
+        assert_eq!(diff.only_in_a[0].size, 500);
+        assert_eq!(diff.only_in_b.len(), 1);
+        assert_eq!(diff.only_in_b[0].name, "ajv");
+        assert_eq!(diff.only_in_b[0].size, 100);
+        assert_eq!(diff.shared_count, 2);
+    }
+
+    #[test]
+    fn diff_snapshots_sorted_by_size_descending() {
+        let a = TraceSnapshot {
+            entry: "a.ts".to_string(),
+            static_weight: 1000,
+            packages: [("small", 10), ("big", 500), ("medium", 100)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        };
+        let b = TraceSnapshot {
+            entry: "b.ts".to_string(),
+            static_weight: 0,
+            packages: HashMap::new(),
+        };
+        let diff = diff_snapshots(&a, &b);
+
+        assert_eq!(diff.only_in_a.len(), 3);
+        assert_eq!(diff.only_in_a[0].name, "big");
+        assert_eq!(diff.only_in_a[1].name, "medium");
+        assert_eq!(diff.only_in_a[2].name, "small");
     }
 
     // --- Exclusive weight ---

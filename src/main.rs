@@ -77,6 +77,10 @@ enum Commands {
         /// Suppress informational output (timing, warnings)
         #[arg(long, short)]
         quiet: bool,
+
+        /// Max packages to show in diff output (-1 for all)
+        #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+        limit: i32,
     },
 
     /// Compare two saved trace snapshots
@@ -86,6 +90,10 @@ enum Commands {
 
         /// Second snapshot file (the "after" or "current")
         b: PathBuf,
+
+        /// Max packages to show in diff output (-1 for all)
+        #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+        limit: i32,
     },
 
     /// List all third-party packages in the dependency graph
@@ -121,6 +129,7 @@ fn main() {
             no_cache,
             ignore,
             quiet,
+            limit,
             ..
         } => {
             let start = Instant::now();
@@ -344,7 +353,7 @@ fn main() {
                     std::process::exit(1);
                 });
                 let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
-                report::print_diff(&diff_output, &saved.entry, &entry_rel);
+                report::print_diff(&diff_output, &saved.entry, &entry_rel, limit);
                 return;
             }
 
@@ -406,7 +415,7 @@ fn main() {
                 };
 
                 let diff_output = query::diff_snapshots(&result.to_snapshot(&entry_rel), &diff_snapshot);
-                report::print_diff(&diff_output, &entry_rel, &diff_rel);
+                report::print_diff(&diff_output, &entry_rel, &diff_rel, limit);
                 return;
             }
 
@@ -423,7 +432,7 @@ fn main() {
             }
         }
 
-        Commands::Diff { a, b } => {
+        Commands::Diff { a, b, limit } => {
             let load_snapshot = |path: &Path| -> query::TraceSnapshot {
                 let data = std::fs::read_to_string(path).unwrap_or_else(|e| {
                     eprintln!("error: cannot read snapshot '{}': {e}", path.display());
@@ -441,7 +450,7 @@ fn main() {
 
             let label_a = a.file_name().unwrap_or(a.as_os_str()).to_string_lossy();
             let label_b = b.file_name().unwrap_or(b.as_os_str()).to_string_lossy();
-            report::print_diff(&diff_output, &label_a, &label_b);
+            report::print_diff(&diff_output, &label_a, &label_b, limit);
         }
 
         Commands::Packages { entry, json, no_cache } => {
