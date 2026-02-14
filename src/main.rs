@@ -423,10 +423,12 @@ fn resolve_target(
             exists: true,
         }
     } else {
+        let name = arg.to_string();
+        let exists = loaded.graph.package_map.contains_key(arg);
         ResolvedTarget {
-            target: query::ChainTarget::Package(arg.to_string()),
-            label: arg.to_string(),
-            exists: loaded.graph.package_map.contains_key(arg),
+            target: query::ChainTarget::Package(name.clone()),
+            label: name,
+            exists,
         }
     }
 }
