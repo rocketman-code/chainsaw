@@ -36,7 +36,7 @@ pub struct ModuleCost {
 
 pub struct TraceOptions {
     pub include_dynamic: bool,
-    pub top_n: usize,
+    pub top_n: i32,
     pub ignore: Vec<String>,
 }
 
@@ -356,7 +356,9 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     if !opts.ignore.is_empty() {
         heavy_packages.retain(|pkg| !opts.ignore.iter().any(|i| i == &pkg.name));
     }
-    heavy_packages.truncate(opts.top_n);
+    if opts.top_n >= 0 {
+        heavy_packages.truncate(opts.top_n as usize);
+    }
 
     // Compute exclusive weight for all reachable modules via dominator tree
     let exclusive = compute_exclusive_weights(graph, entry, opts.include_dynamic);
@@ -571,7 +573,7 @@ pub fn find_cut_modules(
     chains: &[Vec<ModuleId>],
     entry: ModuleId,
     target: &ChainTarget,
-    top_n: usize,
+    top_n: i32,
     include_dynamic: bool,
 ) -> Vec<CutModule> {
     if chains.is_empty() {
@@ -621,7 +623,9 @@ pub fn find_cut_modules(
         cuts.sort_by(|a, b| a.exclusive_size.cmp(&b.exclusive_size));
     }
 
-    cuts.truncate(top_n);
+    if top_n >= 0 {
+        cuts.truncate(top_n as usize);
+    }
     cuts
 }
 
@@ -1151,5 +1155,43 @@ mod tests {
         let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
         assert_eq!(cuts.len(), 1);
         assert_eq!(cuts[0].module_id, graph.path_to_id[&PathBuf::from("bridge.ts")]);
+    }
+
+    // --- top_n negative/zero ---
+
+    #[test]
+    fn trace_top_n_negative_shows_all() {
+        let graph = make_graph(
+            &[
+                ("entry.ts", 10, None),
+                ("a.ts", 10, Some("pkg-a")),
+                ("b.ts", 10, Some("pkg-b")),
+                ("c.ts", 10, Some("pkg-c")),
+            ],
+            &[
+                (0, 1, EdgeKind::Static),
+                (0, 2, EdgeKind::Static),
+                (0, 3, EdgeKind::Static),
+            ],
+        );
+        let opts = TraceOptions { top_n: -1, ..Default::default() };
+        let result = trace(&graph, ModuleId(0), &opts);
+        assert_eq!(result.heavy_packages.len(), 3);
+    }
+
+    #[test]
+    fn trace_top_n_zero_shows_none() {
+        let graph = make_graph(
+            &[
+                ("entry.ts", 10, None),
+                ("a.ts", 10, Some("pkg-a")),
+            ],
+            &[
+                (0, 1, EdgeKind::Static),
+            ],
+        );
+        let opts = TraceOptions { top_n: 0, ..Default::default() };
+        let result = trace(&graph, ModuleId(0), &opts);
+        assert_eq!(result.heavy_packages.len(), 0);
     }
 }

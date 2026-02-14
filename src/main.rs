@@ -46,9 +46,9 @@ enum Commands {
         #[arg(long)]
         include_dynamic: bool,
 
-        /// Show top N heaviest dependencies
-        #[arg(long, default_value_t = 10)]
-        top: usize,
+        /// Show top N heaviest dependencies (0 to hide, -1 for all)
+        #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+        top: i32,
 
         /// Show top N modules by exclusive weight (0 to hide, -1 for all)
         #[arg(long, default_value_t = 20, allow_hyphen_values = true)]
