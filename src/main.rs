@@ -10,8 +10,17 @@ use chainsaw::{cache, graph, lang, query, report, walker};
 use lang::LanguageSupport;
 
 #[derive(Parser)]
-#[command(name = "chainsaw", version, about = "TypeScript/JavaScript and Python dependency graph analyzer")]
+#[command(
+    name = "chainsaw",
+    version,
+    about = "TypeScript/JavaScript and Python dependency graph analyzer",
+    after_help = "Repository: https://github.com/RocketMan234/chainsaw"
+)]
 struct Cli {
+    /// Disable colored output
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -147,7 +156,8 @@ struct ResolvedTarget {
 
 fn main() {
     let cli = Cli::parse();
-    let sc = report::StderrColor::new();
+    let no_color = cli.no_color;
+    let sc = report::StderrColor::new(no_color);
 
     match cli.command {
         Commands::Trace {
@@ -324,7 +334,7 @@ fn main() {
                         resolved.exists,
                     );
                 } else {
-                    report::print_chains(&graph, &chains, &resolved.label, &root, resolved.exists);
+                    report::print_chains(&graph, &chains, &resolved.label, &root, resolved.exists, no_color);
                 }
                 if chains.is_empty() {
                     std::process::exit(1);
@@ -367,6 +377,7 @@ fn main() {
                         &resolved.label,
                         &root,
                         resolved.exists,
+                        no_color,
                     );
                 }
                 if chains.is_empty() {
@@ -392,7 +403,7 @@ fn main() {
                     std::process::exit(1);
                 });
                 let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
-                report::print_diff(&diff_output, &saved.entry, &entry_rel, limit);
+                report::print_diff(&diff_output, &saved.entry, &entry_rel, limit, no_color);
                 return;
             }
 
@@ -450,7 +461,7 @@ fn main() {
                 };
 
                 let diff_output = query::diff_snapshots(&result.to_snapshot(&entry_rel), &diff_snapshot);
-                report::print_diff(&diff_output, &entry_rel, &diff_rel, limit);
+                report::print_diff(&diff_output, &entry_rel, &diff_rel, limit, no_color);
                 return;
             }
 
@@ -458,7 +469,7 @@ fn main() {
             if json {
                 report::print_trace_json(&graph, &result, &entry, &root, top_modules);
             } else {
-                report::print_trace(&graph, &result, &entry, &root, top, top_modules, include_dynamic);
+                report::print_trace(&graph, &result, &entry, &root, top, top_modules, include_dynamic, no_color);
             }
 
             if let Some(threshold) = max_weight
@@ -495,7 +506,7 @@ fn main() {
             let snap_b = load_snapshot(&b);
             let diff_output = query::diff_snapshots(&snap_a, &snap_b);
 
-            report::print_diff(&diff_output, &snap_a.entry, &snap_b.entry, limit);
+            report::print_diff(&diff_output, &snap_a.entry, &snap_b.entry, limit, no_color);
         }
 
         Commands::Packages { entry, json, no_cache, top, quiet } => {
@@ -540,7 +551,7 @@ fn main() {
             if json {
                 report::print_packages_json(&load_result.graph, top);
             } else {
-                report::print_packages(&load_result.graph, top);
+                report::print_packages(&load_result.graph, top, no_color);
             }
         }
 

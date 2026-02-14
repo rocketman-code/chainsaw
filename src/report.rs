@@ -7,6 +7,26 @@ use serde::Serialize;
 use crate::graph::{ModuleGraph, ModuleId};
 use crate::query::{CutModule, DiffResult, TraceResult};
 
+/// Determine whether color output should be used for a given stream.
+///
+/// Color is disabled when any of these hold:
+/// - `no_color_flag` is true (`--no-color`)
+/// - `NO_COLOR` environment variable is set (any value, per <https://no-color.org>)
+/// - `TERM=dumb`
+/// - the stream is not a TTY
+pub fn should_use_color(stream_is_tty: bool, no_color_flag: bool) -> bool {
+    if no_color_flag {
+        return false;
+    }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if std::env::var("TERM").is_ok_and(|v| v == "dumb") {
+        return false;
+    }
+    stream_is_tty
+}
+
 fn plural(n: impl Into<u64>) -> &'static str {
     if n.into() == 1 { "" } else { "s" }
 }
@@ -16,8 +36,8 @@ struct C {
 }
 
 impl C {
-    fn stdout() -> Self {
-        Self { color: std::io::stdout().is_terminal() }
+    fn new(no_color: bool) -> Self {
+        Self { color: should_use_color(std::io::stdout().is_terminal(), no_color) }
     }
 
     fn bold_green(&self, s: &str) -> String {
@@ -41,15 +61,9 @@ pub struct StderrColor {
     color: bool,
 }
 
-impl Default for StderrColor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl StderrColor {
-    pub fn new() -> Self {
-        Self { color: std::io::stderr().is_terminal() }
+    pub fn new(no_color: bool) -> Self {
+        Self { color: should_use_color(std::io::stderr().is_terminal(), no_color) }
     }
 
     pub fn error(&self, s: &str) -> String {
@@ -145,9 +159,9 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
         .collect()
 }
 
-#[allow(clippy::cast_sign_loss)]
-pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32, include_dynamic: bool) {
-    let c = C::stdout();
+#[allow(clippy::cast_sign_loss, clippy::too_many_arguments)]
+pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32, include_dynamic: bool, no_color: bool) {
+    let c = C::new(no_color);
     println!("{}", relative_path(entry_path, root));
     if include_dynamic {
         println!(
@@ -223,8 +237,8 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
 }
 
 #[allow(clippy::cast_sign_loss)]
-pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
-    let c = C::stdout();
+pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, no_color: bool) {
+    let c = C::new(no_color);
     println!("Diff: {entry_a} vs {entry_b}");
     println!();
     println!(
@@ -330,8 +344,9 @@ pub fn print_chains(
     target_label: &str,
     root: &Path,
     target_exists: bool,
+    no_color: bool,
 ) {
-    let c = C::stdout();
+    let c = C::new(no_color);
     if chains.is_empty() {
         if target_exists {
             println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
@@ -394,8 +409,9 @@ pub fn print_cut(
     target_label: &str,
     root: &Path,
     target_exists: bool,
+    no_color: bool,
 ) {
-    let c = C::stdout();
+    let c = C::new(no_color);
     if chains.is_empty() {
         if target_exists {
             println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
@@ -488,8 +504,8 @@ pub fn print_cut_json(
 }
 
 #[allow(clippy::cast_sign_loss)]
-pub fn print_packages(graph: &ModuleGraph, top: i32) {
-    let c = C::stdout();
+pub fn print_packages(graph: &ModuleGraph, top: i32, no_color: bool) {
+    let c = C::new(no_color);
     let mut packages: Vec<_> = graph.package_map.values().collect();
     packages.sort_by(|a, b| b.total_reachable_size.cmp(&a.total_reachable_size));
 
@@ -643,4 +659,59 @@ pub fn print_trace_json(
     };
 
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Safety: env var mutation is unsafe in edition 2024 because it is not
+    // thread-safe. These tests are acceptable because they use unique env
+    // vars and restore original values immediately.
+
+    #[test]
+    fn color_enabled_when_tty_and_no_overrides() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::remove_var("TERM");
+        }
+        assert!(should_use_color(true, false));
+    }
+
+    #[test]
+    fn color_disabled_when_not_tty() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::remove_var("TERM");
+        }
+        assert!(!should_use_color(false, false));
+    }
+
+    #[test]
+    fn color_disabled_by_flag() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::remove_var("TERM");
+        }
+        assert!(!should_use_color(true, true));
+    }
+
+    #[test]
+    fn color_disabled_by_no_color_env() {
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+        let result = should_use_color(true, false);
+        unsafe { std::env::remove_var("NO_COLOR") };
+        assert!(!result);
+    }
+
+    #[test]
+    fn color_disabled_by_term_dumb() {
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::set_var("TERM", "dumb");
+        }
+        let result = should_use_color(true, false);
+        unsafe { std::env::remove_var("TERM") };
+        assert!(!result);
+    }
 }
