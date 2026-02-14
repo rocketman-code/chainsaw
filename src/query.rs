@@ -63,13 +63,6 @@ impl ChainTarget {
             ChainTarget::Module(target) => mid == *target,
         }
     }
-
-    pub fn label(&self) -> &str {
-        match self {
-            ChainTarget::Package(name) => name,
-            ChainTarget::Module(_) => "",
-        }
-    }
 }
 
 /// Whether to follow an edge based on its kind and the include_dynamic flag.
