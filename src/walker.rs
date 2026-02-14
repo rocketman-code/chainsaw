@@ -207,7 +207,7 @@ pub fn build_graph(
         };
         let resolved_paths: Vec<Option<PathBuf>> =
             fr.imports.iter().map(|(_, p)| p.clone()).collect();
-        cache.insert(fr.path.clone(), &result, &resolved_paths);
+        cache.insert(fr.path.clone(), result, resolved_paths);
     }
 
     graph.compute_package_info();

@@ -373,8 +373,8 @@ impl ParseCache {
     pub fn insert(
         &mut self,
         path: PathBuf,
-        result: &ParseResult,
-        resolved_paths: &[Option<PathBuf>],
+        result: ParseResult,
+        resolved_paths: Vec<Option<PathBuf>>,
     ) {
         self.ensure_entries();
         let Ok(meta) = fs::metadata(&path) else {
@@ -388,8 +388,8 @@ impl ParseCache {
             CachedParse {
                 mtime_nanos: mtime,
                 size: meta.len(),
-                result: result.clone(),
-                resolved_paths: resolved_paths.to_vec(),
+                result,
+                resolved_paths,
             },
         );
     }
@@ -465,7 +465,7 @@ mod tests {
             unresolvable_dynamic: 0,
         };
         let resolved = vec![None];
-        cache.insert(file.clone(), &result, &resolved);
+        cache.insert(file.clone(), result, resolved);
 
         let cached = cache.lookup(&file);
         assert!(cached.is_some());
@@ -487,7 +487,7 @@ mod tests {
             imports: vec![],
             unresolvable_dynamic: 0,
         };
-        cache.insert(file.clone(), &result, &[]);
+        cache.insert(file.clone(), result, vec![]);
 
         fs::write(&file, "import os\nimport sys").unwrap();
 
@@ -523,7 +523,7 @@ mod tests {
             unresolvable_dynamic: 1,
         };
         let resolved = vec![Some(target.clone())];
-        cache.insert(file.clone(), &result, &resolved);
+        cache.insert(file.clone(), result, resolved);
 
         let graph = ModuleGraph::new();
         drop(cache.save(&root, &file, &graph, vec![], 0));

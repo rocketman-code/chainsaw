@@ -240,7 +240,7 @@ fn try_incremental_update(
             .iter()
             .map(|imp| lang.resolve(dir, &imp.specifier))
             .collect();
-        cache.insert(path.clone(), &new_result, &resolved_paths);
+        cache.insert(path.clone(), new_result, resolved_paths);
     }
 
     let new_total = (old_unresolvable_total as isize + unresolvable_delta).max(0) as usize;
