@@ -618,7 +618,7 @@ pub fn find_cut_modules(
         }
     });
 
-    // Single chain: sort ascending (most surgical/targeted cut first).
+    // Single chain: sort ascending (most surgical cut first).
     // Multiple chains: sort descending (highest-impact convergence point first).
     if chains.len() == 1 {
         cuts.sort_by(|a, b| a.exclusive_size.cmp(&b.exclusive_size));

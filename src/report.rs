@@ -379,13 +379,21 @@ pub fn print_cut(
         )),
     );
     for cut in cuts {
-        println!(
-            "  {:<45} {:>8}  (breaks {}/{} chains)",
-            display_name(graph, cut.module_id, root),
-            format_size(cut.exclusive_size),
-            cut.chains_broken,
-            chains.len()
-        );
+        if chains.len() == 1 {
+            println!(
+                "  {:<45} {:>8}",
+                display_name(graph, cut.module_id, root),
+                format_size(cut.exclusive_size),
+            );
+        } else {
+            println!(
+                "  {:<45} {:>8}  (breaks {}/{} chains)",
+                display_name(graph, cut.module_id, root),
+                format_size(cut.exclusive_size),
+                cut.chains_broken,
+                chains.len()
+            );
+        }
     }
 }
 
