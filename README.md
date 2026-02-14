@@ -9,6 +9,8 @@ Trace transitive import weight in TypeScript/JavaScript and Python codebases. Gi
 - Shows the shortest import chain to any dependency (`--chain`) and where to cut it (`--cut`)
 - Compares two entry points or before/after snapshots (`--diff`)
 - Works across monorepo package boundaries (pnpm, yarn, npm workspaces)
+- CI gating with `--max-weight` — fail builds when import weight exceeds a threshold
+- Color output in terminals, auto-disabled when piped
 - Two-tier disk cache — returns instantly on cache hit, re-parses only changed files on miss
 
 ## Usage
@@ -88,12 +90,12 @@ Diff: src/cli.ts vs src/server.ts
   Delta                                    +3.1 MB
 
 Only in src/cli.ts:
-  - degit
-  - smol-toml
+  - degit                                42 KB
+  - smol-toml                            28 KB
 Only in src/server.ts:
-  + undici
-  + workerd
-  + zod
+  + undici                              1.1 MB
+  + workerd                             800 KB
+  + zod                                 537 KB
 Shared: 21 packages
 ```
 
@@ -131,6 +133,22 @@ $ chainsaw packages src/index.ts
   ...
 ```
 
+### CI gating
+
+Fail builds when import weight exceeds a threshold:
+
+```
+$ chainsaw trace src/index.ts --max-weight 5MB --quiet --top 0 --top-modules 0
+src/index.ts
+Static transitive weight: 36.3 MB (4329 modules)
+
+error: static weight 36.3 MB exceeds threshold 5.0 MB
+$ echo $?
+1
+```
+
+Accepts human-readable sizes: `5MB`, `500KB`, `100B`, or bare byte counts.
+
 ### JSON output
 
 ```
@@ -164,28 +182,39 @@ $ # binary at target/release/chainsaw
 chainsaw <COMMAND>
 
 Commands:
-  trace     Trace the transitive import weight from an entry point
-  diff      Compare two saved trace snapshots
-  packages  List all third-party packages in the dependency graph
+  trace        Trace the transitive import weight from an entry point
+  diff         Compare two saved trace snapshots
+  packages     List all third-party packages in the dependency graph
+  completions  Generate shell completions
 ```
 
 ```
 chainsaw trace [OPTIONS] <ENTRY>
 
 Options:
-      --chain <PKG|FILE>   Show all shortest import chains to a package or file
-      --cut <PKG|FILE>     Find where to cut to sever all chains to a package or file
-      --diff <ENTRY>       Compare against another entry point
-      --diff-from <PATH>   Compare against a previously saved snapshot
-      --save <PATH>        Save a trace snapshot for later comparison
-      --include-dynamic    Also traverse dynamic imports
-      --ignore <PKG>...    Exclude packages from the heavy dependencies list
-      --top <N>            Show top N heaviest dependencies (0 to hide, -1 for all) [default: 10]
-      --top-modules <N>    Show top N modules by exclusive weight (0 to hide, -1 for all) [default: 20]
-      --json               Output machine-readable JSON
-      --no-cache           Force full re-parse, ignoring cache
-  -q, --quiet              Suppress informational output (timing, warnings)
-  -V, --version            Print version
+      --chain <PKG|FILE>       Show all shortest import chains to a package or file
+      --cut <PKG|FILE>         Find where to cut to sever all chains to a package or file
+      --diff <ENTRY>           Compare against another entry point
+      --diff-from <PATH>       Compare against a previously saved snapshot
+      --save <PATH>            Save a trace snapshot for later comparison
+      --include-dynamic        Also traverse dynamic imports
+      --ignore <PKG>...        Exclude packages from the heavy dependencies list
+      --top <N>                Show top N heaviest dependencies (0 to hide, -1 for all) [default: 10]
+      --top-modules <N>        Show top N modules by exclusive weight (0 to hide, -1 for all) [default: 20]
+      --limit <N>              Max packages to show in diff output (-1 for all) [default: 10]
+      --max-weight <SIZE>      Exit with error if static weight exceeds threshold (e.g. 5MB, 500KB)
+      --json                   Output machine-readable JSON
+      --no-cache               Force full re-parse, ignoring cache
+  -q, --quiet                  Suppress informational output (timing, warnings)
+  -V, --version                Print version
+```
+
+### Shell completions
+
+```
+$ chainsaw completions zsh > ~/.zfunc/_chainsaw
+$ chainsaw completions bash > /etc/bash_completion.d/chainsaw
+$ chainsaw completions fish > ~/.config/fish/completions/chainsaw.fish
 ```
 
 ## License
