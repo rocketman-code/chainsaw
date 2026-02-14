@@ -28,7 +28,6 @@ fn parse_source(source: &str) -> Result<ParseResult, ParseError> {
 /// Recursively walk the tree-sitter AST, collecting import statements.
 /// `in_type_checking` is true when we are inside an `if TYPE_CHECKING:` block.
 /// `in_function` is true when we are inside a function/method body.
-#[allow(clippy::too_many_lines)]
 fn collect_imports(
     node: tree_sitter::Node,
     source: &[u8],
@@ -74,14 +73,6 @@ fn collect_imports(
         }
 
         "import_from_statement" => {
-            // Skip `from __future__ import ...`
-            if let Some(module_node) = node.child_by_field_name("module_name") {
-                let module_text = text(module_node, source);
-                if module_text == "__future__" {
-                    return;
-                }
-            }
-
             let edge_kind = if in_type_checking {
                 EdgeKind::TypeOnly
             } else if in_function {
@@ -89,50 +80,7 @@ fn collect_imports(
             } else {
                 EdgeKind::Static
             };
-
-            // Determine if this is a relative import with bare dots (no module after dots)
-            let (dot_prefix, module_name) = extract_from_module(node, source);
-            let is_bare_relative = !dot_prefix.is_empty() && module_name.is_empty();
-
-            if is_bare_relative {
-                // `from . import foo, bar` -> specifiers are `.foo`, `.bar`
-                for i in 0..node.named_child_count() {
-                    if let Some(child) = node.named_child(i) {
-                        let name = match child.kind() {
-                            "dotted_name" => text(child, source),
-                            "aliased_import" => child
-                                .child_by_field_name("name")
-                                .map(|n| text(n, source))
-                                .unwrap_or_default(),
-                            _ => continue,
-                        };
-                        // Skip the module_name field child (which would be a relative_import)
-                        if child.kind() == "relative_import" {
-                            continue;
-                        }
-                        if !name.is_empty() {
-                            imports.push(RawImport {
-                                specifier: format!("{dot_prefix}{name}"),
-                                kind: edge_kind,
-                            });
-                        }
-                    }
-                }
-            } else {
-                // `from foo import bar` or `from ..foo import bar`
-                // Specifier is the module (possibly with dot prefix)
-                let specifier = if dot_prefix.is_empty() {
-                    module_name
-                } else {
-                    format!("{dot_prefix}{module_name}")
-                };
-                if !specifier.is_empty() {
-                    imports.push(RawImport {
-                        specifier,
-                        kind: edge_kind,
-                    });
-                }
-            }
+            collect_from_import(node, source, imports, edge_kind);
             return;
         }
 
@@ -180,6 +128,66 @@ fn collect_imports(
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
             collect_imports(child, source, imports, unresolvable, in_type_checking, in_function);
+        }
+    }
+}
+
+/// Handle an `import_from_statement` node, pushing extracted imports.
+fn collect_from_import(
+    node: tree_sitter::Node,
+    source: &[u8],
+    imports: &mut Vec<RawImport>,
+    edge_kind: EdgeKind,
+) {
+    // Skip `from __future__ import ...`
+    if let Some(module_node) = node.child_by_field_name("module_name") {
+        let module_text = text(module_node, source);
+        if module_text == "__future__" {
+            return;
+        }
+    }
+
+    // Determine if this is a relative import with bare dots (no module after dots)
+    let (dot_prefix, module_name) = extract_from_module(node, source);
+    let is_bare_relative = !dot_prefix.is_empty() && module_name.is_empty();
+
+    if is_bare_relative {
+        // `from . import foo, bar` -> specifiers are `.foo`, `.bar`
+        for i in 0..node.named_child_count() {
+            if let Some(child) = node.named_child(i) {
+                let name = match child.kind() {
+                    "dotted_name" => text(child, source),
+                    "aliased_import" => child
+                        .child_by_field_name("name")
+                        .map(|n| text(n, source))
+                        .unwrap_or_default(),
+                    _ => continue,
+                };
+                // Skip the module_name field child (which would be a relative_import)
+                if child.kind() == "relative_import" {
+                    continue;
+                }
+                if !name.is_empty() {
+                    imports.push(RawImport {
+                        specifier: format!("{dot_prefix}{name}"),
+                        kind: edge_kind,
+                    });
+                }
+            }
+        }
+    } else {
+        // `from foo import bar` or `from ..foo import bar`
+        // Specifier is the module (possibly with dot prefix)
+        let specifier = if dot_prefix.is_empty() {
+            module_name
+        } else {
+            format!("{dot_prefix}{module_name}")
+        };
+        if !specifier.is_empty() {
+            imports.push(RawImport {
+                specifier,
+                kind: edge_kind,
+            });
         }
     }
 }
