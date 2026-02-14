@@ -27,8 +27,8 @@ pub fn should_use_color(stream_is_tty: bool, no_color_flag: bool) -> bool {
     stream_is_tty
 }
 
-fn plural(n: impl Into<u64>) -> &'static str {
-    if n.into() == 1 { "" } else { "s" }
+fn plural(n: u64) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 #[derive(Clone, Copy)]
@@ -214,7 +214,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
                     pkg.name,
                     format_size(pkg.total_size),
                     pkg.file_count,
-                    plural(pkg.file_count)
+                    plural(u64::from(pkg.file_count))
                 );
                 if pkg.chain.len() > 1 {
                     let chain_str = chain_display_names(graph, &pkg.chain, root);
@@ -535,7 +535,7 @@ pub fn print_packages(graph: &ModuleGraph, top: i32, no_color: bool) {
             pkg.name,
             format_size(pkg.total_reachable_size),
             pkg.total_reachable_files,
-            plural(pkg.total_reachable_files)
+            plural(u64::from(pkg.total_reachable_files))
         );
     }
     if total > display_count {
