@@ -1,14 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ignore::WalkBuilder;
 use rayon::prelude::*;
 
+use crate::cache::ParseCache;
 use crate::graph::{EdgeKind, ModuleGraph, ModuleId, PackageInfo};
-use crate::lang::{LanguageSupport, RawImport};
+use crate::lang::{LanguageSupport, ParseResult, RawImport};
 
 fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
@@ -16,122 +14,50 @@ fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|ext| extensions.contains(&ext))
 }
 
-/// Discover source files using the ignore crate (respects .gitignore).
-/// Also collects the set of directories visited during the walk (for cache invalidation).
-fn discover_source_files(root: &Path, lang: &dyn LanguageSupport) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let extensions = lang.extensions();
-    let skip: Vec<String> = lang.skip_dirs().iter().map(|s| s.to_string()).collect();
-    let mut files = Vec::new();
-    let mut dirs = Vec::new();
-    let walker = WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(true)
-        .filter_entry(move |entry| {
-            let path = entry.path();
-            if path.is_dir() {
-                return !path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| skip.iter().any(|s| s == n));
-            }
-            true
-        })
-        .build();
-
-    for entry in walker.flatten() {
-        let path = entry.into_path();
-        if path.is_dir() {
-            dirs.push(path);
-        } else if path.is_file() && is_parseable(&path, extensions) {
-            files.push(path);
-        }
-    }
-    (files, dirs)
-}
-
-/// Parse a batch of files in parallel, returning (path, imports) pairs
-/// and the total count of unresolvable dynamic imports across all files.
-fn parse_files_parallel(
-    files: &[PathBuf],
-    lang: &dyn LanguageSupport,
-) -> (Vec<(PathBuf, Vec<RawImport>)>, usize) {
-    let unresolvable_count = AtomicUsize::new(0);
-    let results: Vec<(PathBuf, Vec<RawImport>)> = files
-        .par_iter()
-        .filter_map(|path| match lang.parse(path) {
-            Ok(result) => {
-                unresolvable_count.fetch_add(result.unresolvable_dynamic, Ordering::Relaxed);
-                Some((path.clone(), result.imports))
-            }
-            Err(e) => {
-                eprintln!("warning: {e}");
-                None
-            }
-        })
-        .collect();
-    (results, unresolvable_count.into_inner())
-}
-
-/// Result of building a module graph, including metadata for cache invalidation.
+/// Result of building a module graph.
 pub struct BuildResult {
     pub graph: ModuleGraph,
-    /// Unique import specifiers that could not be resolved during graph building.
-    /// These are tracked so the cache can re-check them on load — if any become
-    /// resolvable (e.g. after `pip install`), the cache is invalidated.
-    pub unresolved_specifiers: Vec<String>,
-    /// Directories visited during source file discovery. Stored in the cache so
-    /// that on load we can check directory mtimes to detect new/removed files
-    /// without re-walking the entire tree.
-    pub walked_dirs: Vec<PathBuf>,
     /// Number of dynamic imports with non-literal arguments that could not be traced.
     pub unresolvable_dynamic: usize,
 }
 
-/// Build a complete ModuleGraph starting from the given root directory.
-/// Walks source files, parses them, resolves imports (following into node_modules),
-/// and builds the graph iteratively.
-pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
-    let graph = Mutex::new(ModuleGraph::new());
-    let mut unresolved: HashSet<String> = HashSet::new();
+/// Build a complete ModuleGraph via BFS from the given entry point.
+/// Uses the parse cache for acceleration: unchanged files are not re-parsed.
+pub fn build_graph(
+    entry: &Path,
+    root: &Path,
+    lang: &dyn LanguageSupport,
+    cache: &mut ParseCache,
+) -> BuildResult {
+    let mut graph = ModuleGraph::new();
     let mut unresolvable_total: usize = 0;
+    let mut parse_failures: HashSet<PathBuf> = HashSet::new();
+    let mut pending: VecDeque<(PathBuf, Vec<RawImport>)> = VecDeque::new();
 
-    // Phase 1: Discover and parse source files
-    let (source_files, walked_dirs) = discover_source_files(root, lang);
-    let (parsed, unresolvable_phase1) = parse_files_parallel(&source_files, lang);
-    unresolvable_total += unresolvable_phase1;
+    // Parse entry file
+    let entry_size = fs::metadata(entry).map(|m| m.len()).unwrap_or(0);
+    graph.add_module(entry.to_path_buf(), entry_size, None);
 
-    // Track files that failed to parse so we don't retry them in phase 2
-    let parsed_paths: HashSet<&PathBuf> = parsed.iter().map(|(p, _)| p).collect();
-    let mut parse_failures: HashSet<PathBuf> = source_files
-        .iter()
-        .filter(|p| !parsed_paths.contains(p))
-        .cloned()
-        .collect();
-
-    // Register all discovered source modules
-    for (path, _) in &parsed {
-        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        graph.lock().unwrap().add_module(path.clone(), size, None);
+    match parse_or_cache(entry, cache, lang) {
+        Some(result) => {
+            unresolvable_total += result.unresolvable_dynamic;
+            pending.push_back((entry.to_path_buf(), result.imports));
+        }
+        None => {
+            parse_failures.insert(entry.to_path_buf());
+        }
     }
 
-    // Phase 2: Resolve imports and follow into node_modules iteratively
-    // Use a work queue for files that need their imports resolved
-    let mut pending_resolutions: VecDeque<(PathBuf, Vec<RawImport>)> =
-        parsed.into_iter().collect();
-
-    while let Some((source_path, imports)) = pending_resolutions.pop_front() {
+    // BFS: resolve imports, discover and parse new files
+    while let Some((source_path, imports)) = pending.pop_front() {
         let source_dir = source_path.parent().unwrap_or(Path::new("."));
-        let source_id = graph.lock().unwrap().path_to_id[&source_path];
-
-        let mut new_files_to_parse: Vec<PathBuf> = Vec::new();
+        let source_id = graph.path_to_id[&source_path];
+        let mut new_files: Vec<PathBuf> = Vec::new();
 
         for raw_import in &imports {
             let resolved = match lang.resolve(source_dir, &raw_import.specifier) {
                 Some(p) => p,
-                None => {
-                    unresolved.insert(raw_import.specifier.clone());
-                    continue;
-                }
+                None => continue,
             };
 
             let package = lang
@@ -139,64 +65,102 @@ pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
                 .or_else(|| lang.workspace_package_name(&resolved, root));
             let size = fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
 
-            let mut g = graph.lock().unwrap();
-            let is_new = !g.path_to_id.contains_key(&resolved);
-            let target_id =
-                g.add_module(resolved.clone(), size, package);
-            g.add_edge(
+            let is_new = !graph.path_to_id.contains_key(&resolved);
+            let target_id = graph.add_module(resolved.clone(), size, package);
+            graph.add_edge(
                 source_id,
                 target_id,
                 raw_import.kind,
                 raw_import.specifier.clone(),
             );
 
-            // If this is a new file and it's parseable (and hasn't already failed), queue it
             if is_new
                 && is_parseable(&resolved, lang.extensions())
                 && !parse_failures.contains(&resolved)
             {
-                new_files_to_parse.push(resolved);
+                new_files.push(resolved);
             }
         }
 
-        // Parse newly discovered files (e.g. node_modules entries) in parallel
-        if !new_files_to_parse.is_empty() {
-            let (newly_parsed, unresolvable_phase2) = parse_files_parallel(&new_files_to_parse, lang);
-            unresolvable_total += unresolvable_phase2;
-            let newly_parsed_paths: HashSet<&PathBuf> =
-                newly_parsed.iter().map(|(p, _)| p).collect();
-            for path in &new_files_to_parse {
-                if !newly_parsed_paths.contains(path) {
-                    parse_failures.insert(path.clone());
-                }
-            }
-            for item in newly_parsed {
-                pending_resolutions.push_back(item);
+        if !new_files.is_empty() {
+            let (results, failures) = parse_batch(new_files, cache, lang);
+            parse_failures.extend(failures);
+            for (path, result) in results {
+                unresolvable_total += result.unresolvable_dynamic;
+                pending.push_back((path, result.imports));
             }
         }
     }
 
-    // Phase 3: Compute package info
-    let mut g = graph.into_inner().unwrap();
-    compute_package_info(&mut g);
-
-    // Filter to specifiers that also fail to resolve from the project root.
-    // During graph building, specifiers are resolved from each source file's directory.
-    // During cache loading, they're re-resolved from root. Without this filter,
-    // workspace-internal packages (resolvable from root but not from a subdirectory)
-    // cause false cache invalidation on every run.
-    let mut unresolved_specifiers: Vec<String> = unresolved
-        .into_iter()
-        .filter(|spec| lang.resolve(root, spec).is_none())
-        .collect();
-    unresolved_specifiers.sort();
-
+    compute_package_info(&mut graph);
     BuildResult {
-        graph: g,
-        unresolved_specifiers,
-        walked_dirs,
+        graph,
         unresolvable_dynamic: unresolvable_total,
     }
+}
+
+fn parse_or_cache(
+    path: &Path,
+    cache: &mut ParseCache,
+    lang: &dyn LanguageSupport,
+) -> Option<ParseResult> {
+    if let Some(result) = cache.lookup(path) {
+        return Some(result);
+    }
+    match lang.parse(path) {
+        Ok(result) => {
+            cache.insert(path.to_path_buf(), &result);
+            Some(result)
+        }
+        Err(e) => {
+            eprintln!("warning: {e}");
+            None
+        }
+    }
+}
+
+fn parse_batch(
+    files: Vec<PathBuf>,
+    cache: &mut ParseCache,
+    lang: &dyn LanguageSupport,
+) -> (Vec<(PathBuf, ParseResult)>, HashSet<PathBuf>) {
+    let mut results = Vec::new();
+    let mut to_parse = Vec::new();
+
+    for path in files {
+        if let Some(result) = cache.lookup(&path) {
+            results.push((path, result));
+        } else {
+            to_parse.push(path);
+        }
+    }
+
+    // Parse cache misses in parallel
+    let parsed: Vec<_> = to_parse
+        .par_iter()
+        .filter_map(|path| match lang.parse(path) {
+            Ok(result) => Some((path.clone(), result)),
+            Err(e) => {
+                eprintln!("warning: {e}");
+                None
+            }
+        })
+        .collect();
+
+    let parsed_paths: HashSet<_> = parsed.iter().map(|(p, _)| p.clone()).collect();
+    let mut failures: HashSet<PathBuf> = HashSet::new();
+    for path in &to_parse {
+        if !parsed_paths.contains(path) {
+            failures.insert(path.clone());
+        }
+    }
+
+    for (path, result) in parsed {
+        cache.insert(path.clone(), &result);
+        results.push((path, result));
+    }
+
+    (results, failures)
 }
 
 #[cfg(test)]
@@ -208,24 +172,21 @@ mod tests {
     #[test]
     fn parse_failure_not_retried() {
         let tmp = tempfile::tempdir().unwrap();
-        // Canonicalize to avoid macOS /var vs /private/var symlink differences
         let root = tmp.path().canonicalize().unwrap();
 
-        // Create a valid file that imports a broken file
         fs::write(
             root.join("entry.ts"),
             r#"import { x } from "./broken";"#,
         )
         .unwrap();
 
-        // Create a binary/unparseable file with .ts extension
         fs::write(root.join("broken.ts"), &[0xFF, 0xFE, 0x00, 0x01]).unwrap();
 
         let lang = TypeScriptSupport::new(&root);
-        let result = build_graph(&root, &lang);
+        let mut cache = ParseCache::new();
+        let result = build_graph(&root.join("entry.ts"), &root, &lang, &mut cache);
         let graph = result.graph;
 
-        // The broken file should appear at most once in the graph
         let entry_count = graph
             .path_to_id
             .keys()

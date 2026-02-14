@@ -27,20 +27,6 @@ impl LanguageSupport for PythonSupport {
         &["py"]
     }
 
-    fn skip_dirs(&self) -> &[&str] {
-        &[
-            "__pycache__",
-            ".git",
-            ".venv",
-            "venv",
-            "node_modules",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".tox",
-            ".eggs",
-        ]
-    }
-
     fn parse(&self, path: &Path) -> Result<ParseResult, String> {
         parser::parse_file(path)
     }
@@ -66,16 +52,6 @@ mod tests {
     fn extensions_includes_py() {
         let support = PythonSupport::new(Path::new("/tmp"));
         assert_eq!(support.extensions(), &["py"]);
-    }
-
-    #[test]
-    fn skip_dirs_includes_pycache_and_venv() {
-        let support = PythonSupport::new(Path::new("/tmp"));
-        let dirs = support.skip_dirs();
-        assert!(dirs.contains(&"__pycache__"));
-        assert!(dirs.contains(&".venv"));
-        assert!(dirs.contains(&"venv"));
-        assert!(dirs.contains(&".git"));
     }
 
     #[test]
