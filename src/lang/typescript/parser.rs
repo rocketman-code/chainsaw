@@ -8,7 +8,7 @@ use swc_ecma_ast::{
 use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
 
 use crate::graph::EdgeKind;
-use crate::lang::RawImport;
+use crate::lang::{ParseResult, RawImport};
 
 /// Convert a WTF-8 atom (from SWC's Str.value) to a String.
 /// Import specifiers are always valid UTF-8, so lossy conversion is safe.
@@ -40,7 +40,7 @@ fn syntax_for_path(path: &Path) -> Syntax {
     }
 }
 
-pub fn parse_file(path: &Path) -> Result<Vec<RawImport>, String> {
+pub fn parse_file(path: &Path) -> Result<ParseResult, String> {
     let cm = Arc::<SourceMap>::default();
     let fm = cm
         .load_file(path)
@@ -55,17 +55,18 @@ pub fn parse_file(path: &Path) -> Result<Vec<RawImport>, String> {
     Ok(extract_imports(&module))
 }
 
-fn extract_imports(module: &Module) -> Vec<RawImport> {
+fn extract_imports(module: &Module) -> ParseResult {
     let mut imports = Vec::new();
+    let mut unresolvable_dynamic = 0;
 
     for item in &module.body {
         match item {
             ModuleItem::ModuleDecl(decl) => extract_from_decl(decl, &mut imports),
-            ModuleItem::Stmt(stmt) => walk_stmt(stmt, &mut imports),
+            ModuleItem::Stmt(stmt) => walk_stmt(stmt, &mut imports, &mut unresolvable_dynamic),
         }
     }
 
-    imports
+    ParseResult { imports, unresolvable_dynamic }
 }
 
 fn extract_from_decl(decl: &ModuleDecl, imports: &mut Vec<RawImport>) {
@@ -135,84 +136,84 @@ fn extract_from_decl(decl: &ModuleDecl, imports: &mut Vec<RawImport>) {
 }
 
 /// Recursively walk statements to find require() and import() calls.
-fn walk_stmt(stmt: &Stmt, imports: &mut Vec<RawImport>) {
+fn walk_stmt(stmt: &Stmt, imports: &mut Vec<RawImport>, unresolvable: &mut usize) {
     match stmt {
-        Stmt::Expr(expr_stmt) => walk_expr(&expr_stmt.expr, imports),
-        Stmt::Decl(decl) => walk_decl(decl, imports),
+        Stmt::Expr(expr_stmt) => walk_expr(&expr_stmt.expr, imports, unresolvable),
+        Stmt::Decl(decl) => walk_decl(decl, imports, unresolvable),
         Stmt::Block(block) => {
             for s in &block.stmts {
-                walk_stmt(s, imports);
+                walk_stmt(s, imports, unresolvable);
             }
         }
         Stmt::If(if_stmt) => {
-            walk_stmt(&if_stmt.cons, imports);
+            walk_stmt(&if_stmt.cons, imports, unresolvable);
             if let Some(alt) = &if_stmt.alt {
-                walk_stmt(alt, imports);
+                walk_stmt(alt, imports, unresolvable);
             }
         }
         Stmt::Switch(switch) => {
-            walk_expr(&switch.discriminant, imports);
+            walk_expr(&switch.discriminant, imports, unresolvable);
             for case in &switch.cases {
                 for s in &case.cons {
-                    walk_stmt(s, imports);
+                    walk_stmt(s, imports, unresolvable);
                 }
             }
         }
         Stmt::Try(try_stmt) => {
             for s in &try_stmt.block.stmts {
-                walk_stmt(s, imports);
+                walk_stmt(s, imports, unresolvable);
             }
             if let Some(catch) = &try_stmt.handler {
                 for s in &catch.body.stmts {
-                    walk_stmt(s, imports);
+                    walk_stmt(s, imports, unresolvable);
                 }
             }
             if let Some(finalizer) = &try_stmt.finalizer {
                 for s in &finalizer.stmts {
-                    walk_stmt(s, imports);
+                    walk_stmt(s, imports, unresolvable);
                 }
             }
         }
         Stmt::While(while_stmt) => {
-            walk_stmt(&while_stmt.body, imports);
+            walk_stmt(&while_stmt.body, imports, unresolvable);
         }
         Stmt::DoWhile(do_while) => {
-            walk_stmt(&do_while.body, imports);
+            walk_stmt(&do_while.body, imports, unresolvable);
         }
         Stmt::For(for_stmt) => {
-            walk_stmt(&for_stmt.body, imports);
+            walk_stmt(&for_stmt.body, imports, unresolvable);
         }
         Stmt::ForIn(for_in) => {
-            walk_stmt(&for_in.body, imports);
+            walk_stmt(&for_in.body, imports, unresolvable);
         }
         Stmt::ForOf(for_of) => {
-            walk_stmt(&for_of.body, imports);
+            walk_stmt(&for_of.body, imports, unresolvable);
         }
         Stmt::Return(ret) => {
             if let Some(arg) = &ret.arg {
-                walk_expr(arg, imports);
+                walk_expr(arg, imports, unresolvable);
             }
         }
         Stmt::Labeled(labeled) => {
-            walk_stmt(&labeled.body, imports);
+            walk_stmt(&labeled.body, imports, unresolvable);
         }
         _ => {}
     }
 }
 
-fn walk_decl(decl: &swc_ecma_ast::Decl, imports: &mut Vec<RawImport>) {
+fn walk_decl(decl: &swc_ecma_ast::Decl, imports: &mut Vec<RawImport>, unresolvable: &mut usize) {
     match decl {
         swc_ecma_ast::Decl::Var(var_decl) => {
             for decl in &var_decl.decls {
                 if let Some(init) = &decl.init {
-                    walk_expr(init, imports);
+                    walk_expr(init, imports, unresolvable);
                 }
             }
         }
         swc_ecma_ast::Decl::Fn(fn_decl) => {
             if let Some(body) = &fn_decl.function.body {
                 for s in &body.stmts {
-                    walk_stmt(s, imports);
+                    walk_stmt(s, imports, unresolvable);
                 }
             }
         }
@@ -220,7 +221,7 @@ fn walk_decl(decl: &swc_ecma_ast::Decl, imports: &mut Vec<RawImport>) {
     }
 }
 
-fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>) {
+fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>, unresolvable: &mut usize) {
     match expr {
         Expr::Call(call) => {
             // Dynamic import()
@@ -250,51 +251,51 @@ fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>) {
                     }
                     return;
                 }
-                walk_expr(callee_expr, imports);
+                walk_expr(callee_expr, imports, unresolvable);
             }
             for arg in &call.args {
-                walk_expr(&arg.expr, imports);
+                walk_expr(&arg.expr, imports, unresolvable);
             }
         }
         Expr::Arrow(arrow) => match &*arrow.body {
             swc_ecma_ast::BlockStmtOrExpr::BlockStmt(block) => {
                 for s in &block.stmts {
-                    walk_stmt(s, imports);
+                    walk_stmt(s, imports, unresolvable);
                 }
             }
-            swc_ecma_ast::BlockStmtOrExpr::Expr(e) => walk_expr(e, imports),
+            swc_ecma_ast::BlockStmtOrExpr::Expr(e) => walk_expr(e, imports, unresolvable),
         },
         Expr::Fn(fn_expr) => {
             if let Some(body) = &fn_expr.function.body {
                 for s in &body.stmts {
-                    walk_stmt(s, imports);
+                    walk_stmt(s, imports, unresolvable);
                 }
             }
         }
         Expr::Assign(assign) => {
-            walk_expr(&assign.right, imports);
+            walk_expr(&assign.right, imports, unresolvable);
         }
         Expr::Seq(seq) => {
             for e in &seq.exprs {
-                walk_expr(e, imports);
+                walk_expr(e, imports, unresolvable);
             }
         }
-        Expr::Paren(paren) => walk_expr(&paren.expr, imports),
-        Expr::Await(await_expr) => walk_expr(&await_expr.arg, imports),
+        Expr::Paren(paren) => walk_expr(&paren.expr, imports, unresolvable),
+        Expr::Await(await_expr) => walk_expr(&await_expr.arg, imports, unresolvable),
         Expr::Cond(cond) => {
-            walk_expr(&cond.test, imports);
-            walk_expr(&cond.cons, imports);
-            walk_expr(&cond.alt, imports);
+            walk_expr(&cond.test, imports, unresolvable);
+            walk_expr(&cond.cons, imports, unresolvable);
+            walk_expr(&cond.alt, imports, unresolvable);
         }
         Expr::Bin(bin) => {
-            walk_expr(&bin.left, imports);
-            walk_expr(&bin.right, imports);
+            walk_expr(&bin.left, imports, unresolvable);
+            walk_expr(&bin.right, imports, unresolvable);
         }
-        Expr::Unary(unary) => walk_expr(&unary.arg, imports),
-        Expr::Member(member) => walk_expr(&member.obj, imports),
+        Expr::Unary(unary) => walk_expr(&unary.arg, imports, unresolvable),
+        Expr::Member(member) => walk_expr(&member.obj, imports, unresolvable),
         Expr::Array(array) => {
             for elem in array.elems.iter().flatten() {
-                walk_expr(&elem.expr, imports);
+                walk_expr(&elem.expr, imports, unresolvable);
             }
         }
         Expr::Object(object) => {
@@ -302,18 +303,18 @@ fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>) {
                 match prop {
                     swc_ecma_ast::PropOrSpread::Prop(p) => {
                         if let swc_ecma_ast::Prop::KeyValue(kv) = &**p {
-                            walk_expr(&kv.value, imports);
+                            walk_expr(&kv.value, imports, unresolvable);
                         }
                     }
                     swc_ecma_ast::PropOrSpread::Spread(spread) => {
-                        walk_expr(&spread.expr, imports);
+                        walk_expr(&spread.expr, imports, unresolvable);
                     }
                 }
             }
         }
         Expr::Tpl(tpl) => {
             for expr in &tpl.exprs {
-                walk_expr(expr, imports);
+                walk_expr(expr, imports, unresolvable);
             }
         }
         _ => {}
@@ -339,7 +340,7 @@ mod tests {
         let mut errors = vec![];
         let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
             .expect("test source should parse");
-        extract_imports(&module)
+        extract_imports(&module).imports
     }
 
     // --- Static imports ---

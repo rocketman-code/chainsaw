@@ -11,10 +11,16 @@ pub struct RawImport {
     pub kind: EdgeKind,
 }
 
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    pub imports: Vec<RawImport>,
+    pub unresolvable_dynamic: usize,
+}
+
 pub trait LanguageSupport: Send + Sync {
     fn extensions(&self) -> &[&str];
     fn skip_dirs(&self) -> &[&str];
-    fn parse(&self, path: &Path) -> Result<Vec<RawImport>, String>;
+    fn parse(&self, path: &Path) -> Result<ParseResult, String>;
     fn resolve(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf>;
     fn package_name(&self, resolved_path: &Path) -> Option<String>;
     fn workspace_package_name(&self, file_path: &Path, project_root: &Path) -> Option<String>;

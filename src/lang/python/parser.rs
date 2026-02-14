@@ -4,15 +4,15 @@ use std::path::Path;
 use tree_sitter::Parser;
 
 use crate::graph::EdgeKind;
-use crate::lang::RawImport;
+use crate::lang::{ParseResult, RawImport};
 
-pub fn parse_file(path: &Path) -> Result<Vec<RawImport>, String> {
+pub fn parse_file(path: &Path) -> Result<ParseResult, String> {
     let source =
         fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse_source(&source)
 }
 
-fn parse_source(source: &str) -> Result<Vec<RawImport>, String> {
+fn parse_source(source: &str) -> Result<ParseResult, String> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
@@ -23,8 +23,9 @@ fn parse_source(source: &str) -> Result<Vec<RawImport>, String> {
         .ok_or_else(|| "tree-sitter returned no parse tree".to_string())?;
 
     let mut imports = Vec::new();
-    collect_imports(tree.root_node(), source.as_bytes(), &mut imports, false, false);
-    Ok(imports)
+    let mut unresolvable_dynamic = 0;
+    collect_imports(tree.root_node(), source.as_bytes(), &mut imports, &mut unresolvable_dynamic, false, false);
+    Ok(ParseResult { imports, unresolvable_dynamic })
 }
 
 /// Recursively walk the tree-sitter AST, collecting import statements.
@@ -34,6 +35,7 @@ fn collect_imports(
     node: tree_sitter::Node,
     source: &[u8],
     imports: &mut Vec<RawImport>,
+    unresolvable: &mut usize,
     in_type_checking: bool,
     in_function: bool,
 ) {
@@ -142,7 +144,7 @@ fn collect_imports(
 
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i) {
-                    collect_imports(child, source, imports, propagated, in_function);
+                    collect_imports(child, source, imports, unresolvable, propagated, in_function);
                 }
             }
             return;
@@ -151,7 +153,7 @@ fn collect_imports(
         "function_definition" => {
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i) {
-                    collect_imports(child, source, imports, in_type_checking, true);
+                    collect_imports(child, source, imports, unresolvable, in_type_checking, true);
                 }
             }
             return;
@@ -173,7 +175,7 @@ fn collect_imports(
     // Generic recursion: visit all named children
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            collect_imports(child, source, imports, in_type_checking, in_function);
+            collect_imports(child, source, imports, unresolvable, in_type_checking, in_function);
         }
     }
 }
@@ -301,7 +303,7 @@ mod tests {
     use super::*;
 
     fn parse_py(source: &str) -> Vec<RawImport> {
-        parse_source(source).expect("parse failed")
+        parse_source(source).expect("parse failed").imports
     }
 
     #[test]

@@ -6,7 +6,7 @@ mod conformance;
 
 use std::path::{Path, PathBuf};
 
-use crate::lang::{LanguageSupport, RawImport};
+use crate::lang::{LanguageSupport, ParseResult};
 
 use self::resolver::{PythonResolver, package_name_from_path};
 
@@ -41,7 +41,7 @@ impl LanguageSupport for PythonSupport {
         ]
     }
 
-    fn parse(&self, path: &Path) -> Result<Vec<RawImport>, String> {
+    fn parse(&self, path: &Path) -> Result<ParseResult, String> {
         parser::parse_file(path)
     }
 

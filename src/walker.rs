@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ignore::WalkBuilder;
 use rayon::prelude::*;
@@ -48,21 +49,27 @@ fn discover_source_files(root: &Path, lang: &dyn LanguageSupport) -> (Vec<PathBu
     (files, dirs)
 }
 
-/// Parse a batch of files in parallel, returning (path, imports) pairs.
+/// Parse a batch of files in parallel, returning (path, imports) pairs
+/// and the total count of unresolvable dynamic imports across all files.
 fn parse_files_parallel(
     files: &[PathBuf],
     lang: &dyn LanguageSupport,
-) -> Vec<(PathBuf, Vec<RawImport>)> {
-    files
+) -> (Vec<(PathBuf, Vec<RawImport>)>, usize) {
+    let unresolvable_count = AtomicUsize::new(0);
+    let results: Vec<(PathBuf, Vec<RawImport>)> = files
         .par_iter()
         .filter_map(|path| match lang.parse(path) {
-            Ok(imports) => Some((path.clone(), imports)),
+            Ok(result) => {
+                unresolvable_count.fetch_add(result.unresolvable_dynamic, Ordering::Relaxed);
+                Some((path.clone(), result.imports))
+            }
             Err(e) => {
                 eprintln!("warning: {e}");
                 None
             }
         })
-        .collect()
+        .collect();
+    (results, unresolvable_count.into_inner())
 }
 
 /// Result of building a module graph, including metadata for cache invalidation.
@@ -76,6 +83,8 @@ pub struct BuildResult {
     /// that on load we can check directory mtimes to detect new/removed files
     /// without re-walking the entire tree.
     pub walked_dirs: Vec<PathBuf>,
+    /// Number of dynamic imports with non-literal arguments that could not be traced.
+    pub unresolvable_dynamic: usize,
 }
 
 /// Build a complete ModuleGraph starting from the given root directory.
@@ -84,10 +93,12 @@ pub struct BuildResult {
 pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
     let graph = Mutex::new(ModuleGraph::new());
     let mut unresolved: HashSet<String> = HashSet::new();
+    let mut unresolvable_total: usize = 0;
 
     // Phase 1: Discover and parse source files
     let (source_files, walked_dirs) = discover_source_files(root, lang);
-    let parsed = parse_files_parallel(&source_files, lang);
+    let (parsed, unresolvable_phase1) = parse_files_parallel(&source_files, lang);
+    unresolvable_total += unresolvable_phase1;
 
     // Track files that failed to parse so we don't retry them in phase 2
     let parsed_paths: HashSet<&PathBuf> = parsed.iter().map(|(p, _)| p).collect();
@@ -150,7 +161,8 @@ pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
 
         // Parse newly discovered files (e.g. node_modules entries) in parallel
         if !new_files_to_parse.is_empty() {
-            let newly_parsed = parse_files_parallel(&new_files_to_parse, lang);
+            let (newly_parsed, unresolvable_phase2) = parse_files_parallel(&new_files_to_parse, lang);
+            unresolvable_total += unresolvable_phase2;
             let newly_parsed_paths: HashSet<&PathBuf> =
                 newly_parsed.iter().map(|(p, _)| p).collect();
             for path in &new_files_to_parse {
@@ -183,6 +195,7 @@ pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
         graph: g,
         unresolved_specifiers,
         walked_dirs,
+        unresolvable_dynamic: unresolvable_total,
     }
 }
 

@@ -132,13 +132,21 @@ fn main() {
             }
 
             // Load or build graph
-            let (graph, from_cache) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
+            let (graph, from_cache, unresolvable_dynamic) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
             eprintln!(
                 "{} ({} modules) in {:.1}ms",
                 if from_cache { "Loaded cached graph" } else { "Built graph" },
                 graph.module_count(),
                 start.elapsed().as_secs_f64() * 1000.0
             );
+            if unresolvable_dynamic > 0 {
+                eprintln!(
+                    "warning: {} dynamic import{} with non-literal argument{} could not be traced",
+                    unresolvable_dynamic,
+                    if unresolvable_dynamic == 1 { "" } else { "s" },
+                    if unresolvable_dynamic == 1 { "" } else { "s" },
+                );
+            }
 
             // Resolve entry module ID
             let entry_id = match graph.path_to_id.get(&entry) {
@@ -263,7 +271,7 @@ fn main() {
                             Box::new(lang::python::PythonSupport::new(&diff_root))
                         }
                     };
-                    let (diff_graph, _) = load_or_build_graph(&diff_root, no_cache, diff_lang.as_ref());
+                    let (diff_graph, _, _) = load_or_build_graph(&diff_root, no_cache, diff_lang.as_ref());
                     let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
                         Some(&id) => id,
                         None => {
@@ -305,12 +313,12 @@ fn main() {
     }
 }
 
-/// Returns (graph, from_cache).
+/// Returns (graph, from_cache, unresolvable_dynamic).
 fn load_or_build_graph(
     root: &Path,
     no_cache: bool,
     lang: &dyn LanguageSupport,
-) -> (graph::ModuleGraph, bool) {
+) -> (graph::ModuleGraph, bool, usize) {
     if !no_cache {
         // Re-resolve unresolved specifiers using the project root as source_dir.
         // These are all absolute imports (stdlib, third-party) since relative imports
@@ -318,11 +326,12 @@ fn load_or_build_graph(
         let resolve_fn = |specifier: &str| lang.resolve(root, specifier).is_some();
 
         if let Some(g) = cache::load_cache(root, &resolve_fn) {
-            return (g, true);
+            return (g, true, 0);
         }
     }
 
     let result = walker::build_graph(root, lang);
+    let unresolvable = result.unresolvable_dynamic;
     cache::save_cache(root, &result.graph, &result.walked_dirs, result.unresolved_specifiers);
-    (result.graph, false)
+    (result.graph, false, unresolvable)
 }

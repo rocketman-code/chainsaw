@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::lang::{LanguageSupport, RawImport};
+use crate::lang::{LanguageSupport, ParseResult};
 
 use self::resolver::{package_name_from_path, ImportResolver};
 
@@ -35,7 +35,7 @@ impl LanguageSupport for TypeScriptSupport {
         SKIP_DIRS
     }
 
-    fn parse(&self, path: &Path) -> Result<Vec<RawImport>, String> {
+    fn parse(&self, path: &Path) -> Result<ParseResult, String> {
         parser::parse_file(path)
     }
 

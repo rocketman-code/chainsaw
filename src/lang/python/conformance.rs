@@ -101,7 +101,7 @@ fn resolver_conformance() {
     let mut imports: Vec<(PathBuf, String)> = Vec::new();
     for file in &files {
         if let Ok(parsed) = support.parse(file) {
-            for imp in parsed {
+            for imp in parsed.imports {
                 imports.push((file.clone(), imp.specifier));
             }
         }
