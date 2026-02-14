@@ -41,7 +41,7 @@ pub struct ParseResult {
 }
 
 pub trait LanguageSupport: Send + Sync {
-    fn extensions(&self) -> &[&str];
+    fn extensions(&self) -> &'static [&'static str];
     fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, ParseError>;
     fn resolve(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf>;
     fn package_name(&self, resolved_path: &Path) -> Option<String>;

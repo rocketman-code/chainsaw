@@ -7,8 +7,10 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod cache;
+pub mod error;
 pub mod graph;
 pub mod lang;
+pub mod loader;
 pub mod query;
 pub mod report;
 pub mod walker;
