@@ -72,24 +72,33 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
         .collect()
 }
 
-pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32) {
+pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32, include_dynamic: bool) {
     println!("{}", relative_path(entry_path, root));
-    println!(
-        "Static transitive weight: {} ({} modules)",
-        format_size(result.static_weight),
-        result.static_module_count
-    );
-    if result.dynamic_only_module_count > 0 {
+    if include_dynamic {
         println!(
-            "Dynamic-only weight: {} ({} modules, not loaded at startup)",
-            format_size(result.dynamic_only_weight),
-            result.dynamic_only_module_count
+            "Total transitive weight: {} ({} modules, static + dynamic)",
+            format_size(result.static_weight),
+            result.static_module_count
         );
+    } else {
+        println!(
+            "Static transitive weight: {} ({} modules)",
+            format_size(result.static_weight),
+            result.static_module_count
+        );
+        if result.dynamic_only_module_count > 0 {
+            println!(
+                "Dynamic-only weight: {} ({} modules, not loaded at startup)",
+                format_size(result.dynamic_only_weight),
+                result.dynamic_only_module_count
+            );
+        }
     }
     println!();
 
     if top != 0 {
-        println!("Heavy dependencies (static):");
+        let deps_label = if include_dynamic { "Heavy dependencies:" } else { "Heavy dependencies (static):" };
+        println!("{deps_label}");
         if result.heavy_packages.is_empty() {
             println!("  (none \u{2014} all reachable modules are first-party)");
         } else {
