@@ -21,7 +21,6 @@ pub struct ParseResult {
 
 pub trait LanguageSupport: Send + Sync {
     fn extensions(&self) -> &[&str];
-    fn skip_dirs(&self) -> &[&str];
     fn parse(&self, path: &Path) -> Result<ParseResult, String>;
     fn resolve(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf>;
     fn package_name(&self, resolved_path: &Path) -> Option<String>;

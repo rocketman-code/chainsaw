@@ -148,10 +148,9 @@ fn main() {
             let valid_extensions = lang_support.extensions();
 
             // Load or build graph
-            let (graph, from_cache, unresolvable_dynamic) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
+            let (graph, unresolvable_dynamic) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
             eprintln!(
-                "{} ({} modules) in {:.1}ms",
-                if from_cache { "Loaded cached graph" } else { "Built graph" },
+                "Built graph ({} modules) in {:.1}ms",
                 graph.module_count(),
                 start.elapsed().as_secs_f64() * 1000.0
             );
@@ -363,7 +362,7 @@ fn main() {
                             Box::new(lang::python::PythonSupport::new(&diff_root))
                         }
                     };
-                    let (diff_graph, _, _) = load_or_build_graph(&diff_root, no_cache, diff_lang.as_ref());
+                    let (diff_graph, _) = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
                     let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
                         Some(&id) => id,
                         None => {
@@ -453,7 +452,7 @@ fn main() {
                 }
             };
 
-            let (graph, _, _) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
+            let (graph, _) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
 
             if json {
                 report::print_packages_json(&graph);
@@ -464,25 +463,19 @@ fn main() {
     }
 }
 
-/// Returns (graph, from_cache, unresolvable_dynamic).
 fn load_or_build_graph(
+    entry: &Path,
     root: &Path,
     no_cache: bool,
     lang: &dyn LanguageSupport,
-) -> (graph::ModuleGraph, bool, usize) {
-    if !no_cache {
-        // Re-resolve unresolved specifiers using the project root as source_dir.
-        // These are all absolute imports (stdlib, third-party) since relative imports
-        // resolve within the project and are covered by the directory mtime checks.
-        let resolve_fn = |specifier: &str| lang.resolve(root, specifier).is_some();
+) -> (graph::ModuleGraph, usize) {
+    let mut cache = if no_cache {
+        cache::ParseCache::new()
+    } else {
+        cache::ParseCache::load(root)
+    };
 
-        if let Some(g) = cache::load_cache(root, &resolve_fn) {
-            return (g, true, 0);
-        }
-    }
-
-    let result = walker::build_graph(root, lang);
-    let unresolvable = result.unresolvable_dynamic;
-    cache::save_cache(root, &result.graph, &result.walked_dirs, result.unresolved_specifiers);
-    (result.graph, false, unresolvable)
+    let result = walker::build_graph(entry, root, lang, &mut cache);
+    cache.save(root);
+    (result.graph, result.unresolvable_dynamic)
 }

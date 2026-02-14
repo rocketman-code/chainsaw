@@ -10,8 +10,6 @@ use crate::lang::{LanguageSupport, ParseResult};
 use self::resolver::{package_name_from_path, ImportResolver};
 
 const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
-const SKIP_DIRS: &[&str] = &["node_modules", ".git"];
-
 pub struct TypeScriptSupport {
     resolver: ImportResolver,
     workspace_cache: Mutex<HashMap<PathBuf, Option<String>>>,
@@ -29,10 +27,6 @@ impl TypeScriptSupport {
 impl LanguageSupport for TypeScriptSupport {
     fn extensions(&self) -> &[&str] {
         EXTENSIONS
-    }
-
-    fn skip_dirs(&self) -> &[&str] {
-        SKIP_DIRS
     }
 
     fn parse(&self, path: &Path) -> Result<ParseResult, String> {
@@ -89,14 +83,6 @@ mod tests {
         assert!(exts.contains(&"tsx"));
         assert!(exts.contains(&"js"));
         assert!(exts.contains(&"mjs"));
-    }
-
-    #[test]
-    fn skip_dirs_includes_node_modules() {
-        let root = Path::new("/tmp");
-        let support = TypeScriptSupport::new(root);
-        assert!(support.skip_dirs().contains(&"node_modules"));
-        assert!(support.skip_dirs().contains(&".git"));
     }
 
     fn setup_workspace(tmp: &Path) {
