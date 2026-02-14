@@ -32,15 +32,28 @@ fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
 }
 
 /// Path relative to the package directory (e.g. `dateutil/__init__.py`).
+/// Handles scoped packages (`@scope/name` spans two path components).
 /// Falls back to the file name if the package name isn't found in path components.
 fn package_relative_path(path: &Path, package_name: &str) -> String {
     let components: Vec<_> = path.components().collect();
-    for (i, comp) in components.iter().enumerate() {
-        if let Component::Normal(name) = comp
-            && name.to_str() == Some(package_name)
-        {
-            let sub: PathBuf = components[i..].iter().collect();
-            return sub.to_string_lossy().into_owned();
+    // Scoped packages: match @scope then name as consecutive components
+    if let Some((scope, name)) = package_name.split_once('/') {
+        for i in 0..components.len().saturating_sub(1) {
+            if let (Component::Normal(a), Component::Normal(b)) = (&components[i], &components[i + 1]) {
+                if a.to_str() == Some(scope) && b.to_str() == Some(name) {
+                    let sub: PathBuf = components[i..].iter().collect();
+                    return sub.to_string_lossy().into_owned();
+                }
+            }
+        }
+    } else {
+        for (i, comp) in components.iter().enumerate() {
+            if let Component::Normal(name) = comp
+                && name.to_str() == Some(package_name)
+            {
+                let sub: PathBuf = components[i..].iter().collect();
+                return sub.to_string_lossy().into_owned();
+            }
         }
     }
     path.file_name()
