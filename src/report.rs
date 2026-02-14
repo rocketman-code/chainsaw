@@ -1,13 +1,62 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::graph::{ModuleGraph, ModuleId};
-use crate::query::{CutModule, DiffPackage, DiffResult, TraceResult};
+use crate::query::{CutModule, DiffResult, TraceResult};
 
 fn plural(n: impl Into<u64>) -> &'static str {
     if n.into() == 1 { "" } else { "s" }
+}
+
+struct C {
+    color: bool,
+}
+
+impl C {
+    fn stdout() -> Self {
+        Self { color: std::io::stdout().is_terminal() }
+    }
+
+    fn bold_green(&self, s: &str) -> String {
+        if self.color { format!("\x1b[1;92m{s}\x1b[0m") } else { s.to_string() }
+    }
+
+    fn red(&self, s: &str) -> String {
+        if self.color { format!("\x1b[31m{s}\x1b[0m") } else { s.to_string() }
+    }
+
+    fn green(&self, s: &str) -> String {
+        if self.color { format!("\x1b[32m{s}\x1b[0m") } else { s.to_string() }
+    }
+
+    fn dim(&self, s: &str) -> String {
+        if self.color { format!("\x1b[2m{s}\x1b[0m") } else { s.to_string() }
+    }
+}
+
+pub struct StderrColor {
+    color: bool,
+}
+
+impl StderrColor {
+    pub fn new() -> Self {
+        Self { color: std::io::stderr().is_terminal() }
+    }
+
+    pub fn error(&self, s: &str) -> String {
+        if self.color { format!("\x1b[1;91m{s}\x1b[0m") } else { s.to_string() }
+    }
+
+    pub fn warning(&self, s: &str) -> String {
+        if self.color { format!("\x1b[1;93m{s}\x1b[0m") } else { s.to_string() }
+    }
+
+    pub fn status(&self, s: &str) -> String {
+        if self.color { format!("\x1b[1;92m{s}\x1b[0m") } else { s.to_string() }
+    }
 }
 
 pub fn format_size(bytes: u64) -> String {
@@ -90,24 +139,28 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
 }
 
 pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32, include_dynamic: bool) {
+    let c = C::stdout();
     println!("{}", relative_path(entry_path, root));
     if include_dynamic {
         println!(
-            "Total transitive weight: {} ({} module{}, static + dynamic)",
+            "{} {} ({} module{}, static + dynamic)",
+            c.bold_green("Total transitive weight:"),
             format_size(result.static_weight),
             result.static_module_count,
             plural(result.static_module_count as u64)
         );
     } else {
         println!(
-            "Static transitive weight: {} ({} module{})",
+            "{} {} ({} module{})",
+            c.bold_green("Static transitive weight:"),
             format_size(result.static_weight),
             result.static_module_count,
             plural(result.static_module_count as u64)
         );
         if result.dynamic_only_module_count > 0 {
             println!(
-                "Dynamic-only weight: {} ({} module{}, not loaded at startup)",
+                "{} {} ({} module{}, not loaded at startup)",
+                c.bold_green("Dynamic-only weight:"),
                 format_size(result.dynamic_only_weight),
                 result.dynamic_only_module_count,
                 plural(result.dynamic_only_module_count as u64)
@@ -118,7 +171,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
 
     if top != 0 {
         let deps_label = if include_dynamic { "Heavy dependencies (static + dynamic):" } else { "Heavy dependencies (static):" };
-        println!("{deps_label}");
+        println!("{}", c.bold_green(deps_label));
         if result.heavy_packages.is_empty() {
             println!("  (none \u{2014} all reachable modules are first-party)");
         } else {
@@ -140,7 +193,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
 
     if top_modules != 0 && !result.modules_by_cost.is_empty() {
-        println!("Modules (sorted by exclusive weight):");
+        println!("{}", c.bold_green("Modules (sorted by exclusive weight):"));
         let display_count = if top_modules < 0 {
             result.modules_by_cost.len()
         } else {
@@ -162,6 +215,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
 }
 
 pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
+    let c = C::stdout();
     println!("Diff: {entry_a} vs {entry_b}");
     println!();
     println!(
@@ -182,32 +236,35 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
     );
     println!();
 
-    fn print_diff_section(packages: &[DiffPackage], prefix: &str, header: &str, limit: i32) {
-        if packages.is_empty() {
-            return;
+    if !diff.only_in_a.is_empty() {
+        let show = if limit < 0 { diff.only_in_a.len() } else { diff.only_in_a.len().min(limit as usize) };
+        println!("{}", c.red(&format!("Only in {entry_a}:")));
+        for pkg in &diff.only_in_a[..show] {
+            println!("{}", c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size))));
         }
-        let show = if limit < 0 {
-            packages.len()
-        } else {
-            packages.len().min(limit as usize)
-        };
-        println!("{header}");
-        for pkg in &packages[..show] {
-            println!("  {prefix} {:<35} {}", pkg.name, format_size(pkg.size));
-        }
-        let remaining = packages.len() - show;
+        let remaining = diff.only_in_a.len() - show;
         if remaining > 0 {
-            println!("  {prefix} ... and {remaining} more");
+            println!("{}", c.dim(&format!("  - ... and {remaining} more")));
         }
     }
-
-    print_diff_section(&diff.only_in_a, "-", &format!("Only in {entry_a}:"), limit);
-    print_diff_section(&diff.only_in_b, "+", &format!("Only in {entry_b}:"), limit);
+    if !diff.only_in_b.is_empty() {
+        let show = if limit < 0 { diff.only_in_b.len() } else { diff.only_in_b.len().min(limit as usize) };
+        println!("{}", c.green(&format!("Only in {entry_b}:")));
+        for pkg in &diff.only_in_b[..show] {
+            println!("{}", c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size))));
+        }
+        let remaining = diff.only_in_b.len() - show;
+        if remaining > 0 {
+            println!("{}", c.dim(&format!("  + ... and {remaining} more")));
+        }
+    }
     if diff.shared_count > 0 {
         println!(
-            "Shared: {} package{}",
-            diff.shared_count,
-            if diff.shared_count == 1 { "" } else { "s" }
+            "{}", c.dim(&format!(
+                "Shared: {} package{}",
+                diff.shared_count,
+                if diff.shared_count == 1 { "" } else { "s" }
+            ))
         );
     }
 }
@@ -219,6 +276,7 @@ pub fn print_chains(
     root: &Path,
     target_exists: bool,
 ) {
+    let c = C::stdout();
     if chains.is_empty() {
         if target_exists {
             println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
@@ -229,12 +287,15 @@ pub fn print_chains(
     }
     let hops = chains[0].len().saturating_sub(1);
     println!(
-        "{} chain{} to \"{}\" ({} hop{}):\n",
-        chains.len(),
-        if chains.len() == 1 { "" } else { "s" },
-        target_label,
-        hops,
-        if hops == 1 { "" } else { "s" },
+        "{}\n",
+        c.bold_green(&format!(
+            "{} chain{} to \"{}\" ({} hop{}):",
+            chains.len(),
+            if chains.len() == 1 { "" } else { "s" },
+            target_label,
+            hops,
+            if hops == 1 { "" } else { "s" },
+        )),
     );
     for (i, chain) in chains.iter().enumerate() {
         let chain_str = chain_display_names(graph, chain, root);
@@ -279,6 +340,7 @@ pub fn print_cut(
     root: &Path,
     target_exists: bool,
 ) {
+    let c = C::stdout();
     if chains.is_empty() {
         if target_exists {
             println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
@@ -292,7 +354,7 @@ pub fn print_cut(
         let is_direct = chains.iter().all(|c| c.len() == 2);
         if is_direct {
             println!(
-                "Entry file directly imports \"{target_label}\" — remove the import to sever the dependency."
+                "Entry file directly imports \"{target_label}\" \u{2014} remove the import to sever the dependency."
             );
         } else {
             println!(
@@ -300,18 +362,21 @@ pub fn print_cut(
                 chains.len(),
                 if chains.len() == 1 { "" } else { "s" },
             );
-            println!("Each chain takes a different path — multiple fixes needed.");
+            println!("Each chain takes a different path \u{2014} multiple fixes needed.");
         }
         return;
     }
 
     println!(
-        "{} cut point{} to sever all {} chain{} to \"{}\":\n",
-        cuts.len(),
-        if cuts.len() == 1 { "" } else { "s" },
-        chains.len(),
-        if chains.len() == 1 { "" } else { "s" },
-        target_label,
+        "{}\n",
+        c.bold_green(&format!(
+            "{} cut point{} to sever all {} chain{} to \"{}\":",
+            cuts.len(),
+            if cuts.len() == 1 { "" } else { "s" },
+            chains.len(),
+            if chains.len() == 1 { "" } else { "s" },
+            target_label,
+        )),
     );
     for cut in cuts {
         println!(
@@ -360,6 +425,7 @@ pub fn print_cut_json(
 }
 
 pub fn print_packages(graph: &ModuleGraph) {
+    let c = C::stdout();
     let mut packages: Vec<_> = graph.package_map.values().collect();
     packages.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -368,7 +434,7 @@ pub fn print_packages(graph: &ModuleGraph) {
         return;
     }
 
-    println!("{} package{}:\n", packages.len(), plural(packages.len() as u64));
+    println!("{}\n", c.bold_green(&format!("{} package{}:", packages.len(), plural(packages.len() as u64))));
     for pkg in &packages {
         println!(
             "  {:<40} {:>8}  {} file{}",

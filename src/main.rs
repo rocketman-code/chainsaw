@@ -140,6 +140,7 @@ fn parse_size(s: &str) -> Result<u64, String> {
 
 fn main() {
     let cli = Cli::parse();
+    let sc = report::StderrColor::new();
 
     match cli.command {
         Commands::Trace {
@@ -200,7 +201,7 @@ fn main() {
             .flatten()
             .collect();
             if query_flags.len() > 1 {
-                eprintln!("error: {} cannot be used together", query_flags.join(" and "));
+                eprintln!("{} {} cannot be used together", sc.error("error:"), query_flags.join(" and "));
                 std::process::exit(1);
             }
 
@@ -211,13 +212,14 @@ fn main() {
             if !quiet {
                 eprintln!(
                     "{} ({} modules) in {:.1}ms",
-                    if load_result.from_cache { "Loaded cached graph" } else { "Built graph" },
+                    sc.status(if load_result.from_cache { "Loaded cached graph" } else { "Built graph" }),
                     graph.module_count(),
                     start.elapsed().as_secs_f64() * 1000.0
                 );
                 if unresolvable_dynamic > 0 && !load_result.from_cache {
                     eprintln!(
-                        "warning: {} dynamic import{} with non-literal argument{} could not be traced",
+                        "{} {} dynamic import{} with non-literal argument{} could not be traced",
+                        sc.warning("warning:"),
                         unresolvable_dynamic,
                         if unresolvable_dynamic == 1 { "" } else { "s" },
                         if unresolvable_dynamic == 1 { "" } else { "s" },
@@ -259,7 +261,7 @@ fn main() {
                     std::process::exit(1);
                 });
                 if !quiet {
-                    eprintln!("Snapshot saved to {}", save_path.display());
+                    eprintln!("{} to {}", sc.status("Snapshot saved"), save_path.display());
                 }
             }
 
@@ -395,7 +397,7 @@ fn main() {
                     std::process::exit(1);
                 });
                 if diff_entry == entry {
-                    eprintln!("warning: both entry points are the same file, diff will be empty");
+                    eprintln!("{} both entry points are the same file, diff will be empty", sc.warning("warning:"));
                 }
 
                 let diff_rel = {
@@ -457,7 +459,8 @@ fn main() {
             if let Some(threshold) = max_weight {
                 if result.static_weight > threshold {
                     eprintln!(
-                        "error: static weight {} exceeds threshold {}",
+                        "{} static weight {} exceeds threshold {}",
+                        sc.error("error:"),
                         report::format_size(result.static_weight),
                         report::format_size(threshold),
                     );
@@ -467,7 +470,7 @@ fn main() {
 
             let elapsed = start.elapsed();
             if !quiet {
-                eprintln!("\nCompleted in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+                eprintln!("\n{} in {:.1}ms", sc.status("Completed"), elapsed.as_secs_f64() * 1000.0);
             }
         }
 
