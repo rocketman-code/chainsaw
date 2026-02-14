@@ -173,7 +173,7 @@ pub fn build_graph(
                             source_id,
                             target_id,
                             raw_import.kind,
-                            &raw_import.specifier,
+                            raw_import.specifier.clone(),
                         );
                     }
                     // Target not in graph = unparseable leaf (e.g. .json, .css)
@@ -188,7 +188,7 @@ pub fn build_graph(
                             source_id,
                             target_id,
                             raw_import.kind,
-                            &raw_import.specifier,
+                            raw_import.specifier.clone(),
                         );
                     }
                 }
