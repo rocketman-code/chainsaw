@@ -50,6 +50,28 @@ impl Default for TraceOptions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ChainTarget {
+    Package(String),
+    Module(ModuleId),
+}
+
+impl ChainTarget {
+    fn matches(&self, graph: &ModuleGraph, mid: ModuleId) -> bool {
+        match self {
+            ChainTarget::Package(name) => graph.module(mid).package.as_deref() == Some(name),
+            ChainTarget::Module(target) => mid == *target,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            ChainTarget::Package(name) => name,
+            ChainTarget::Module(_) => "",
+        }
+    }
+}
+
 /// Whether to follow an edge based on its kind and the include_dynamic flag.
 fn should_follow(kind: EdgeKind, include_dynamic: bool) -> bool {
     match kind {
@@ -381,17 +403,17 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     }
 }
 
-/// Find ALL shortest chains from entry to a specific package.
+/// Find ALL shortest chains from entry to a specific target (package or module).
 /// Returns up to `max_chains` distinct shortest paths (all same hop count),
 /// deduplicated at the package-name level so chains that differ only by
-/// internal node_modules file paths are collapsed into one.
+/// internal file paths are collapsed into one.
 pub fn find_all_chains(
     graph: &ModuleGraph,
     entry: ModuleId,
-    package_name: &str,
+    target: &ChainTarget,
     include_dynamic: bool,
 ) -> Vec<Vec<ModuleId>> {
-    let raw = all_shortest_chains_to_package(graph, entry, package_name, 10, include_dynamic);
+    let raw = all_shortest_chains(graph, entry, target, 10, include_dynamic);
     dedup_chains_by_package(graph, raw)
 }
 
@@ -427,11 +449,11 @@ fn dedup_chains_by_package(
     result
 }
 
-/// BFS with multi-parent tracking to find all shortest paths to a package.
-fn all_shortest_chains_to_package(
+/// BFS with multi-parent tracking to find all shortest paths to a target.
+fn all_shortest_chains(
     graph: &ModuleGraph,
     entry: ModuleId,
-    package_name: &str,
+    target: &ChainTarget,
     max_chains: usize,
     include_dynamic: bool,
 ) -> Vec<Vec<ModuleId>> {
@@ -455,9 +477,8 @@ fn all_shortest_chains_to_package(
             break;
         }
 
-        // Check if this module is in the target package
-        let module = graph.module(mid);
-        if module.package.as_deref() == Some(package_name) {
+        // Check if this module matches the target
+        if target.matches(graph, mid) {
             if target_depth.is_none() {
                 target_depth = Some(d);
             }
@@ -556,7 +577,7 @@ pub fn find_cut_modules(
     graph: &ModuleGraph,
     chains: &[Vec<ModuleId>],
     entry: ModuleId,
-    target_package: &str,
+    target: &ChainTarget,
     top_n: usize,
     include_dynamic: bool,
 ) -> Vec<CutModule> {
@@ -579,7 +600,7 @@ pub fn find_cut_modules(
         .filter(|&(mid, count)| {
             count == total
                 && mid != entry
-                && graph.module(mid).package.as_deref() != Some(target_package)
+                && !target.matches(graph, mid)
         })
         .map(|(mid, count)| CutModule {
             module_id: mid,
@@ -754,7 +775,7 @@ mod tests {
                 (2, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0], vec![ModuleId(0), ModuleId(1), ModuleId(2), ModuleId(3)]);
     }
@@ -778,7 +799,7 @@ mod tests {
                 (1, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
         assert_eq!(chains.len(), 1);
     }
 
@@ -793,7 +814,7 @@ mod tests {
             ],
             &[(0, 1, EdgeKind::Static)],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
         assert!(chains.is_empty());
     }
 
@@ -812,10 +833,10 @@ mod tests {
                 (1, 2, EdgeKind::Static),
             ],
         );
-        let chains_static = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let chains_static = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
         assert!(chains_static.is_empty());
 
-        let chains_dynamic = find_all_chains(&graph, ModuleId(0), "zod", true);
+        let chains_dynamic = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), true);
         assert_eq!(chains_dynamic.len(), 1);
         assert_eq!(chains_dynamic[0], vec![ModuleId(0), ModuleId(1), ModuleId(2)]);
     }
@@ -843,10 +864,11 @@ mod tests {
                 (3, 4, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let target = ChainTarget::Package("zod".to_string());
+        let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         assert_eq!(chains.len(), 2);
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
         assert!(!cuts.is_empty());
         assert!(cuts.iter().any(|c| c.module_id == ModuleId(3)));
     }
@@ -872,8 +894,9 @@ mod tests {
                 (2, 4, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
+        let target = ChainTarget::Package("zod".to_string());
+        let chains = find_all_chains(&graph, ModuleId(0), &target, false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
         assert!(cuts.is_empty());
     }
 
@@ -888,11 +911,12 @@ mod tests {
             ],
             &[(0, 1, EdgeKind::Static)],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let target = ChainTarget::Package("zod".to_string());
+        let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].len(), 2); // 1 hop = 2 nodes
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
         assert!(cuts.is_empty());
     }
 
@@ -913,10 +937,11 @@ mod tests {
                 (2, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), "zod", false);
+        let target = ChainTarget::Package("zod".to_string());
+        let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         assert_eq!(chains.len(), 1);
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), "zod", 10, false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
         assert!(cuts.len() >= 2);
         // First cut should have smaller exclusive_size (more surgical)
         assert!(cuts[0].exclusive_size <= cuts[1].exclusive_size);
@@ -1090,5 +1115,48 @@ mod tests {
         let result = trace(&graph, ModuleId(0), &opts);
         assert!(result.heavy_packages.is_empty());
         assert_eq!(result.static_weight, 600);
+    }
+
+    // --- ChainTarget::Module ---
+
+    #[test]
+    fn chain_to_module_by_id() {
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None),
+                ("a.ts", 50, None),
+                ("b.ts", 200, None),
+            ],
+            &[
+                (0, 1, EdgeKind::Static),
+                (1, 2, EdgeKind::Static),
+            ],
+        );
+        let target_id = graph.path_to_id[&PathBuf::from("b.ts")];
+        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Module(target_id), false);
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].len(), 3);
+        assert_eq!(*chains[0].last().unwrap(), target_id);
+    }
+
+    #[test]
+    fn cut_to_module_by_id() {
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None),
+                ("bridge.ts", 50, None),
+                ("target.ts", 200, None),
+            ],
+            &[
+                (0, 1, EdgeKind::Static),
+                (1, 2, EdgeKind::Static),
+            ],
+        );
+        let target_id = graph.path_to_id[&PathBuf::from("target.ts")];
+        let target = ChainTarget::Module(target_id);
+        let chains = find_all_chains(&graph, ModuleId(0), &target, false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
+        assert_eq!(cuts.len(), 1);
+        assert_eq!(cuts[0].module_id, graph.path_to_id[&PathBuf::from("bridge.ts")]);
     }
 }
