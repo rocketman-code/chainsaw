@@ -6,6 +6,10 @@ use serde::Serialize;
 use crate::graph::{ModuleGraph, ModuleId};
 use crate::query::{CutModule, DiffPackage, DiffResult, TraceResult};
 
+fn plural(n: impl Into<u64>) -> &'static str {
+    if n.into() == 1 { "" } else { "s" }
+}
+
 fn format_size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
         format!("{:.1} MB", bytes as f64 / 1_000_000.0)
@@ -89,21 +93,24 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     println!("{}", relative_path(entry_path, root));
     if include_dynamic {
         println!(
-            "Total transitive weight: {} ({} modules, static + dynamic)",
+            "Total transitive weight: {} ({} module{}, static + dynamic)",
             format_size(result.static_weight),
-            result.static_module_count
+            result.static_module_count,
+            plural(result.static_module_count as u64)
         );
     } else {
         println!(
-            "Static transitive weight: {} ({} modules)",
+            "Static transitive weight: {} ({} module{})",
             format_size(result.static_weight),
-            result.static_module_count
+            result.static_module_count,
+            plural(result.static_module_count as u64)
         );
         if result.dynamic_only_module_count > 0 {
             println!(
-                "Dynamic-only weight: {} ({} modules, not loaded at startup)",
+                "Dynamic-only weight: {} ({} module{}, not loaded at startup)",
                 format_size(result.dynamic_only_weight),
-                result.dynamic_only_module_count
+                result.dynamic_only_module_count,
+                plural(result.dynamic_only_module_count as u64)
             );
         }
     }
@@ -117,10 +124,11 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
         } else {
             for pkg in &result.heavy_packages {
                 println!(
-                    "  {:<35} {}  {} files",
+                    "  {:<35} {}  {} file{}",
                     pkg.name,
                     format_size(pkg.total_size),
-                    pkg.file_count
+                    pkg.file_count,
+                    plural(pkg.file_count)
                 );
                 if pkg.chain.len() > 1 {
                     let chain_str = chain_display_names(graph, &pkg.chain, root);
@@ -147,10 +155,8 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
             );
         }
         if result.modules_by_cost.len() > display_count {
-            println!(
-                "  ... and {} more modules",
-                result.modules_by_cost.len() - display_count
-            );
+            let remaining = result.modules_by_cost.len() - display_count;
+            println!("  ... and {remaining} more module{}", plural(remaining as u64));
         }
     }
 }
@@ -362,13 +368,14 @@ pub fn print_packages(graph: &ModuleGraph) {
         return;
     }
 
-    println!("{} package{}:\n", packages.len(), if packages.len() == 1 { "" } else { "s" });
+    println!("{} package{}:\n", packages.len(), plural(packages.len() as u64));
     for pkg in &packages {
         println!(
-            "  {:<40} {:>8}  {} files",
+            "  {:<40} {:>8}  {} file{}",
             pkg.name,
             format_size(pkg.total_reachable_size),
-            pkg.total_reachable_files
+            pkg.total_reachable_files,
+            plural(pkg.total_reachable_files)
         );
     }
 }
