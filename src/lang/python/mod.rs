@@ -27,8 +27,8 @@ impl LanguageSupport for PythonSupport {
         &["py"]
     }
 
-    fn parse(&self, path: &Path) -> Result<ParseResult, String> {
-        parser::parse_file(path)
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, String> {
+        parser::parse_file(path, source)
     }
 
     fn resolve(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf> {

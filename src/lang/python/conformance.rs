@@ -100,7 +100,11 @@ fn resolver_conformance() {
     // Parse and collect all (file, specifier) pairs
     let mut imports: Vec<(PathBuf, String)> = Vec::new();
     for file in &files {
-        if let Ok(parsed) = support.parse(file) {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if let Ok(parsed) = support.parse(file, &source) {
             for imp in parsed.imports {
                 imports.push((file.clone(), imp.specifier));
             }

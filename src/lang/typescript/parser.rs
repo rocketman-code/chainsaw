@@ -40,11 +40,12 @@ fn syntax_for_path(path: &Path) -> Syntax {
     }
 }
 
-pub fn parse_file(path: &Path) -> Result<ParseResult, String> {
+pub fn parse_file(path: &Path, source: &str) -> Result<ParseResult, String> {
     let cm = Arc::<SourceMap>::default();
-    let fm = cm
-        .load_file(path)
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let fm = cm.new_source_file(
+        swc_common::FileName::Custom(path.display().to_string()).into(),
+        source.to_string(),
+    );
 
     let syntax = syntax_for_path(path);
     let mut errors = vec![];
