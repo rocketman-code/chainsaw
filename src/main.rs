@@ -490,9 +490,7 @@ fn main() {
             let snap_b = load_snapshot(&b);
             let diff_output = query::diff_snapshots(&snap_a, &snap_b);
 
-            let label_a = a.file_name().unwrap_or(a.as_os_str()).to_string_lossy();
-            let label_b = b.file_name().unwrap_or(b.as_os_str()).to_string_lossy();
-            report::print_diff(&diff_output, &label_a, &label_b, limit);
+            report::print_diff(&diff_output, &snap_a.entry, &snap_b.entry, limit);
         }
 
         Commands::Packages { entry, json, no_cache } => {
