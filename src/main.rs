@@ -83,6 +83,20 @@ enum Commands {
         /// Second snapshot file (the "after" or "current")
         b: PathBuf,
     },
+
+    /// List all third-party packages in the dependency graph
+    Packages {
+        /// Entry point file (used to detect project root)
+        entry: PathBuf,
+
+        /// Output machine-readable JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Force full re-parse, ignoring cache
+        #[arg(long)]
+        no_cache: bool,
+    },
 }
 
 fn main() {
@@ -410,6 +424,42 @@ fn main() {
             let label_a = a.file_name().unwrap_or(a.as_os_str()).to_string_lossy();
             let label_b = b.file_name().unwrap_or(b.as_os_str()).to_string_lossy();
             report::print_diff(&diff_output, &label_a, &label_b);
+        }
+
+        Commands::Packages { entry, json, no_cache } => {
+            let entry = entry.canonicalize().unwrap_or_else(|e| {
+                eprintln!("error: cannot find entry file '{}': {e}", entry.display());
+                std::process::exit(1);
+            });
+
+            if entry.is_dir() {
+                eprintln!("error: '{}' is a directory, not a source file", entry.display());
+                std::process::exit(1);
+            }
+
+            let (root, kind) = lang::detect_project(&entry).unwrap_or_else(|| {
+                let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
+                eprintln!("error: unsupported file type '.{ext}'");
+                eprintln!("hint: chainsaw supports TypeScript/JavaScript and Python files");
+                std::process::exit(1);
+            });
+
+            let lang_support: Box<dyn LanguageSupport> = match kind {
+                lang::ProjectKind::TypeScript => {
+                    Box::new(lang::typescript::TypeScriptSupport::new(&root))
+                }
+                lang::ProjectKind::Python => {
+                    Box::new(lang::python::PythonSupport::new(&root))
+                }
+            };
+
+            let (graph, _, _) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
+
+            if json {
+                report::print_packages_json(&graph);
+            } else {
+                report::print_packages(&graph);
+            }
         }
     }
 }

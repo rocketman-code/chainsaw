@@ -320,6 +320,46 @@ pub fn print_cut_json(
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }
 
+pub fn print_packages(graph: &ModuleGraph) {
+    let mut packages: Vec<_> = graph.package_map.values().collect();
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if packages.is_empty() {
+        println!("No third-party packages found in the dependency graph.");
+        return;
+    }
+
+    println!("{} package{}:\n", packages.len(), if packages.len() == 1 { "" } else { "s" });
+    for pkg in &packages {
+        println!(
+            "  {:<40} {:>8}  {} files",
+            pkg.name,
+            format_size(pkg.total_reachable_size),
+            pkg.total_reachable_files
+        );
+    }
+}
+
+pub fn print_packages_json(graph: &ModuleGraph) {
+    let mut packages: Vec<_> = graph.package_map.values().collect();
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let json_packages: Vec<serde_json::Value> = packages
+        .iter()
+        .map(|pkg| serde_json::json!({
+            "name": pkg.name,
+            "size": pkg.total_reachable_size,
+            "files": pkg.total_reachable_files,
+        }))
+        .collect();
+
+    let output = serde_json::json!({
+        "package_count": packages.len(),
+        "packages": json_packages,
+    });
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+}
+
 // JSON output types
 
 #[derive(Serialize)]
