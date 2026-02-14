@@ -3,15 +3,17 @@ pub mod typescript;
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::graph::EdgeKind;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImport {
     pub specifier: String,
     pub kind: EdgeKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseResult {
     pub imports: Vec<RawImport>,
     pub unresolvable_dynamic: usize,
