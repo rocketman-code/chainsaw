@@ -12,6 +12,7 @@ use crate::graph::EdgeKind;
 /// Callers never need to distinguish parse failure causes — they log
 /// and skip the file — so this is intentionally opaque.
 #[derive(Debug, Clone)]
+#[repr(transparent)]
 pub struct ParseError(String);
 
 impl ParseError {

@@ -102,6 +102,7 @@ pub enum GraphCacheResult {
 /// Handle for a background cache write. Joins the write thread on drop
 /// to ensure the cache file is fully written before process exit.
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct CacheWriteHandle(Option<thread::JoinHandle<()>>);
 
 impl CacheWriteHandle {

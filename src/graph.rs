@@ -3,9 +3,11 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
 pub struct ModuleId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
 pub struct EdgeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
