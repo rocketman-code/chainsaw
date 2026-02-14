@@ -108,15 +108,27 @@ $ chainsaw trace src/cli/main.ts --save before.json
 $ # ... make changes ...
 $ chainsaw trace src/cli/main.ts --diff-from before.json
 
-Diff: before.json vs src/cli/main.ts
+Diff: src/cli/main.ts vs src/cli/main.ts
 
-  before.json                              1.3 MB
+  src/cli/main.ts                          1.3 MB
   src/cli/main.ts                          1.1 MB
   Delta                                    -200 KB
 
-Removed since before.json:
+Only in src/cli/main.ts (before):
   - zod
 Shared: 2 packages
+```
+
+### List packages
+
+```
+$ chainsaw packages src/index.ts
+
+12 packages:
+
+  commander                                 195 KB  9 files
+  zod                                       537 KB  76 files
+  ...
 ```
 
 ### JSON output
@@ -125,7 +137,11 @@ Shared: 2 packages
 $ chainsaw trace src/index.ts --json
 ```
 
-Pipe to `jq`, feed to a dashboard, or use in CI.
+Pipe to `jq`, feed to a dashboard, or use in CI. Combine with `--quiet` to suppress stderr noise:
+
+```
+$ chainsaw trace src/index.ts --json --quiet | jq .static_weight_bytes
+```
 
 ## Install
 
@@ -140,18 +156,6 @@ Or:
 ```
 $ cargo build --release
 $ # binary at target/release/chainsaw
-```
-
-### List packages
-
-```
-$ chainsaw packages src/index.ts
-
-12 packages:
-
-  commander                                 195 KB  9 files
-  zod                                       537 KB  76 files
-  ...
 ```
 
 ## Flags
@@ -180,6 +184,7 @@ Options:
       --top-modules <N>    Show top N modules by exclusive weight (0 to hide, -1 for all) [default: 20]
       --json               Output machine-readable JSON
       --no-cache           Force full re-parse, ignoring cache
+  -q, --quiet              Suppress informational output (timing, warnings)
   -V, --version            Print version
 ```
 
