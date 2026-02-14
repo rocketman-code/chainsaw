@@ -126,6 +126,7 @@ fn concurrent_discover(
 }
 
 /// Result of building a module graph.
+#[derive(Debug)]
 pub struct BuildResult {
     pub graph: ModuleGraph,
     /// Files containing dynamic imports with non-literal arguments, with counts.

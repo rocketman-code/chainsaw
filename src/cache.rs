@@ -29,7 +29,7 @@ fn mtime_of(meta: &fs::Metadata) -> Option<u128> {
 
 // --- Per-file parse cache (tier 2) ---
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedParse {
     mtime_nanos: u128,
     size: u64,
@@ -39,13 +39,13 @@ struct CachedParse {
 
 // --- Whole-graph cache (tier 1) ---
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedMtime {
     mtime_nanos: u128,
     size: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct CachedGraph {
     entry: PathBuf,
     graph: ModuleGraph,
@@ -79,6 +79,7 @@ fn find_dep_sentinels(root: &Path) -> Vec<(PathBuf, u128)> {
         .collect()
 }
 
+#[derive(Debug)]
 pub enum GraphCacheResult {
     /// All files unchanged — graph is valid.
     Hit {
@@ -100,6 +101,7 @@ pub enum GraphCacheResult {
 
 /// Handle for a background cache write. Joins the write thread on drop
 /// to ensure the cache file is fully written before process exit.
+#[derive(Debug)]
 pub struct CacheWriteHandle(Option<thread::JoinHandle<()>>);
 
 impl CacheWriteHandle {
@@ -116,6 +118,7 @@ impl Drop for CacheWriteHandle {
     }
 }
 
+#[derive(Debug)]
 pub struct ParseCache {
     entries: HashMap<PathBuf, CachedParse>,
     deferred_parse_data: Option<Vec<u8>>,

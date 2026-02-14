@@ -10,6 +10,7 @@ use crate::lang::{LanguageSupport, ParseResult};
 use self::resolver::{package_name_from_path, ImportResolver};
 
 const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
+#[derive(Debug)]
 pub struct TypeScriptSupport {
     resolver: ImportResolver,
     workspace_cache: Mutex<HashMap<PathBuf, Option<String>>>,

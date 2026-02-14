@@ -10,6 +10,7 @@ use crate::lang::{LanguageSupport, ParseResult};
 
 use self::resolver::{PythonResolver, package_name_from_path};
 
+#[derive(Debug)]
 pub struct PythonSupport {
     resolver: PythonResolver,
 }

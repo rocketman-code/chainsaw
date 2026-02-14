@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph::{EdgeKind, ModuleGraph, ModuleId};
 
+#[derive(Debug)]
 pub struct TraceResult {
     /// Total file size reachable via static imports
     pub static_weight: u64,
@@ -23,6 +24,7 @@ pub struct TraceResult {
     pub dynamic_packages: HashMap<String, u64>,
 }
 
+#[derive(Debug)]
 pub struct HeavyPackage {
     pub name: String,
     pub total_size: u64,
@@ -31,11 +33,13 @@ pub struct HeavyPackage {
     pub chain: Vec<ModuleId>,
 }
 
+#[derive(Debug)]
 pub struct ModuleCost {
     pub module_id: ModuleId,
     pub exclusive_size: u64,
 }
 
+#[derive(Debug)]
 pub struct TraceOptions {
     pub include_dynamic: bool,
     pub top_n: i32,
@@ -582,6 +586,7 @@ fn all_shortest_chains(
     all_chains
 }
 
+#[derive(Debug)]
 pub struct CutModule {
     pub module_id: ModuleId,
     pub chains_broken: usize,
@@ -657,7 +662,7 @@ pub fn find_cut_modules(
 }
 
 /// Minimal snapshot of a trace result for before/after comparison.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TraceSnapshot {
     pub entry: String,
     pub static_weight: u64,
@@ -681,12 +686,14 @@ impl TraceResult {
 }
 
 /// A package that appears in only one side of a diff, with its size.
+#[derive(Debug)]
 pub struct DiffPackage {
     pub name: String,
     pub size: u64,
 }
 
 /// Compute a diff between two trace snapshots.
+#[derive(Debug)]
 pub struct DiffResult {
     pub entry_a_weight: u64,
     pub entry_b_weight: u64,
