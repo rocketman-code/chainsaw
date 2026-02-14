@@ -218,14 +218,24 @@ fn compute_exclusive_weights(
     weights
 }
 
+struct BfsResult {
+    static_set: Vec<ModuleId>,
+    dynamic_set: Vec<ModuleId>,
+    /// BFS parent pointers from the static traversal. parent[i] is the
+    /// predecessor of module i on the shortest static path from entry.
+    /// Entry and unreachable modules have u32::MAX.
+    static_parent: Vec<u32>,
+}
+
 /// BFS from entry point, collecting all reachable modules.
-/// Returns (static_reachable, dynamic_only_reachable) as Vecs of ModuleIds.
+/// Also records parent pointers during the static phase for chain reconstruction.
 fn bfs_reachable(
     graph: &ModuleGraph,
     entry: ModuleId,
-) -> (Vec<ModuleId>, Vec<ModuleId>) {
+) -> BfsResult {
     let n = graph.modules.len();
     let mut visited = vec![false; n];
+    let mut parent = vec![u32::MAX; n];
     let mut static_set: Vec<ModuleId> = Vec::new();
     let mut queue: VecDeque<ModuleId> = VecDeque::new();
 
@@ -240,6 +250,7 @@ fn bfs_reachable(
             let idx = edge.to.0 as usize;
             if edge.kind == EdgeKind::Static && !visited[idx] {
                 visited[idx] = true;
+                parent[idx] = mid.0;
                 static_set.push(edge.to);
                 queue.push_back(edge.to);
             }
@@ -277,54 +288,30 @@ fn bfs_reachable(
         }
     }
 
-    (static_set, dynamic_set)
+    BfsResult { static_set, dynamic_set, static_parent: parent }
 }
 
-/// BFS shortest path from entry to any module in the target package.
-fn shortest_chain_to_package(
-    graph: &ModuleGraph,
-    entry: ModuleId,
-    package_name: &str,
-) -> Vec<ModuleId> {
-    let n = graph.modules.len();
-    let mut visited = vec![false; n];
-    let mut parent = vec![u32::MAX; n];
-    let mut queue: VecDeque<ModuleId> = VecDeque::new();
-
-    visited[entry.0 as usize] = true;
-    queue.push_back(entry);
-
-    while let Some(mid) = queue.pop_front() {
-        let module = graph.module(mid);
-        if module.package.as_deref() == Some(package_name) {
-            // Reconstruct path
-            let mut chain = vec![mid];
-            let mut current = mid.0;
-            while parent[current as usize] != u32::MAX {
-                let p = parent[current as usize];
-                chain.push(ModuleId(p));
-                current = p;
-            }
-            chain.reverse();
-            return chain;
+/// Reconstruct the shortest chain from entry to target using pre-computed
+/// BFS parent pointers. Returns empty vec if target is unreachable.
+fn reconstruct_chain(parent: &[u32], entry: ModuleId, target: ModuleId) -> Vec<ModuleId> {
+    let mut chain = vec![target];
+    let mut current = target.0;
+    while current != entry.0 {
+        let p = parent[current as usize];
+        if p == u32::MAX {
+            return Vec::new();
         }
-
-        for &edge_id in graph.outgoing_edges(mid) {
-            let edge = graph.edge(edge_id);
-            let idx = edge.to.0 as usize;
-            if edge.kind == EdgeKind::Static && !visited[idx] {
-                visited[idx] = true;
-                parent[idx] = mid.0;
-                queue.push_back(edge.to);
-            }
-        }
+        chain.push(ModuleId(p));
+        current = p;
     }
-
-    Vec::new()
+    chain.reverse();
+    chain
 }
 
 pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> TraceResult {
-    let (mut reachable, dynamic_only) = bfs_reachable(graph, entry);
+    let bfs = bfs_reachable(graph, entry);
+    let mut reachable = bfs.static_set;
+    let dynamic_only = bfs.dynamic_set;
 
     // When --include-dynamic is set, fold dynamic modules into the reachable
     // set. There's nothing "only dynamic" when the user asked to include them.
@@ -350,14 +337,17 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         .map(|&mid| graph.module(mid).size_bytes)
         .sum();
 
-    // Find heavy packages in the reachable set
+    // Find heavy packages in the reachable set, tracking the first module
+    // encountered per package (BFS order = shortest distance from entry).
     let mut package_sizes: HashMap<String, (u64, u32)> = HashMap::new();
+    let mut package_nearest: HashMap<String, ModuleId> = HashMap::new();
     for &mid in &reachable {
         let module = graph.module(mid);
         if let Some(ref pkg) = module.package {
-            let entry = package_sizes.entry(pkg.clone()).or_default();
-            entry.0 += module.size_bytes;
-            entry.1 += 1;
+            let e = package_sizes.entry(pkg.clone()).or_default();
+            e.0 += module.size_bytes;
+            e.1 += 1;
+            package_nearest.entry(pkg.clone()).or_insert(mid);
         }
     }
 
@@ -379,7 +369,10 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     let heavy_packages: Vec<HeavyPackage> = sorted_packages
         .into_iter()
         .map(|(name, total_size, file_count)| {
-            let chain = shortest_chain_to_package(graph, entry, &name);
+            let chain = match package_nearest.get(&name) {
+                Some(&nearest) => reconstruct_chain(&bfs.static_parent, entry, nearest),
+                None => Vec::new(),
+            };
             HeavyPackage {
                 name,
                 total_size,
