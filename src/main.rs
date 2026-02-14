@@ -113,6 +113,10 @@ enum Commands {
         /// Force full re-parse, ignoring cache
         #[arg(long)]
         no_cache: bool,
+
+        /// Suppress informational output (timing, warnings)
+        #[arg(long, short)]
+        quiet: bool,
     },
 
     /// Generate shell completions
@@ -493,7 +497,9 @@ fn main() {
             report::print_diff(&diff_output, &snap_a.entry, &snap_b.entry, limit);
         }
 
-        Commands::Packages { entry, json, no_cache } => {
+        Commands::Packages { entry, json, no_cache, quiet } => {
+            let start = Instant::now();
+
             let entry = entry.canonicalize().unwrap_or_else(|e| {
                 eprintln!("error: cannot find entry file '{}': {e}", entry.display());
                 std::process::exit(1);
@@ -520,12 +526,20 @@ fn main() {
                 }
             };
 
-            let graph = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref()).graph;
+            let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            if !quiet {
+                eprintln!(
+                    "{} ({} modules) in {:.1}ms",
+                    sc.status(if load_result.from_cache { "Loaded cached graph" } else { "Built graph" }),
+                    load_result.graph.module_count(),
+                    start.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             if json {
-                report::print_packages_json(&graph);
+                report::print_packages_json(&load_result.graph);
             } else {
-                report::print_packages(&graph);
+                report::print_packages(&load_result.graph);
             }
         }
 
