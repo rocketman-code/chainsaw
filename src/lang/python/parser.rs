@@ -28,6 +28,7 @@ fn parse_source(source: &str) -> Result<ParseResult, String> {
 /// Recursively walk the tree-sitter AST, collecting import statements.
 /// `in_type_checking` is true when we are inside an `if TYPE_CHECKING:` block.
 /// `in_function` is true when we are inside a function/method body.
+#[allow(clippy::too_many_lines)]
 fn collect_imports(
     node: tree_sitter::Node,
     source: &[u8],
@@ -183,9 +184,9 @@ fn collect_imports(
     }
 }
 
-/// Extract the dot prefix and module name from an import_from_statement.
-/// Returns (dots, module_name) where dots is like "." or ".." or "..."
-/// and module_name is the dotted name after the dots (possibly empty for bare relative).
+/// Extract the dot prefix and module name from an `import_from_statement`.
+/// Returns (dots, `module_name`) where dots is like "." or ".." or "..."
+/// and `module_name` is the dotted name after the dots (possibly empty for bare relative).
 fn extract_from_module(node: tree_sitter::Node, source: &[u8]) -> (String, String) {
     if let Some(module_node) = node.child_by_field_name("module_name") {
         match module_node.kind() {
@@ -206,7 +207,7 @@ fn extract_from_module(node: tree_sitter::Node, source: &[u8]) -> (String, Strin
     (String::new(), String::new())
 }
 
-/// Extract the dotted_name child of a relative_import node (if present).
+/// Extract the `dotted_name` child of a `relative_import` node (if present).
 fn extract_module_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     // Look for a dotted_name among named children
     for i in 0..node.named_child_count() {
@@ -219,8 +220,8 @@ fn extract_module_name(node: tree_sitter::Node, source: &[u8]) -> Option<String>
     None
 }
 
-/// Extract the dot prefix (e.g., ".", "..", "...") from a relative_import node.
-/// The import_prefix node is not a named node, so we iterate over all children.
+/// Extract the dot prefix (e.g., ".", "..", "...") from a `relative_import` node.
+/// The `import_prefix` node is not a named node, so we iterate over all children.
 fn extract_dot_prefix(node: tree_sitter::Node, source: &[u8]) -> String {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i)
@@ -232,7 +233,7 @@ fn extract_dot_prefix(node: tree_sitter::Node, source: &[u8]) -> String {
     String::new()
 }
 
-/// Check if an if_statement is a `if TYPE_CHECKING:` guard.
+/// Check if an `if_statement` is a `if TYPE_CHECKING:` guard.
 fn is_type_checking_guard(node: tree_sitter::Node, source: &[u8]) -> bool {
     if let Some(condition) = node.child_by_field_name("condition") {
         let cond_text = text(condition, source);
@@ -248,6 +249,7 @@ fn is_type_checking_guard(node: tree_sitter::Node, source: &[u8]) -> bool {
 /// - `None` — not a dynamic import call at all
 /// - `Some(None)` — IS a dynamic import but the specifier is not a string literal
 /// - `Some(Some(s))` — dynamic import with extractable string literal specifier
+#[allow(clippy::option_option)]
 fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<Option<String>> {
     let function_node = node.child_by_field_name("function")?;
     let is_dynamic = match function_node.kind() {

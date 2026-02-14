@@ -56,7 +56,7 @@ pub fn is_node_builtin(specifier: &str) -> bool {
 }
 
 /// Detect the pnpm virtual store directory by reading .modules.yaml or falling
-/// back to the default node_modules/.pnpm location.
+/// back to the default `node_modules/.pnpm` location.
 fn detect_pnpm_virtual_store(root: &Path) -> Option<PathBuf> {
     let modules_yaml = root.join("node_modules/.modules.yaml");
     if !modules_yaml.exists() {
@@ -92,7 +92,7 @@ fn detect_pnpm_virtual_store(root: &Path) -> Option<PathBuf> {
 
 pub struct ImportResolver {
     resolver: Resolver,
-    /// Path to pnpm virtual store (e.g. /project/node_modules/.pnpm), if detected
+    /// Path to pnpm virtual store (e.g. `/project/node_modules/.pnpm`), if detected
     pnpm_virtual_store: Option<PathBuf>,
 }
 
@@ -171,7 +171,7 @@ impl ImportResolver {
     }
 
     /// Search for a bare specifier in the pnpm virtual store by globbing
-    /// .pnpm/<encoded_name>@*/node_modules/<name>/
+    /// `.pnpm/<encoded_name>@*/node_modules/<name>/`
     fn resolve_pnpm_virtual_store(&self, virtual_store: &Path, specifier: &str) -> Option<PathBuf> {
         // Only try for bare specifiers (not relative/absolute paths)
         if specifier.starts_with('.') || specifier.starts_with('/') {
@@ -237,7 +237,7 @@ impl ImportResolver {
     }
 }
 
-/// Split a bare specifier into (package_name, optional_subpath).
+/// Split a bare specifier into (`package_name`, `optional_subpath`).
 /// "@aws-sdk/client-bedrock" -> ("@aws-sdk/client-bedrock", None)
 /// "@aws-sdk/client-bedrock/types" -> ("@aws-sdk/client-bedrock", Some("types"))
 /// "lodash/fp" -> ("lodash", Some("fp"))
@@ -265,7 +265,7 @@ fn split_package_specifier(specifier: &str) -> (&str, Option<&str>) {
 }
 
 /// Extract the package name from a resolved file path.
-/// Handles both standard node_modules and pnpm virtual store layouts.
+/// Handles both standard `node_modules` and pnpm virtual store layouts.
 /// e.g. "/project/node_modules/@aws-sdk/client-bedrock/dist/index.js" -> Some("@aws-sdk/client-bedrock")
 /// e.g. "/project/node_modules/.pnpm/@aws-sdk+client-bedrock@3.986.0/node_modules/@aws-sdk/client-bedrock/dist/index.js" -> Some("@aws-sdk/client-bedrock")
 pub fn package_name_from_path(path: &Path) -> Option<String> {
@@ -304,5 +304,5 @@ pub fn package_name_from_path(path: &Path) -> Option<String> {
 pub(super) fn read_package_name(pkg_json: &Path) -> Option<String> {
     let content = std::fs::read_to_string(pkg_json).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed.get("name")?.as_str().map(|s| s.to_string())
+    parsed.get("name")?.as_str().map(str::to_string)
 }

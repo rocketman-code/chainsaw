@@ -125,6 +125,12 @@ pub struct ParseCache {
     stale_unresolved: Option<Vec<String>>,
 }
 
+impl Default for ParseCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ParseCache {
     pub fn new() -> Self {
         Self {
@@ -138,11 +144,11 @@ impl ParseCache {
 
     /// Load cache from disk. The graph cache is deserialized immediately;
     /// parse entries are deferred until first access (saves ~2.5ms on cache hit).
+    #[allow(clippy::cast_possible_truncation)]
     pub fn load(root: &Path) -> Self {
         let path = cache_path(root);
-        let data = match fs::read(&path) {
-            Ok(d) => d,
-            Err(_) => return Self::new(),
+        let Ok(data) = fs::read(&path) else {
+            return Self::new();
         };
         if data.len() < HEADER_SIZE {
             return Self::new();
@@ -203,19 +209,16 @@ impl ParseCache {
         let changed_files: Vec<PathBuf> = cached
             .file_mtimes
             .par_iter()
-            .filter_map(|(path, saved)| match fs::metadata(path) {
-                Ok(meta) => {
-                    let mtime = mtime_of(&meta)?;
-                    if mtime != saved.mtime_nanos || meta.len() != saved.size {
-                        Some(path.clone())
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => {
-                    any_missing.store(true, Ordering::Relaxed);
+            .filter_map(|(path, saved)| if let Ok(meta) = fs::metadata(path) {
+                let mtime = mtime_of(&meta)?;
+                if mtime != saved.mtime_nanos || meta.len() != saved.size {
+                    Some(path.clone())
+                } else {
                     None
                 }
+            } else {
+                any_missing.store(true, Ordering::Relaxed);
+                None
             })
             .collect();
 
@@ -273,7 +276,7 @@ impl ParseCache {
         self.entries.get(path).map(|e| &e.result)
     }
 
-    /// Save after incremental update. Uses the preserved file_mtimes from the
+    /// Save after incremental update. Uses the preserved `file_mtimes` from the
     /// Stale result, updating only the changed files' mtimes instead of
     /// re-statting every file. Serialization and disk write happen on a
     /// background thread.
@@ -285,21 +288,19 @@ impl ParseCache {
         changed_files: &[PathBuf],
         unresolvable_dynamic: usize,
     ) -> CacheWriteHandle {
-        let mut file_mtimes = match self.stale_file_mtimes.take() {
-            Some(m) => m,
-            None => return CacheWriteHandle::none(),
+        let Some(mut file_mtimes) = self.stale_file_mtimes.take() else {
+            return CacheWriteHandle::none();
         };
         let unresolved_specifiers = self.stale_unresolved.take().unwrap_or_default();
 
         // Update only changed files' mtimes (cheap, typically 1-2 files)
         for path in changed_files {
-            if let Ok(meta) = fs::metadata(path) {
-                if let Some(mtime) = mtime_of(&meta) {
-                    if let Some(saved) = file_mtimes.get_mut(path) {
-                        saved.mtime_nanos = mtime;
-                        saved.size = meta.len();
-                    }
-                }
+            if let Ok(meta) = fs::metadata(path)
+                && let Some(mtime) = mtime_of(&meta)
+                && let Some(saved) = file_mtimes.get_mut(path)
+            {
+                saved.mtime_nanos = mtime;
+                saved.size = meta.len();
             }
         }
 
@@ -392,6 +393,7 @@ impl ParseCache {
 }
 
 /// Serialize and write the cache to disk. Runs on a background thread.
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn write_cache_to_disk(
     root: PathBuf,
     entry: PathBuf,

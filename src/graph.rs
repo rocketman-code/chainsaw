@@ -20,7 +20,7 @@ pub struct Module {
     pub id: ModuleId,
     pub path: PathBuf,
     pub size_bytes: u64,
-    /// None for source files, Some("package-name") for node_modules
+    /// None for source files, Some("package-name") for `node_modules`
     pub package: Option<String>,
 }
 
@@ -46,10 +46,16 @@ pub struct PackageInfo {
 pub struct ModuleGraph {
     pub modules: Vec<Module>,
     pub edges: Vec<Edge>,
-    /// Outgoing edges per module (indexed by ModuleId)
+    /// Outgoing edges per module (indexed by `ModuleId`)
     pub forward_adj: Vec<Vec<EdgeId>>,
     pub path_to_id: HashMap<PathBuf, ModuleId>,
     pub package_map: HashMap<String, PackageInfo>,
+}
+
+impl Default for ModuleGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ModuleGraph {
@@ -63,6 +69,7 @@ impl ModuleGraph {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn add_module(&mut self, path: PathBuf, size_bytes: u64, package: Option<String>) -> ModuleId {
         if let Some(&id) = self.path_to_id.get(&path) {
             return id;
@@ -79,6 +86,7 @@ impl ModuleGraph {
         id
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn add_edge(&mut self, from: ModuleId, to: ModuleId, kind: EdgeKind, specifier: &str) -> EdgeId {
         // Deduplicate by (from, to, kind) — scan outgoing edges (typically <30)
         if let Some(&existing) = self.forward_adj[from.0 as usize]

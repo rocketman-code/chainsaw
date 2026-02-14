@@ -134,7 +134,7 @@ pub struct BuildResult {
     pub unresolved_specifiers: Vec<String>,
 }
 
-/// Build a complete ModuleGraph from the given entry point.
+/// Build a complete `ModuleGraph` from the given entry point.
 /// Phase 1 concurrently discovers files using a lock-free work queue.
 /// Phase 2 serially constructs the graph from sorted discovery results.
 pub fn build_graph(
