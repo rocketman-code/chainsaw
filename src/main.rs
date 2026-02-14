@@ -195,10 +195,15 @@ fn main() {
                 ignore,
             };
             let result = query::trace(&graph, entry_id, &opts);
+            let entry_rel = entry
+                .strip_prefix(&root)
+                .unwrap_or(&entry)
+                .to_string_lossy()
+                .into_owned();
 
             // Save snapshot if requested (works with any mode)
             if let Some(ref save_path) = save {
-                let snapshot = result.to_snapshot();
+                let snapshot = result.to_snapshot(&entry_rel);
                 let data = serde_json::to_string_pretty(&snapshot).unwrap();
                 std::fs::write(save_path, data).unwrap_or_else(|e| {
                     eprintln!("error: cannot write snapshot '{}': {e}", save_path.display());
@@ -324,17 +329,8 @@ fn main() {
                     );
                     std::process::exit(1);
                 });
-                let diff_output = query::diff_snapshots(&saved, &result.to_snapshot());
-
-                let entry_rel = entry
-                    .strip_prefix(&root)
-                    .unwrap_or(&entry)
-                    .to_string_lossy();
-                let snapshot_label = snapshot_path
-                    .file_name()
-                    .unwrap_or(snapshot_path.as_os_str())
-                    .to_string_lossy();
-                report::print_diff(&diff_output, &snapshot_label, &entry_rel);
+                let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
+                report::print_diff(&diff_output, &saved.entry, &entry_rel);
                 return;
             }
 
@@ -348,9 +344,19 @@ fn main() {
                     std::process::exit(1);
                 });
 
+                let diff_rel = {
+                    let dr = lang::detect_project(&diff_entry)
+                        .map(|(r, _)| r)
+                        .unwrap_or_else(|| diff_entry.parent().unwrap_or(&diff_entry).to_path_buf());
+                    diff_entry
+                        .strip_prefix(&dr)
+                        .unwrap_or(&diff_entry)
+                        .to_string_lossy()
+                        .into_owned()
+                };
                 let diff_snapshot = if let Some(&diff_id) = graph.path_to_id.get(&diff_entry) {
                     // Same graph — trace directly
-                    query::trace(&graph, diff_id, &opts).to_snapshot()
+                    query::trace(&graph, diff_id, &opts).to_snapshot(&diff_rel)
                 } else {
                     // Different package — build a second graph from its root
                     let (diff_root, diff_kind) = lang::detect_project(&diff_entry).unwrap_or_else(|| {
@@ -379,22 +385,10 @@ fn main() {
                             std::process::exit(1);
                         }
                     };
-                    query::trace(&diff_graph, diff_id, &opts).to_snapshot()
+                    query::trace(&diff_graph, diff_id, &opts).to_snapshot(&diff_rel)
                 };
 
-                let diff_output = query::diff_snapshots(&result.to_snapshot(), &diff_snapshot);
-
-                let entry_rel = entry
-                    .strip_prefix(&root)
-                    .unwrap_or(&entry)
-                    .to_string_lossy();
-                let diff_root = lang::detect_project(&diff_entry)
-                    .map(|(root, _)| root)
-                    .unwrap_or_else(|| diff_entry.parent().unwrap_or(&diff_entry).to_path_buf());
-                let diff_rel = diff_entry
-                    .strip_prefix(&diff_root)
-                    .unwrap_or(&diff_entry)
-                    .to_string_lossy();
+                let diff_output = query::diff_snapshots(&result.to_snapshot(&entry_rel), &diff_snapshot);
                 report::print_diff(&diff_output, &entry_rel, &diff_rel);
                 return;
             }

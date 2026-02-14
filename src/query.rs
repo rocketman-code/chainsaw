@@ -632,13 +632,15 @@ pub fn find_cut_modules(
 /// Minimal snapshot of a trace result for before/after comparison.
 #[derive(Serialize, Deserialize)]
 pub struct TraceSnapshot {
+    pub entry: String,
     pub static_weight: u64,
     pub all_packages: HashSet<String>,
 }
 
 impl TraceResult {
-    pub fn to_snapshot(&self) -> TraceSnapshot {
+    pub fn to_snapshot(&self, entry: &str) -> TraceSnapshot {
         TraceSnapshot {
+            entry: entry.to_string(),
             static_weight: self.static_weight,
             all_packages: self.all_packages.clone(),
         }
@@ -949,6 +951,7 @@ mod tests {
     #[test]
     fn diff_snapshots_computes_sets() {
         let a = TraceSnapshot {
+            entry: "a.ts".to_string(),
             static_weight: 1000,
             all_packages: ["zod", "chalk", "tslog"]
                 .iter()
@@ -956,6 +959,7 @@ mod tests {
                 .collect(),
         };
         let b = TraceSnapshot {
+            entry: "b.ts".to_string(),
             static_weight: 800,
             all_packages: ["chalk", "tslog", "ajv"]
                 .iter()
