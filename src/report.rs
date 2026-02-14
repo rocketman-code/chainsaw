@@ -31,10 +31,12 @@ fn plural(n: impl Into<u64>) -> &'static str {
     if n.into() == 1 { "" } else { "s" }
 }
 
+#[derive(Clone, Copy)]
 struct C {
     color: bool,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 impl C {
     fn new(no_color: bool) -> Self {
         Self { color: should_use_color(std::io::stdout().is_terminal(), no_color) }
@@ -57,7 +59,7 @@ impl C {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct StderrColor {
     color: bool,
 }
@@ -137,7 +139,7 @@ fn package_relative_path(path: &Path, package_name: &str) -> String {
         .to_string()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct DisplayOpts {
     pub top: i32,
     pub top_modules: i32,

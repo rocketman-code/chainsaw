@@ -33,7 +33,7 @@ pub struct HeavyPackage {
     pub chain: Vec<ModuleId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ModuleCost {
     pub module_id: ModuleId,
     pub exclusive_size: u64,
@@ -586,7 +586,7 @@ fn all_shortest_chains(
     all_chains
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct CutModule {
     pub module_id: ModuleId,
     pub chains_broken: usize,
