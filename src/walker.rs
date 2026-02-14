@@ -17,8 +17,8 @@ fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
 /// Result of building a module graph.
 pub struct BuildResult {
     pub graph: ModuleGraph,
-    /// Number of dynamic imports with non-literal arguments that could not be traced.
-    pub unresolvable_dynamic: usize,
+    /// Files containing dynamic imports with non-literal arguments, with counts.
+    pub unresolvable_dynamic: Vec<(PathBuf, usize)>,
     /// Import specifiers that failed to resolve (for cache invalidation).
     pub unresolved_specifiers: Vec<String>,
 }
@@ -32,7 +32,7 @@ pub fn build_graph(
     cache: &mut ParseCache,
 ) -> BuildResult {
     let mut graph = ModuleGraph::new();
-    let mut unresolvable_total: usize = 0;
+    let mut unresolvable_files: Vec<(PathBuf, usize)> = Vec::new();
     let mut unresolved: HashSet<String> = HashSet::new();
     let mut parse_failures: HashSet<PathBuf> = HashSet::new();
     let mut pending: VecDeque<(PathBuf, Vec<RawImport>)> = VecDeque::new();
@@ -43,7 +43,9 @@ pub fn build_graph(
 
     match parse_or_cache(entry, cache, lang) {
         Some(result) => {
-            unresolvable_total += result.unresolvable_dynamic;
+            if result.unresolvable_dynamic > 0 {
+                unresolvable_files.push((entry.to_path_buf(), result.unresolvable_dynamic));
+            }
             pending.push_back((entry.to_path_buf(), result.imports));
         }
         None => {
@@ -92,7 +94,9 @@ pub fn build_graph(
             let (results, failures) = parse_batch(new_files, cache, lang);
             parse_failures.extend(failures);
             for (path, result) in results {
-                unresolvable_total += result.unresolvable_dynamic;
+                if result.unresolvable_dynamic > 0 {
+                    unresolvable_files.push((path.clone(), result.unresolvable_dynamic));
+                }
                 pending.push_back((path, result.imports));
             }
         }
@@ -101,7 +105,7 @@ pub fn build_graph(
     compute_package_info(&mut graph);
     BuildResult {
         graph,
-        unresolvable_dynamic: unresolvable_total,
+        unresolvable_dynamic: unresolvable_files,
         unresolved_specifiers: unresolved.into_iter().collect(),
     }
 }

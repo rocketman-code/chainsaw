@@ -69,7 +69,7 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-fn relative_path(path: &Path, root: &Path) -> String {
+pub fn relative_path(path: &Path, root: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()

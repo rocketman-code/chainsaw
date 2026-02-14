@@ -212,7 +212,7 @@ fn main() {
             // Load or build graph
             let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
             let graph = load_result.graph;
-            let unresolvable_dynamic = load_result.unresolvable_dynamic;
+            let unresolvable_count = load_result.unresolvable_dynamic_count;
             if !quiet {
                 eprintln!(
                     "{} ({} modules) in {:.1}ms",
@@ -220,14 +220,18 @@ fn main() {
                     graph.module_count(),
                     start.elapsed().as_secs_f64() * 1000.0
                 );
-                if unresolvable_dynamic > 0 && !load_result.from_cache {
+                if unresolvable_count > 0 && !load_result.from_cache {
                     eprintln!(
-                        "{} {} dynamic import{} with non-literal argument{} could not be traced",
+                        "{} {} dynamic import{} with non-literal argument{} could not be traced:",
                         sc.warning("warning:"),
-                        unresolvable_dynamic,
-                        if unresolvable_dynamic == 1 { "" } else { "s" },
-                        if unresolvable_dynamic == 1 { "" } else { "s" },
+                        unresolvable_count,
+                        if unresolvable_count == 1 { "" } else { "s" },
+                        if unresolvable_count == 1 { "" } else { "s" },
                     );
+                    for (path, count) in &load_result.unresolvable_dynamic_files {
+                        let rel = report::relative_path(path, &root);
+                        eprintln!("  {rel} ({count})");
+                    }
                 }
             }
 
@@ -551,7 +555,8 @@ fn main() {
 
 struct LoadResult {
     graph: graph::ModuleGraph,
-    unresolvable_dynamic: usize,
+    unresolvable_dynamic_count: usize,
+    unresolvable_dynamic_files: Vec<(std::path::PathBuf, usize)>,
     from_cache: bool,
 }
 
@@ -573,7 +578,8 @@ fn load_or_build_graph(
         if let Some((graph, unresolvable_dynamic)) = cache.try_load_graph(entry, &resolve_fn) {
             return LoadResult {
                 graph,
-                unresolvable_dynamic,
+                unresolvable_dynamic_count: unresolvable_dynamic,
+                unresolvable_dynamic_files: Vec::new(),
                 from_cache: true,
             };
         }
@@ -581,16 +587,18 @@ fn load_or_build_graph(
 
     // Tier 2: BFS walk with per-file parse cache
     let result = walker::build_graph(entry, root, lang, &mut cache);
+    let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
     cache.save(
         root,
         entry,
         &result.graph,
         result.unresolved_specifiers,
-        result.unresolvable_dynamic,
+        unresolvable_count,
     );
     LoadResult {
         graph: result.graph,
-        unresolvable_dynamic: result.unresolvable_dynamic,
+        unresolvable_dynamic_count: unresolvable_count,
+        unresolvable_dynamic_files: result.unresolvable_dynamic,
         from_cache: false,
     }
 }
