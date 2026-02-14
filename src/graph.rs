@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -128,14 +128,15 @@ impl ModuleGraph {
             }
         }
 
+        let num_modules = self.modules.len();
         for (pkg_name, module_ids) in &package_entries {
             let mut total_size: u64 = 0;
             let mut total_files: u32 = 0;
-            let mut visited: HashSet<u32> = HashSet::new();
+            let mut visited = vec![false; num_modules];
 
             let mut queue: VecDeque<ModuleId> = module_ids.iter().copied().collect();
             for &id in module_ids {
-                visited.insert(id.0);
+                visited[id.0 as usize] = true;
             }
 
             while let Some(mid) = queue.pop_front() {
@@ -150,8 +151,9 @@ impl ModuleGraph {
                     if edge.kind == EdgeKind::Static {
                         let target = &self.modules[edge.to.0 as usize];
                         if target.package.as_deref() == Some(pkg_name)
-                            && visited.insert(edge.to.0)
+                            && !visited[edge.to.0 as usize]
                         {
+                            visited[edge.to.0 as usize] = true;
                             queue.push_back(edge.to);
                         }
                     }
