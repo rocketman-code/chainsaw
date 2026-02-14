@@ -317,6 +317,11 @@ fn main() {
             // Handle --chain mode
             if let Some(ref chain_arg) = chain {
                 let resolved = resolve_target(chain_arg);
+                if resolved.target == query::ChainTarget::Module(entry_id) {
+                    eprintln!("error: --chain target is the entry point itself");
+                    eprintln!("hint: --chain finds import chains from the entry to a dependency");
+                    std::process::exit(1);
+                }
                 let chains =
                     query::find_all_chains(&graph, entry_id, &resolved.target, include_dynamic);
                 if json {
@@ -339,6 +344,11 @@ fn main() {
             // Handle --cut mode
             if let Some(ref cut_arg) = cut {
                 let resolved = resolve_target(cut_arg);
+                if resolved.target == query::ChainTarget::Module(entry_id) {
+                    eprintln!("error: --cut target is the entry point itself");
+                    eprintln!("hint: --cut finds where to sever import chains to a dependency");
+                    std::process::exit(1);
+                }
                 let chains =
                     query::find_all_chains(&graph, entry_id, &resolved.target, include_dynamic);
                 let cuts = query::find_cut_modules(
