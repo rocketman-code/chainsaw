@@ -108,6 +108,29 @@ fn main() {
                 }
             };
 
+            // Validate entry file extension before expensive graph build
+            if entry.is_dir() {
+                eprintln!("error: '{}' is a directory, not a source file", entry.display());
+                std::process::exit(1);
+            }
+            let valid_extensions = lang_support.extensions();
+            let has_valid_ext = entry
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| valid_extensions.contains(&ext));
+            if !has_valid_ext {
+                let exts = valid_extensions
+                    .iter()
+                    .map(|e| format!(".{e}"))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                eprintln!(
+                    "error: '{}' is not a source file (expected {exts})",
+                    entry.display()
+                );
+                std::process::exit(1);
+            }
+
             // Load or build graph
             let (graph, from_cache) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
             eprintln!(
