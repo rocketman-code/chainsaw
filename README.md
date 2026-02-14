@@ -9,7 +9,7 @@ Trace transitive import weight in TypeScript/JavaScript and Python codebases. Gi
 - Shows the shortest import chain to any dependency (`--chain`) and where to cut it (`--cut`)
 - Compares two entry points or before/after snapshots (`--diff`)
 - Works across monorepo package boundaries (pnpm, yarn, npm workspaces)
-- Caches the full dependency graph to disk — rebuilds in ~55ms on cache hit
+- Two-tier disk cache — returns instantly on cache hit, re-parses only changed files on miss
 
 ## Usage
 
@@ -30,7 +30,7 @@ Heavy dependencies (static):
   zod                                 537 KB  76 files
     -> src/cli/main.ts -> src/config/config.ts -> src/config/schema.ts -> zod
 
-Modules (sorted by transitive cost):
+Modules (sorted by exclusive weight):
   src/cli/main.ts                                            17.7 MB
   src/commands/doctor.ts                                     17.7 MB
   src/config/sessions/transcript.ts                          17.5 MB
@@ -142,26 +142,45 @@ $ cargo build --release
 $ # binary at target/release/chainsaw
 ```
 
+### List packages
+
+```
+$ chainsaw packages src/index.ts
+
+12 packages:
+
+  commander                                 195 KB  9 files
+  zod                                       537 KB  76 files
+  ...
+```
+
 ## Flags
+
+```
+chainsaw <COMMAND>
+
+Commands:
+  trace     Trace the transitive import weight from an entry point
+  diff      Compare two saved trace snapshots
+  packages  List all third-party packages in the dependency graph
+```
 
 ```
 chainsaw trace [OPTIONS] <ENTRY>
 
-Arguments:
-  <ENTRY>  Entry point file to trace from
-
 Options:
-      --chain <PKG>        Show all shortest import chains to a package
-      --cut <PKG>          Find where to cut to sever all chains to a package
+      --chain <PKG|FILE>   Show all shortest import chains to a package or file
+      --cut <PKG|FILE>     Find where to cut to sever all chains to a package or file
       --diff <ENTRY>       Compare against another entry point
       --diff-from <PATH>   Compare against a previously saved snapshot
       --save <PATH>        Save a trace snapshot for later comparison
       --include-dynamic    Also traverse dynamic imports
-      --top <N>            Show top N heaviest dependencies [default: 10]
-      --top-modules <N>    Show top N modules by transitive cost [default: 20]
+      --ignore <PKG>...    Exclude packages from the heavy dependencies list
+      --top <N>            Show top N heaviest dependencies (0 to hide, -1 for all) [default: 10]
+      --top-modules <N>    Show top N modules by exclusive weight (0 to hide, -1 for all) [default: 20]
       --json               Output machine-readable JSON
-      --no-cache           Force full re-parse
-  -h, --help               Print help
+      --no-cache           Force full re-parse, ignoring cache
+  -V, --version            Print version
 ```
 
 ## License
