@@ -140,11 +140,10 @@ fn collect_from_import(
     edge_kind: EdgeKind,
 ) {
     // Skip `from __future__ import ...`
-    if let Some(module_node) = node.child_by_field_name("module_name") {
-        let module_text = text(module_node, source);
-        if module_text == "__future__" {
-            return;
-        }
+    if let Some(module_node) = node.child_by_field_name("module_name")
+        && text_ref(module_node, source) == "__future__"
+    {
+        return;
     }
 
     // Determine if this is a relative import with bare dots (no module after dots)
@@ -244,7 +243,7 @@ fn extract_dot_prefix(node: tree_sitter::Node, source: &[u8]) -> String {
 /// Check if an `if_statement` is a `if TYPE_CHECKING:` guard.
 fn is_type_checking_guard(node: tree_sitter::Node, source: &[u8]) -> bool {
     if let Some(condition) = node.child_by_field_name("condition") {
-        let cond_text = text(condition, source);
+        let cond_text = text_ref(condition, source);
         return cond_text == "TYPE_CHECKING" || cond_text.ends_with(".TYPE_CHECKING");
     }
     false
@@ -263,12 +262,11 @@ fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<Opti
     let is_dynamic = match function_node.kind() {
         "attribute" => {
             // importlib.import_module(...)
-            let func_text = text(function_node, source);
-            func_text == "importlib.import_module"
+            text_ref(function_node, source) == "importlib.import_module"
         }
         "identifier" => {
             // __import__(...)
-            text(function_node, source) == "__import__"
+            text_ref(function_node, source) == "__import__"
         }
         _ => false,
     };
@@ -283,9 +281,9 @@ fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<Opti
         if let Some(arg) = args_node.named_child(i)
             && arg.kind() == "string"
         {
-            let raw = text(arg, source);
+            let raw = text_ref(arg, source);
             // Strip surrounding quotes (single, double, or triple)
-            let stripped = strip_string_quotes(&raw);
+            let stripped = strip_string_quotes(raw);
             if !stripped.is_empty() {
                 return Some(Some(stripped.to_string()));
             }
@@ -311,9 +309,14 @@ fn strip_string_quotes(s: &str) -> &str {
     s
 }
 
-/// Get the text content of a tree-sitter node.
+/// Get the text content of a tree-sitter node as a borrowed `&str`.
+fn text_ref<'a>(node: tree_sitter::Node<'a>, source: &'a [u8]) -> &'a str {
+    node.utf8_text(source).unwrap_or("")
+}
+
+/// Get the text content of a tree-sitter node as an owned `String`.
 fn text(node: tree_sitter::Node, source: &[u8]) -> String {
-    node.utf8_text(source).unwrap_or("").to_string()
+    text_ref(node, source).to_string()
 }
 
 #[cfg(test)]
