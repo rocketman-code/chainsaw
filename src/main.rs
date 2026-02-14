@@ -112,7 +112,17 @@ fn main() {
                 std::process::exit(1);
             });
 
-            let (root, kind) = lang::detect_project(&entry);
+            if entry.is_dir() {
+                eprintln!("error: '{}' is a directory, not a source file", entry.display());
+                std::process::exit(1);
+            }
+
+            let (root, kind) = lang::detect_project(&entry).unwrap_or_else(|| {
+                let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
+                eprintln!("error: unsupported file type '.{ext}'");
+                eprintln!("hint: chainsaw supports TypeScript/JavaScript and Python files");
+                std::process::exit(1);
+            });
             let lang_support: Box<dyn LanguageSupport> = match kind {
                 lang::ProjectKind::TypeScript => {
                     Box::new(lang::typescript::TypeScriptSupport::new(&root))
@@ -121,29 +131,7 @@ fn main() {
                     Box::new(lang::python::PythonSupport::new(&root))
                 }
             };
-
-            // Validate entry file extension before expensive graph build
-            if entry.is_dir() {
-                eprintln!("error: '{}' is a directory, not a source file", entry.display());
-                std::process::exit(1);
-            }
             let valid_extensions = lang_support.extensions();
-            let has_valid_ext = entry
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|ext| valid_extensions.contains(&ext));
-            if !has_valid_ext {
-                let exts = valid_extensions
-                    .iter()
-                    .map(|e| format!(".{e}"))
-                    .collect::<Vec<_>>()
-                    .join("/");
-                eprintln!(
-                    "error: '{}' is not a source file (expected {exts})",
-                    entry.display()
-                );
-                std::process::exit(1);
-            }
 
             // Load or build graph
             let (graph, from_cache, unresolvable_dynamic) = load_or_build_graph(&root, no_cache, lang_support.as_ref());
@@ -170,11 +158,7 @@ fn main() {
                         "error: entry file '{}' not found in graph",
                         entry.display()
                     );
-                    let exts = match kind {
-                        lang::ProjectKind::TypeScript => ".ts/.js/.tsx/.jsx/.mjs/.cjs/.mts/.cts",
-                        lang::ProjectKind::Python => ".py",
-                    };
-                    eprintln!("hint: is it a {exts} file within the project?");
+                    eprintln!("hint: is it reachable from the project root?");
                     std::process::exit(1);
                 }
             };
@@ -351,7 +335,12 @@ fn main() {
                     query::trace(&graph, diff_id, &opts).to_snapshot()
                 } else {
                     // Different package — build a second graph from its root
-                    let (diff_root, diff_kind) = lang::detect_project(&diff_entry);
+                    let (diff_root, diff_kind) = lang::detect_project(&diff_entry).unwrap_or_else(|| {
+                        let ext = diff_entry.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
+                        eprintln!("error: unsupported file type '.{ext}'");
+                        eprintln!("hint: chainsaw supports TypeScript/JavaScript and Python files");
+                        std::process::exit(1);
+                    });
                     let diff_lang: Box<dyn LanguageSupport> = match diff_kind {
                         lang::ProjectKind::TypeScript => {
                             Box::new(lang::typescript::TypeScriptSupport::new(&diff_root))
@@ -380,7 +369,9 @@ fn main() {
                     .strip_prefix(&root)
                     .unwrap_or(&entry)
                     .to_string_lossy();
-                let diff_root = lang::detect_project(&diff_entry).0;
+                let diff_root = lang::detect_project(&diff_entry)
+                    .map(|(root, _)| root)
+                    .unwrap_or_else(|| diff_entry.parent().unwrap_or(&diff_entry).to_path_buf());
                 let diff_rel = diff_entry
                     .strip_prefix(&diff_root)
                     .unwrap_or(&diff_entry)

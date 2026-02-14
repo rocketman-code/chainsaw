@@ -33,14 +33,15 @@ pub enum ProjectKind {
 }
 
 /// Detect the project kind from the entry file extension, then walk up
-/// to find the matching project root marker.
-pub fn detect_project(entry: &Path) -> (PathBuf, ProjectKind) {
+/// to find the matching project root marker. Returns `None` for
+/// unsupported file extensions.
+pub fn detect_project(entry: &Path) -> Option<(PathBuf, ProjectKind)> {
     let kind = match entry.extension().and_then(|e| e.to_str()) {
         Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts") => {
             ProjectKind::TypeScript
         }
         Some("py") => ProjectKind::Python,
-        _ => ProjectKind::TypeScript,
+        _ => return None,
     };
 
     let markers: &[&str] = match kind {
@@ -51,7 +52,7 @@ pub fn detect_project(entry: &Path) -> (PathBuf, ProjectKind) {
     let root = find_root_with_markers(entry, markers)
         .unwrap_or_else(|| entry.parent().unwrap_or(entry).to_path_buf());
 
-    (root, kind)
+    Some((root, kind))
 }
 
 fn find_root_with_markers(entry: &Path, markers: &[&str]) -> Option<PathBuf> {
@@ -81,7 +82,7 @@ mod tests {
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "").unwrap();
 
-        let (detected_root, kind) = detect_project(&entry);
+        let (detected_root, kind) = detect_project(&entry).unwrap();
         assert_eq!(kind, ProjectKind::TypeScript);
         assert_eq!(detected_root, root);
     }
@@ -95,7 +96,7 @@ mod tests {
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "").unwrap();
 
-        let (detected_root, kind) = detect_project(&entry);
+        let (detected_root, kind) = detect_project(&entry).unwrap();
         assert_eq!(kind, ProjectKind::Python);
         assert_eq!(detected_root, root);
     }
@@ -109,8 +110,20 @@ mod tests {
         let entry = root.join("app.py");
         fs::write(&entry, "").unwrap();
 
-        let (detected_root, kind) = detect_project(&entry);
+        let (detected_root, kind) = detect_project(&entry).unwrap();
         assert_eq!(kind, ProjectKind::Python);
         assert_eq!(detected_root, root);
+    }
+
+    #[test]
+    fn detect_unknown_extension_returns_none() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        let entry = root.join("src/main.rs");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "").unwrap();
+
+        assert!(detect_project(&entry).is_none());
     }
 }
