@@ -264,6 +264,9 @@ fn main() {
                 } else {
                     report::print_chains(&graph, &chains, &resolved.label, &root, resolved.exists);
                 }
+                if chains.is_empty() {
+                    std::process::exit(1);
+                }
                 return;
             }
 
@@ -298,6 +301,9 @@ fn main() {
                         &root,
                         resolved.exists,
                     );
+                }
+                if chains.is_empty() {
+                    std::process::exit(1);
                 }
                 return;
             }
