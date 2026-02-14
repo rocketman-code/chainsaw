@@ -293,20 +293,26 @@ fn shortest_chain_to_package(
 }
 
 pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> TraceResult {
-    let (static_reachable, dynamic_only) = bfs_reachable(graph, entry);
+    let (mut reachable, dynamic_only) = bfs_reachable(graph, entry);
 
-    let static_weight: u64 = static_reachable
+    // When --include-dynamic is set, fold dynamic modules into the reachable
+    // set. There's nothing "only dynamic" when the user asked to include them.
+    let (dynamic_only_weight, dynamic_only_module_count) = if opts.include_dynamic {
+        reachable.extend(&dynamic_only);
+        (0, 0)
+    } else {
+        let w: u64 = dynamic_only.iter().map(|&mid| graph.module(mid).size_bytes).sum();
+        (w, dynamic_only.len())
+    };
+
+    let static_weight: u64 = reachable
         .iter()
         .map(|&mid| graph.module(mid).size_bytes)
         .sum();
-    let dynamic_only_weight: u64 = dynamic_only
-        .iter()
-        .map(|&mid| graph.module(mid).size_bytes)
-        .sum();
 
-    // Find heavy packages in the static reachable set
+    // Find heavy packages in the reachable set
     let mut package_sizes: HashMap<String, (u64, u32)> = HashMap::new();
-    for &mid in &static_reachable {
+    for &mid in &reachable {
         let module = graph.module(mid);
         if let Some(ref pkg) = module.package {
             let entry = package_sizes.entry(pkg.clone()).or_default();
@@ -335,7 +341,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     // Compute exclusive weight for all reachable modules via dominator tree
     let exclusive = compute_exclusive_weights(graph, entry, opts.include_dynamic);
 
-    let mut modules_by_cost: Vec<ModuleCost> = static_reachable
+    let mut modules_by_cost: Vec<ModuleCost> = reachable
         .iter()
         .filter(|&&mid| mid != entry && graph.module(mid).package.is_none())
         .map(|&mid| ModuleCost {
@@ -344,24 +350,13 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         })
         .collect();
 
-    if opts.include_dynamic {
-        let dynamic_costs = dynamic_only
-            .iter()
-            .filter(|&&mid| graph.module(mid).package.is_none())
-            .map(|&mid| ModuleCost {
-                module_id: mid,
-                exclusive_size: exclusive[mid.0 as usize],
-            });
-        modules_by_cost.extend(dynamic_costs);
-    }
-
     modules_by_cost.sort_by(|a, b| b.exclusive_size.cmp(&a.exclusive_size));
 
     TraceResult {
         static_weight,
-        static_module_count: static_reachable.len(),
+        static_module_count: reachable.len(),
         dynamic_only_weight,
-        dynamic_only_module_count: dynamic_only.len(),
+        dynamic_only_module_count,
         heavy_packages,
         modules_by_cost,
         all_packages,
