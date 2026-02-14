@@ -341,6 +341,9 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     // Compute exclusive weight for all reachable modules via dominator tree
     let exclusive = compute_exclusive_weights(graph, entry, opts.include_dynamic);
 
+    // Prefer first-party (no package) modules for the per-file breakdown.
+    // Fall back to all modules when no first-party modules exist (e.g. Python
+    // projects where every reachable module is a third-party package).
     let mut modules_by_cost: Vec<ModuleCost> = reachable
         .iter()
         .filter(|&&mid| mid != entry && graph.module(mid).package.is_none())
@@ -349,6 +352,16 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
             exclusive_size: exclusive[mid.0 as usize],
         })
         .collect();
+    if modules_by_cost.is_empty() {
+        modules_by_cost = reachable
+            .iter()
+            .filter(|&&mid| mid != entry)
+            .map(|&mid| ModuleCost {
+                module_id: mid,
+                exclusive_size: exclusive[mid.0 as usize],
+            })
+            .collect();
+    }
 
     modules_by_cost.sort_by(|a, b| b.exclusive_size.cmp(&a.exclusive_size));
 
