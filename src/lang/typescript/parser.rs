@@ -233,6 +233,8 @@ fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>, unresolvable: &mut usize
                         specifier: wtf8_to_string(s),
                         kind: EdgeKind::Dynamic,
                     });
+                } else if !call.args.is_empty() {
+                    *unresolvable += 1;
                 }
                 return;
             }
@@ -248,6 +250,8 @@ fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>, unresolvable: &mut usize
                             specifier: wtf8_to_string(s),
                             kind: EdgeKind::Static,
                         });
+                    } else if !call.args.is_empty() {
+                        *unresolvable += 1;
                     }
                     return;
                 }
@@ -564,5 +568,67 @@ mod tests {
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].specifier, "seq-dep");
         assert_eq!(imports[0].kind, EdgeKind::Dynamic);
+    }
+
+    // --- Unresolvable dynamic imports ---
+
+    #[test]
+    fn dynamic_import_variable_unresolvable() {
+        let cm = Arc::<SourceMap>::default();
+        let fm = cm.new_source_file(
+            swc_common::FileName::Custom("test.ts".into()).into(),
+            "const m = import(someVar);".to_string(),
+        );
+        let syntax = Syntax::Typescript(TsSyntax {
+            tsx: false,
+            decorators: true,
+            ..Default::default()
+        });
+        let mut errors = vec![];
+        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
+            .expect("test source should parse");
+        let result = extract_imports(&module);
+        assert_eq!(result.imports.len(), 0);
+        assert_eq!(result.unresolvable_dynamic, 1);
+    }
+
+    #[test]
+    fn require_variable_unresolvable() {
+        let cm = Arc::<SourceMap>::default();
+        let fm = cm.new_source_file(
+            swc_common::FileName::Custom("test.js".into()).into(),
+            "const m = require(moduleName);".to_string(),
+        );
+        let syntax = Syntax::Es(EsSyntax {
+            jsx: false,
+            ..Default::default()
+        });
+        let mut errors = vec![];
+        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
+            .expect("test source should parse");
+        let result = extract_imports(&module);
+        assert_eq!(result.imports.len(), 0);
+        assert_eq!(result.unresolvable_dynamic, 1);
+    }
+
+    #[test]
+    fn dynamic_import_literal_still_works_ts() {
+        let cm = Arc::<SourceMap>::default();
+        let fm = cm.new_source_file(
+            swc_common::FileName::Custom("test.ts".into()).into(),
+            r#"const m = import("./foo");"#.to_string(),
+        );
+        let syntax = Syntax::Typescript(TsSyntax {
+            tsx: false,
+            decorators: true,
+            ..Default::default()
+        });
+        let mut errors = vec![];
+        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
+            .expect("test source should parse");
+        let result = extract_imports(&module);
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].specifier, "./foo");
+        assert_eq!(result.unresolvable_dynamic, 0);
     }
 }
