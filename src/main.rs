@@ -39,10 +39,6 @@ enum Commands {
         #[arg(long)]
         diff_from: Option<PathBuf>,
 
-        /// Only follow static edges (default behavior)
-        #[arg(long, default_value_t = true)]
-        static_only: bool,
-
         /// Also traverse dynamic imports
         #[arg(long)]
         include_dynamic: bool,
