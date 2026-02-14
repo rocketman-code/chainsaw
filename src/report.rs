@@ -72,7 +72,7 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
         .collect()
 }
 
-pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top_modules: i32) {
+pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32) {
     println!("{}", relative_path(entry_path, root));
     println!(
         "Static transitive weight: {} ({} modules)",
@@ -88,24 +88,26 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
     println!();
 
-    println!("Heavy dependencies (static):");
-    if result.heavy_packages.is_empty() {
-        println!("  (none \u{2014} all reachable modules are first-party)");
-    } else {
-        for pkg in &result.heavy_packages {
-            println!(
-                "  {:<35} {}  {} files",
-                pkg.name,
-                format_size(pkg.total_size),
-                pkg.file_count
-            );
-            if pkg.chain.len() > 1 {
-                let chain_str = chain_display_names(graph, &pkg.chain, root);
-                println!("    -> {}", chain_str.join(" -> "));
+    if top != 0 {
+        println!("Heavy dependencies (static):");
+        if result.heavy_packages.is_empty() {
+            println!("  (none \u{2014} all reachable modules are first-party)");
+        } else {
+            for pkg in &result.heavy_packages {
+                println!(
+                    "  {:<35} {}  {} files",
+                    pkg.name,
+                    format_size(pkg.total_size),
+                    pkg.file_count
+                );
+                if pkg.chain.len() > 1 {
+                    let chain_str = chain_display_names(graph, &pkg.chain, root);
+                    println!("    -> {}", chain_str.join(" -> "));
+                }
             }
         }
+        println!();
     }
-    println!();
 
     if top_modules != 0 && !result.modules_by_cost.is_empty() {
         println!("Modules (sorted by exclusive weight):");
