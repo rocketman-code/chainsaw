@@ -52,7 +52,7 @@ impl Default for TraceOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChainTarget {
     Package(String),
     Module(ModuleId),
