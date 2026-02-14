@@ -160,11 +160,17 @@ fn collect_imports(
         }
 
         "call" => {
-            if let Some(specifier) = extract_dynamic_import(node, source) {
-                imports.push(RawImport {
-                    specifier,
-                    kind: EdgeKind::Dynamic,
-                });
+            match extract_dynamic_import(node, source) {
+                Some(Some(specifier)) => {
+                    imports.push(RawImport {
+                        specifier,
+                        kind: EdgeKind::Dynamic,
+                    });
+                }
+                Some(None) => {
+                    *unresolvable += 1;
+                }
+                None => {}
             }
             // Don't return -- fall through to generic recursion for nested calls
         }
@@ -240,7 +246,12 @@ fn is_type_checking_guard(node: tree_sitter::Node, source: &[u8]) -> bool {
 
 /// Extract the specifier from a dynamic import call:
 /// `importlib.import_module("x")` or `__import__("x")`.
-fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+///
+/// Returns:
+/// - `None` — not a dynamic import call at all
+/// - `Some(None)` — IS a dynamic import but the specifier is not a string literal
+/// - `Some(Some(s))` — dynamic import with extractable string literal specifier
+fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<Option<String>> {
     let function_node = node.child_by_field_name("function")?;
     let is_dynamic = match function_node.kind() {
         "attribute" => {
@@ -268,12 +279,12 @@ fn extract_dynamic_import(node: tree_sitter::Node, source: &[u8]) -> Option<Stri
                 // Strip surrounding quotes (single, double, or triple)
                 let stripped = strip_string_quotes(&raw);
                 if !stripped.is_empty() {
-                    return Some(stripped.to_string());
+                    return Some(Some(stripped.to_string()));
                 }
             }
         }
     }
-    None
+    Some(None)
 }
 
 /// Strip surrounding quotes from a Python string literal.
@@ -494,5 +505,42 @@ mod tests {
         assert_eq!(imports[1].specifier, "pathlib");
         assert_eq!(imports[2].specifier, ".utils");
         assert_eq!(imports[3].specifier, "..config");
+    }
+
+    #[test]
+    fn dynamic_import_variable_arg_unresolvable() {
+        let result = parse_source("importlib.import_module(some_var)").expect("parse failed");
+        assert_eq!(result.imports.len(), 0);
+        assert_eq!(result.unresolvable_dynamic, 1);
+    }
+
+    #[test]
+    fn dunder_import_variable_arg_unresolvable() {
+        let result = parse_source("__import__(name)").expect("parse failed");
+        assert_eq!(result.imports.len(), 0);
+        assert_eq!(result.unresolvable_dynamic, 1);
+    }
+
+    #[test]
+    fn dynamic_import_literal_still_works() {
+        let result = parse_source(r#"importlib.import_module("os")"#).expect("parse failed");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].specifier, "os");
+        assert_eq!(result.unresolvable_dynamic, 0);
+    }
+
+    #[test]
+    fn mixed_resolvable_and_unresolvable_dynamic() {
+        let result = parse_source(
+            r#"
+importlib.import_module("json")
+__import__(config.module_name)
+importlib.import_module(get_name())
+"#,
+        )
+        .expect("parse failed");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].specifier, "json");
+        assert_eq!(result.unresolvable_dynamic, 2);
     }
 }
