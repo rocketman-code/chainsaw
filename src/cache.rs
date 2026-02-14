@@ -10,7 +10,7 @@ use crate::graph::ModuleGraph;
 use crate::lang::ParseResult;
 
 const CACHE_FILE: &str = ".chainsaw.cache";
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 
 pub fn cache_path(root: &Path) -> PathBuf {
     root.join(CACHE_FILE)
@@ -30,6 +30,7 @@ struct CachedParse {
     mtime_nanos: u128,
     size: u64,
     result: ParseResult,
+    resolved_paths: Vec<Option<PathBuf>>,
 }
 
 // --- Whole-graph cache (tier 1) ---
@@ -176,18 +177,23 @@ impl ParseCache {
         }
     }
 
-    pub fn lookup(&self, path: &Path) -> Option<ParseResult> {
+    pub fn lookup(&self, path: &Path) -> Option<(ParseResult, Vec<Option<PathBuf>>)> {
         let entry = self.entries.get(path)?;
         let meta = fs::metadata(path).ok()?;
         let current_mtime = mtime_of(&meta)?;
         if current_mtime == entry.mtime_nanos && meta.len() == entry.size {
-            Some(entry.result.clone())
+            Some((entry.result.clone(), entry.resolved_paths.clone()))
         } else {
             None
         }
     }
 
-    pub fn insert(&mut self, path: PathBuf, result: &ParseResult) {
+    pub fn insert(
+        &mut self,
+        path: PathBuf,
+        result: &ParseResult,
+        resolved_paths: &[Option<PathBuf>],
+    ) {
         let Ok(meta) = fs::metadata(&path) else {
             return;
         };
@@ -200,6 +206,7 @@ impl ParseCache {
                 mtime_nanos: mtime,
                 size: meta.len(),
                 result: result.clone(),
+                resolved_paths: resolved_paths.to_vec(),
             },
         );
     }
@@ -226,11 +233,15 @@ mod tests {
             }],
             unresolvable_dynamic: 0,
         };
-        cache.insert(file.clone(), &result);
+        let resolved = vec![None];
+        cache.insert(file.clone(), &result, &resolved);
 
         let cached = cache.lookup(&file);
         assert!(cached.is_some());
-        assert_eq!(cached.unwrap().imports.len(), 1);
+        let (parse_result, resolved_paths) = cached.unwrap();
+        assert_eq!(parse_result.imports.len(), 1);
+        assert_eq!(resolved_paths.len(), 1);
+        assert!(resolved_paths[0].is_none());
     }
 
     #[test]
@@ -245,7 +256,7 @@ mod tests {
             imports: vec![],
             unresolvable_dynamic: 0,
         };
-        cache.insert(file.clone(), &result);
+        cache.insert(file.clone(), &result, &[]);
 
         fs::write(&file, "import os\nimport sys").unwrap();
 
@@ -268,7 +279,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let file = root.join("test.py");
+        let target = root.join("os_impl.py");
         fs::write(&file, "import os").unwrap();
+        fs::write(&target, "").unwrap();
 
         let mut cache = ParseCache::new();
         let result = ParseResult {
@@ -278,7 +291,8 @@ mod tests {
             }],
             unresolvable_dynamic: 1,
         };
-        cache.insert(file.clone(), &result);
+        let resolved = vec![Some(target.clone())];
+        cache.insert(file.clone(), &result, &resolved);
 
         let graph = ModuleGraph::new();
         cache.save(&root, &file, &graph, vec![], 0);
@@ -286,10 +300,12 @@ mod tests {
         let loaded = ParseCache::load(&root);
         let cached = loaded.lookup(&file);
         assert!(cached.is_some());
-        let cached = cached.unwrap();
-        assert_eq!(cached.imports.len(), 1);
-        assert_eq!(cached.imports[0].specifier, "os");
-        assert_eq!(cached.unresolvable_dynamic, 1);
+        let (parse_result, resolved_paths) = cached.unwrap();
+        assert_eq!(parse_result.imports.len(), 1);
+        assert_eq!(parse_result.imports[0].specifier, "os");
+        assert_eq!(parse_result.unresolvable_dynamic, 1);
+        assert_eq!(resolved_paths.len(), 1);
+        assert_eq!(resolved_paths[0], Some(target));
     }
 
     #[test]
