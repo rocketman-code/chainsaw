@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::SystemTime;
 
 use crate::graph::ModuleGraph;
@@ -64,6 +65,24 @@ pub enum GraphCacheResult {
     },
     /// Cache miss — wrong entry, no cache, file deleted, or new imports resolve.
     Miss,
+}
+
+/// Handle for a background cache write. Joins the write thread on drop
+/// to ensure the cache file is fully written before process exit.
+pub struct CacheWriteHandle(Option<thread::JoinHandle<()>>);
+
+impl CacheWriteHandle {
+    pub fn none() -> Self {
+        Self(None)
+    }
+}
+
+impl Drop for CacheWriteHandle {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 pub struct ParseCache {
@@ -205,7 +224,8 @@ impl ParseCache {
 
     /// Save after incremental update. Uses the preserved file_mtimes from the
     /// Stale result, updating only the changed files' mtimes instead of
-    /// re-statting every file.
+    /// re-statting every file. Serialization and disk write happen on a
+    /// background thread.
     pub fn save_incremental(
         &mut self,
         root: &Path,
@@ -213,14 +233,14 @@ impl ParseCache {
         graph: &ModuleGraph,
         changed_files: &[PathBuf],
         unresolvable_dynamic: usize,
-    ) {
+    ) -> CacheWriteHandle {
         let mut file_mtimes = match self.stale_file_mtimes.take() {
             Some(m) => m,
-            None => return,
+            None => return CacheWriteHandle::none(),
         };
         let unresolved_specifiers = self.stale_unresolved.take().unwrap_or_default();
 
-        // Update only changed files' mtimes
+        // Update only changed files' mtimes (cheap, typically 1-2 files)
         for path in changed_files {
             if let Ok(meta) = fs::metadata(path) {
                 if let Some(mtime) = mtime_of(&meta) {
@@ -232,9 +252,19 @@ impl ParseCache {
             }
         }
 
-        self.write_cache(root, entry, graph, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
+        self.ensure_entries();
+        let entries = std::mem::take(&mut self.entries);
+        let root = root.to_path_buf();
+        let entry = entry.to_path_buf();
+        let graph = graph.clone();
+
+        CacheWriteHandle(Some(thread::spawn(move || {
+            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
+        })))
     }
 
+    /// Save the full graph + parse cache to disk. File mtime collection,
+    /// serialization, and disk write all happen on a background thread.
     pub fn save(
         &mut self,
         root: &Path,
@@ -242,72 +272,32 @@ impl ParseCache {
         graph: &ModuleGraph,
         unresolved_specifiers: Vec<String>,
         unresolvable_dynamic: usize,
-    ) {
+    ) -> CacheWriteHandle {
         self.ensure_entries();
+        let entries = std::mem::take(&mut self.entries);
+        let root = root.to_path_buf();
+        let entry = entry.to_path_buf();
+        let graph = graph.clone();
 
-        let file_mtimes: HashMap<PathBuf, CachedMtime> = graph
-            .modules
-            .par_iter()
-            .filter_map(|m| {
-                let meta = fs::metadata(&m.path).ok()?;
-                let mtime = mtime_of(&meta)?;
-                Some((
-                    m.path.clone(),
-                    CachedMtime {
-                        mtime_nanos: mtime,
-                        size: meta.len(),
-                    },
-                ))
-            })
-            .collect();
+        CacheWriteHandle(Some(thread::spawn(move || {
+            let file_mtimes: HashMap<PathBuf, CachedMtime> = graph
+                .modules
+                .par_iter()
+                .filter_map(|m| {
+                    let meta = fs::metadata(&m.path).ok()?;
+                    let mtime = mtime_of(&meta)?;
+                    Some((
+                        m.path.clone(),
+                        CachedMtime {
+                            mtime_nanos: mtime,
+                            size: meta.len(),
+                        },
+                    ))
+                })
+                .collect();
 
-        self.write_cache(root, entry, graph, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
-    }
-
-    fn write_cache(
-        &mut self,
-        root: &Path,
-        entry: &Path,
-        graph: &ModuleGraph,
-        file_mtimes: HashMap<PathBuf, CachedMtime>,
-        unresolved_specifiers: Vec<String>,
-        unresolvable_dynamic: usize,
-    ) {
-        self.ensure_entries();
-
-        let graph_cache = CachedGraph {
-            entry: entry.to_path_buf(),
-            graph: graph.clone(),
-            file_mtimes,
-            unresolved_specifiers,
-            unresolvable_dynamic,
-        };
-
-        let graph_data = match bitcode::serialize(&graph_cache) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("warning: failed to serialize graph cache: {e}");
-                return;
-            }
-        };
-        let parse_data = match bitcode::serialize(&self.entries) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("warning: failed to serialize parse cache: {e}");
-                return;
-            }
-        };
-
-        let mut out = Vec::with_capacity(HEADER_SIZE + graph_data.len() + parse_data.len());
-        out.extend_from_slice(&CACHE_MAGIC.to_le_bytes());
-        out.extend_from_slice(&CACHE_VERSION.to_le_bytes());
-        out.extend_from_slice(&(graph_data.len() as u64).to_le_bytes());
-        out.extend_from_slice(&graph_data);
-        out.extend_from_slice(&parse_data);
-
-        if let Err(e) = fs::write(cache_path(root), &out) {
-            eprintln!("warning: failed to write cache: {e}");
-        }
+            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
+        })))
     }
 
     pub fn lookup(&mut self, path: &Path) -> Option<(ParseResult, Vec<Option<PathBuf>>)> {
@@ -344,6 +334,51 @@ impl ParseCache {
                 resolved_paths: resolved_paths.to_vec(),
             },
         );
+    }
+}
+
+/// Serialize and write the cache to disk. Runs on a background thread.
+fn write_cache_to_disk(
+    root: PathBuf,
+    entry: PathBuf,
+    graph: ModuleGraph,
+    entries: HashMap<PathBuf, CachedParse>,
+    file_mtimes: HashMap<PathBuf, CachedMtime>,
+    unresolved_specifiers: Vec<String>,
+    unresolvable_dynamic: usize,
+) {
+    let graph_cache = CachedGraph {
+        entry,
+        graph,
+        file_mtimes,
+        unresolved_specifiers,
+        unresolvable_dynamic,
+    };
+
+    let graph_data = match bitcode::serialize(&graph_cache) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("warning: failed to serialize graph cache: {e}");
+            return;
+        }
+    };
+    let parse_data = match bitcode::serialize(&entries) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("warning: failed to serialize parse cache: {e}");
+            return;
+        }
+    };
+
+    let mut out = Vec::with_capacity(HEADER_SIZE + graph_data.len() + parse_data.len());
+    out.extend_from_slice(&CACHE_MAGIC.to_le_bytes());
+    out.extend_from_slice(&CACHE_VERSION.to_le_bytes());
+    out.extend_from_slice(&(graph_data.len() as u64).to_le_bytes());
+    out.extend_from_slice(&graph_data);
+    out.extend_from_slice(&parse_data);
+
+    if let Err(e) = fs::write(cache_path(&root), &out) {
+        eprintln!("warning: failed to write cache: {e}");
     }
 }
 
@@ -430,7 +465,7 @@ mod tests {
         cache.insert(file.clone(), &result, &resolved);
 
         let graph = ModuleGraph::new();
-        cache.save(&root, &file, &graph, vec![], 0);
+        drop(cache.save(&root, &file, &graph, vec![], 0));
 
         let mut loaded = ParseCache::load(&root);
         let cached = loaded.lookup(&file);
@@ -455,7 +490,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        cache.save(&root, &file, &graph, vec!["os".into()], 2);
+        drop(cache.save(&root, &file, &graph, vec!["os".into()], 2));
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
@@ -479,7 +514,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        cache.save(&root, &file, &graph, vec![], 0);
+        drop(cache.save(&root, &file, &graph, vec![], 0));
 
         fs::write(&file, "x = 2; y = 3").unwrap();
 
@@ -505,7 +540,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        cache.save(&root, &file, &graph, vec!["foo".into()], 0);
+        drop(cache.save(&root, &file, &graph, vec!["foo".into()], 0));
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |spec: &str| spec == "foo";
@@ -529,7 +564,7 @@ mod tests {
         graph.add_module(file_a.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        cache.save(&root, &file_a, &graph, vec![], 0);
+        drop(cache.save(&root, &file_a, &graph, vec![], 0));
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
@@ -551,7 +586,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        cache.save(&root, &file, &graph, vec![], 0);
+        drop(cache.save(&root, &file, &graph, vec![], 0));
 
         // Modify the file
         fs::write(&file, "x = 2").unwrap();
@@ -563,7 +598,7 @@ mod tests {
 
         if let GraphCacheResult::Stale { graph, changed_files, .. } = result {
             // Incremental save with updated mtimes
-            loaded.save_incremental(&root, &file, &graph, &changed_files, 0);
+            drop(loaded.save_incremental(&root, &file, &graph, &changed_files, 0));
 
             // Reload — should now be a Hit
             let mut reloaded = ParseCache::load(&root);

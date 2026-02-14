@@ -204,7 +204,7 @@ fn main() {
             }
 
             // Load or build graph
-            let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            let (load_result, _cache_write) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
             let graph = load_result.graph;
             let unresolvable_count = load_result.unresolvable_dynamic_count;
             if !quiet {
@@ -441,7 +441,7 @@ fn main() {
                             Box::new(lang::python::PythonSupport::new(&diff_root))
                         }
                     };
-                    let diff_load = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
+                    let (diff_load, _diff_cache_write) = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
                     let diff_graph = diff_load.graph;
                     let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
                         Some(&id) => id,
@@ -534,7 +534,7 @@ fn main() {
                 }
             };
 
-            let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            let (load_result, _cache_write) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
             if !quiet {
                 eprintln!(
                     "{} ({} modules) in {:.1}ms",
@@ -569,7 +569,7 @@ fn load_or_build_graph(
     root: &Path,
     no_cache: bool,
     lang: &dyn LanguageSupport,
-) -> LoadResult {
+) -> (LoadResult, cache::CacheWriteHandle) {
     let mut cache = if no_cache {
         cache::ParseCache::new()
     } else {
@@ -581,12 +581,15 @@ fn load_or_build_graph(
         let resolve_fn = |spec: &str| lang.resolve(root, spec).is_some();
         match cache.try_load_graph(entry, &resolve_fn) {
             cache::GraphCacheResult::Hit(graph, unresolvable_dynamic) => {
-                return LoadResult {
-                    graph,
-                    unresolvable_dynamic_count: unresolvable_dynamic,
-                    unresolvable_dynamic_files: Vec::new(),
-                    from_cache: true,
-                };
+                return (
+                    LoadResult {
+                        graph,
+                        unresolvable_dynamic_count: unresolvable_dynamic,
+                        unresolvable_dynamic_files: Vec::new(),
+                        from_cache: true,
+                    },
+                    cache::CacheWriteHandle::none(),
+                );
             }
             cache::GraphCacheResult::Stale {
                 mut graph,
@@ -603,19 +606,22 @@ fn load_or_build_graph(
                     lang,
                 ) {
                     graph.compute_package_info();
-                    cache.save_incremental(
+                    let handle = cache.save_incremental(
                         root,
                         entry,
                         &graph,
                         &changed_files,
                         result.unresolvable_dynamic,
                     );
-                    return LoadResult {
-                        graph,
-                        unresolvable_dynamic_count: result.unresolvable_dynamic,
-                        unresolvable_dynamic_files: Vec::new(),
-                        from_cache: true,
-                    };
+                    return (
+                        LoadResult {
+                            graph,
+                            unresolvable_dynamic_count: result.unresolvable_dynamic,
+                            unresolvable_dynamic_files: Vec::new(),
+                            from_cache: true,
+                        },
+                        handle,
+                    );
                 }
                 // Imports changed — fall through to full BFS
             }
@@ -626,19 +632,22 @@ fn load_or_build_graph(
     // Tier 2: BFS walk with per-file parse cache
     let result = walker::build_graph(entry, root, lang, &mut cache);
     let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
-    cache.save(
+    let handle = cache.save(
         root,
         entry,
         &result.graph,
         result.unresolved_specifiers,
         unresolvable_count,
     );
-    LoadResult {
-        graph: result.graph,
-        unresolvable_dynamic_count: unresolvable_count,
-        unresolvable_dynamic_files: result.unresolvable_dynamic,
-        from_cache: false,
-    }
+    (
+        LoadResult {
+            graph: result.graph,
+            unresolvable_dynamic_count: unresolvable_count,
+            unresolvable_dynamic_files: result.unresolvable_dynamic,
+            from_cache: false,
+        },
+        handle,
+    )
 }
 
 struct IncrementalResult {
