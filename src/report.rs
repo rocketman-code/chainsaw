@@ -432,18 +432,21 @@ pub fn print_cut_json(
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }
 
-pub fn print_packages(graph: &ModuleGraph) {
+pub fn print_packages(graph: &ModuleGraph, top: i32) {
     let c = C::stdout();
     let mut packages: Vec<_> = graph.package_map.values().collect();
-    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    packages.sort_by(|a, b| b.total_reachable_size.cmp(&a.total_reachable_size));
 
     if packages.is_empty() {
         println!("No third-party packages found in the dependency graph.");
         return;
     }
 
-    println!("{}\n", c.bold_green(&format!("{} package{}:", packages.len(), plural(packages.len() as u64))));
-    for pkg in &packages {
+    let total = packages.len();
+    let display_count = if top < 0 { total } else { total.min(top as usize) };
+
+    println!("{}\n", c.bold_green(&format!("{} package{}:", total, plural(total as u64))));
+    for pkg in &packages[..display_count] {
         println!(
             "  {:<40} {:>8}  {} file{}",
             pkg.name,
@@ -452,13 +455,20 @@ pub fn print_packages(graph: &ModuleGraph) {
             plural(pkg.total_reachable_files)
         );
     }
+    if total > display_count {
+        let remaining = total - display_count;
+        println!("  ... and {remaining} more package{}", plural(remaining as u64));
+    }
 }
 
-pub fn print_packages_json(graph: &ModuleGraph) {
+pub fn print_packages_json(graph: &ModuleGraph, top: i32) {
     let mut packages: Vec<_> = graph.package_map.values().collect();
-    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    packages.sort_by(|a, b| b.total_reachable_size.cmp(&a.total_reachable_size));
 
-    let json_packages: Vec<serde_json::Value> = packages
+    let total = packages.len();
+    let display_count = if top < 0 { total } else { total.min(top as usize) };
+
+    let json_packages: Vec<serde_json::Value> = packages[..display_count]
         .iter()
         .map(|pkg| serde_json::json!({
             "name": pkg.name,
@@ -468,7 +478,7 @@ pub fn print_packages_json(graph: &ModuleGraph) {
         .collect();
 
     let output = serde_json::json!({
-        "package_count": packages.len(),
+        "package_count": total,
         "packages": json_packages,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());

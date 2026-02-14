@@ -110,6 +110,10 @@ enum Commands {
         #[arg(long)]
         no_cache: bool,
 
+        /// Show top N packages by size (0 to hide, -1 for all)
+        #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+        top: i32,
+
         /// Suppress informational output (timing, warnings)
         #[arg(long, short)]
         quiet: bool,
@@ -493,7 +497,7 @@ fn main() {
             report::print_diff(&diff_output, &snap_a.entry, &snap_b.entry, limit);
         }
 
-        Commands::Packages { entry, json, no_cache, quiet } => {
+        Commands::Packages { entry, json, no_cache, top, quiet } => {
             let start = Instant::now();
 
             let entry = entry.canonicalize().unwrap_or_else(|e| {
@@ -533,9 +537,9 @@ fn main() {
             }
 
             if json {
-                report::print_packages_json(&load_result.graph);
+                report::print_packages_json(&load_result.graph, top);
             } else {
-                report::print_packages(&load_result.graph);
+                report::print_packages(&load_result.graph, top);
             }
         }
 
