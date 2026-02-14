@@ -168,7 +168,15 @@ pub fn build_graph(root: &Path, lang: &dyn LanguageSupport) -> BuildResult {
     let mut g = graph.into_inner().unwrap();
     compute_package_info(&mut g);
 
-    let mut unresolved_specifiers: Vec<String> = unresolved.into_iter().collect();
+    // Filter to specifiers that also fail to resolve from the project root.
+    // During graph building, specifiers are resolved from each source file's directory.
+    // During cache loading, they're re-resolved from root. Without this filter,
+    // workspace-internal packages (resolvable from root but not from a subdirectory)
+    // cause false cache invalidation on every run.
+    let mut unresolved_specifiers: Vec<String> = unresolved
+        .into_iter()
+        .filter(|spec| lang.resolve(root, spec).is_none())
+        .collect();
     unresolved_specifiers.sort();
 
     BuildResult {
