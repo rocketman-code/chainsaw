@@ -10,7 +10,7 @@ fn plural(n: impl Into<u64>) -> &'static str {
     if n.into() == 1 { "" } else { "s" }
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
         format!("{:.1} MB", bytes as f64 / 1_000_000.0)
     } else if bytes >= 1_000 {

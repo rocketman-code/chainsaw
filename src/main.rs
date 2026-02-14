@@ -81,6 +81,10 @@ enum Commands {
         /// Max packages to show in diff output (-1 for all)
         #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
         limit: i32,
+
+        /// Exit with error if static weight exceeds this threshold (e.g. 5MB, 500KB)
+        #[arg(long, value_parser = parse_size)]
+        max_weight: Option<u64>,
     },
 
     /// Compare two saved trace snapshots
@@ -111,6 +115,22 @@ enum Commands {
     },
 }
 
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix("MB") {
+        (n.trim(), 1_000_000.0)
+    } else if let Some(n) = s.strip_suffix("KB") {
+        (n.trim(), 1_000.0)
+    } else if let Some(n) = s.strip_suffix("B") {
+        (n.trim(), 1.0)
+    } else {
+        // bare number = bytes
+        (s, 1.0)
+    };
+    let value: f64 = num_str.parse().map_err(|_| format!("invalid size: {s}"))?;
+    Ok((value * multiplier) as u64)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -130,6 +150,7 @@ fn main() {
             ignore,
             quiet,
             limit,
+            max_weight,
             ..
         } => {
             let start = Instant::now();
@@ -426,6 +447,17 @@ fn main() {
                 report::print_trace(&graph, &result, &entry, &root, top, top_modules, include_dynamic);
             }
 
+            if let Some(threshold) = max_weight {
+                if result.static_weight > threshold {
+                    eprintln!(
+                        "error: static weight {} exceeds threshold {}",
+                        report::format_size(result.static_weight),
+                        report::format_size(threshold),
+                    );
+                    std::process::exit(1);
+                }
+            }
+
             let elapsed = start.elapsed();
             if !quiet {
                 eprintln!("\nCompleted in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
@@ -581,5 +613,15 @@ mod tests {
         assert!(looks_like_path("utils.ts", exts));
         assert!(looks_like_path("main.py", exts));
         assert!(!looks_like_path("utils.txt", exts));
+    }
+
+    #[test]
+    fn parse_size_units() {
+        assert_eq!(parse_size("5MB").unwrap(), 5_000_000);
+        assert_eq!(parse_size("500KB").unwrap(), 500_000);
+        assert_eq!(parse_size("100B").unwrap(), 100);
+        assert_eq!(parse_size("1234").unwrap(), 1234);
+        assert_eq!(parse_size("1.5MB").unwrap(), 1_500_000);
+        assert!(parse_size("abc").is_err());
     }
 }
