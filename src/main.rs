@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -120,6 +122,7 @@ enum Commands {
     },
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn parse_size(s: &str) -> Result<u64, String> {
     let s = s.trim();
     let (num_str, multiplier) = if let Some(n) = s.strip_suffix("MB") {
@@ -134,6 +137,12 @@ fn parse_size(s: &str) -> Result<u64, String> {
     };
     let value: f64 = num_str.parse().map_err(|_| format!("invalid size: {s}"))?;
     Ok((value * multiplier) as u64)
+}
+
+struct ResolvedTarget {
+    target: query::ChainTarget,
+    label: String,
+    exists: bool,
 }
 
 fn main() {
@@ -230,16 +239,13 @@ fn main() {
             }
 
             // Resolve entry module ID
-            let entry_id = match graph.path_to_id.get(&entry) {
-                Some(&id) => id,
-                None => {
-                    eprintln!(
-                        "error: entry file '{}' not found in graph",
-                        entry.display()
-                    );
-                    eprintln!("hint: is it reachable from the project root?");
-                    std::process::exit(1);
-                }
+            let Some(&entry_id) = graph.path_to_id.get(&entry) else {
+                eprintln!(
+                    "error: entry file '{}' not found in graph",
+                    entry.display()
+                );
+                eprintln!("hint: is it reachable from the project root?");
+                std::process::exit(1);
             };
 
             let opts = query::TraceOptions {
@@ -268,11 +274,6 @@ fn main() {
             }
 
             // Resolve --chain/--cut argument: file path or package name
-            struct ResolvedTarget {
-                target: query::ChainTarget,
-                label: String,
-                exists: bool,
-            }
             let resolve_target = |arg: &str| -> ResolvedTarget {
                 let looks_like_path = looks_like_path(arg, valid_extensions);
                 if looks_like_path {
@@ -280,24 +281,20 @@ fn main() {
                         eprintln!("error: cannot find file '{arg}': {e}");
                         std::process::exit(1);
                     });
-                    match graph.path_to_id.get(&target_path) {
-                        Some(&id) => {
-                            let p = &graph.module(id).path;
-                            let label = p.strip_prefix(&root)
-                                .unwrap_or(p)
-                                .to_string_lossy()
-                                .into_owned();
-                            ResolvedTarget {
-                                target: query::ChainTarget::Module(id),
-                                label,
-                                exists: true,
-                            }
-                        }
-                        None => {
-                            eprintln!("error: '{arg}' is not in the dependency graph");
-                            eprintln!("hint: is it reachable from the entry point?");
-                            std::process::exit(1);
-                        }
+                    let Some(&id) = graph.path_to_id.get(&target_path) else {
+                        eprintln!("error: '{arg}' is not in the dependency graph");
+                        eprintln!("hint: is it reachable from the entry point?");
+                        std::process::exit(1);
+                    };
+                    let p = &graph.module(id).path;
+                    let label = p.strip_prefix(&root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .into_owned();
+                    ResolvedTarget {
+                        target: query::ChainTarget::Module(id),
+                        label,
+                        exists: true,
                     }
                 } else {
                     ResolvedTarget {
@@ -414,8 +411,7 @@ fn main() {
 
                 let diff_rel = {
                     let dr = lang::detect_project(&diff_entry)
-                        .map(|(r, _)| r)
-                        .unwrap_or_else(|| diff_entry.parent().unwrap_or(&diff_entry).to_path_buf());
+                        .map_or_else(|| diff_entry.parent().unwrap_or(&diff_entry).to_path_buf(), |(r, _)| r);
                     diff_entry
                         .strip_prefix(&dr)
                         .unwrap_or(&diff_entry)
@@ -443,15 +439,12 @@ fn main() {
                     };
                     let (diff_load, _diff_cache_write) = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
                     let diff_graph = diff_load.graph;
-                    let diff_id = match diff_graph.path_to_id.get(&diff_entry) {
-                        Some(&id) => id,
-                        None => {
-                            eprintln!(
-                                "error: diff entry file '{}' not found in graph",
-                                diff_entry.display()
-                            );
-                            std::process::exit(1);
-                        }
+                    let Some(&diff_id) = diff_graph.path_to_id.get(&diff_entry) else {
+                        eprintln!(
+                            "error: diff entry file '{}' not found in graph",
+                            diff_entry.display()
+                        );
+                        std::process::exit(1);
                     };
                     query::trace(&diff_graph, diff_id, &opts).to_snapshot(&diff_rel)
                 };
@@ -468,16 +461,16 @@ fn main() {
                 report::print_trace(&graph, &result, &entry, &root, top, top_modules, include_dynamic);
             }
 
-            if let Some(threshold) = max_weight {
-                if result.static_weight > threshold {
-                    eprintln!(
-                        "{} static weight {} exceeds threshold {}",
-                        sc.error("error:"),
-                        report::format_size(result.static_weight),
-                        report::format_size(threshold),
-                    );
-                    std::process::exit(1);
-                }
+            if let Some(threshold) = max_weight
+                && result.static_weight > threshold
+            {
+                eprintln!(
+                    "{} static weight {} exceeds threshold {}",
+                    sc.error("error:"),
+                    report::format_size(result.static_weight),
+                    report::format_size(threshold),
+                );
+                std::process::exit(1);
             }
 
             let elapsed = start.elapsed();
@@ -662,6 +655,7 @@ struct IncrementalResult {
 /// Try to incrementally update the cached graph when only a few files changed.
 /// Re-parses the changed files and checks if their imports match the old parse.
 /// Returns None if imports changed (caller should fall back to full BFS).
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn try_incremental_update(
     cache: &mut cache::ParseCache,
     graph: &mut graph::ModuleGraph,
