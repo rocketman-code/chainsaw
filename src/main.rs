@@ -1,16 +1,10 @@
-mod cache;
-mod graph;
-mod lang;
-mod query;
-mod report;
-mod walker;
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
+use chainsaw::{cache, graph, lang, query, report, walker};
 use lang::LanguageSupport;
 
 #[derive(Parser)]
