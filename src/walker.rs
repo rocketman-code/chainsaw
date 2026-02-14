@@ -68,12 +68,22 @@ pub fn build_graph(
                 }
             };
 
+            // Fast path: module already in graph, just add the edge
+            if let Some(&target_id) = graph.path_to_id.get(&resolved) {
+                graph.add_edge(
+                    source_id,
+                    target_id,
+                    raw_import.kind,
+                    raw_import.specifier.clone(),
+                );
+                continue;
+            }
+
             let package = lang
                 .package_name(&resolved)
                 .or_else(|| lang.workspace_package_name(&resolved, root));
             let size = fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
 
-            let is_new = !graph.path_to_id.contains_key(&resolved);
             let target_id = graph.add_module(resolved.clone(), size, package);
             graph.add_edge(
                 source_id,
@@ -82,8 +92,7 @@ pub fn build_graph(
                 raw_import.specifier.clone(),
             );
 
-            if is_new
-                && is_parseable(&resolved, lang.extensions())
+            if is_parseable(&resolved, lang.extensions())
                 && !parse_failures.contains(&resolved)
             {
                 new_files.push(resolved);
