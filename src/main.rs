@@ -54,11 +54,11 @@ enum Commands {
         #[arg(long, default_value_t = 20, allow_hyphen_values = true)]
         top_modules: i32,
 
-        /// Show all shortest import chains to a specific package
+        /// Show all shortest import chains to a package or file
         #[arg(long)]
         chain: Option<String>,
 
-        /// Show where to cut to sever all import chains to a package
+        /// Show where to cut to sever all import chains to a package or file
         #[arg(long)]
         cut: Option<String>,
 
@@ -207,29 +207,101 @@ fn main() {
                 eprintln!("Snapshot saved to {}", save_path.display());
             }
 
-            // Handle --chain mode
-            if let Some(ref package_name) = chain {
-                let package_exists = graph.package_map.contains_key(package_name.as_str());
-                let target = query::ChainTarget::Package(package_name.clone());
-                let chains = query::find_all_chains(&graph, entry_id, &target, include_dynamic);
-                if json {
-                    report::print_chains_json(&graph, &chains, package_name, &root, package_exists);
+            // Resolve --chain/--cut argument: file path or package name
+            struct ResolvedTarget {
+                target: query::ChainTarget,
+                label: String,
+                exists: bool,
+            }
+            let resolve_target = |arg: &str| -> ResolvedTarget {
+                let looks_like_path = arg.contains('/')
+                    || arg.contains(std::path::MAIN_SEPARATOR)
+                    || arg.rsplit_once('.').is_some_and(|(_, suffix)| {
+                        valid_extensions.contains(&suffix)
+                    });
+                if looks_like_path {
+                    let target_path = root.join(arg).canonicalize().unwrap_or_else(|e| {
+                        eprintln!("error: cannot find file '{arg}': {e}");
+                        std::process::exit(1);
+                    });
+                    match graph.path_to_id.get(&target_path) {
+                        Some(&id) => {
+                            let p = &graph.module(id).path;
+                            let label = p.strip_prefix(&root)
+                                .unwrap_or(p)
+                                .to_string_lossy()
+                                .into_owned();
+                            ResolvedTarget {
+                                target: query::ChainTarget::Module(id),
+                                label,
+                                exists: true,
+                            }
+                        }
+                        None => {
+                            eprintln!("error: '{arg}' is not in the dependency graph");
+                            eprintln!("hint: is it reachable from the entry point?");
+                            std::process::exit(1);
+                        }
+                    }
                 } else {
-                    report::print_chains(&graph, &chains, package_name, &root, package_exists);
+                    ResolvedTarget {
+                        target: query::ChainTarget::Package(arg.to_string()),
+                        label: arg.to_string(),
+                        exists: graph.package_map.contains_key(arg),
+                    }
+                }
+            };
+
+            // Handle --chain mode
+            if let Some(ref chain_arg) = chain {
+                let resolved = resolve_target(chain_arg);
+                let chains =
+                    query::find_all_chains(&graph, entry_id, &resolved.target, include_dynamic);
+                if json {
+                    report::print_chains_json(
+                        &graph,
+                        &chains,
+                        &resolved.label,
+                        &root,
+                        resolved.exists,
+                    );
+                } else {
+                    report::print_chains(&graph, &chains, &resolved.label, &root, resolved.exists);
                 }
                 return;
             }
 
             // Handle --cut mode
-            if let Some(ref package_name) = cut {
-                let package_exists = graph.package_map.contains_key(package_name.as_str());
-                let target = query::ChainTarget::Package(package_name.clone());
-                let chains = query::find_all_chains(&graph, entry_id, &target, include_dynamic);
-                let cuts = query::find_cut_modules(&graph, &chains, entry_id, &target, top, include_dynamic);
+            if let Some(ref cut_arg) = cut {
+                let resolved = resolve_target(cut_arg);
+                let chains =
+                    query::find_all_chains(&graph, entry_id, &resolved.target, include_dynamic);
+                let cuts = query::find_cut_modules(
+                    &graph,
+                    &chains,
+                    entry_id,
+                    &resolved.target,
+                    top,
+                    include_dynamic,
+                );
                 if json {
-                    report::print_cut_json(&graph, &cuts, &chains, package_name, &root, package_exists);
+                    report::print_cut_json(
+                        &graph,
+                        &cuts,
+                        &chains,
+                        &resolved.label,
+                        &root,
+                        resolved.exists,
+                    );
                 } else {
-                    report::print_cut(&graph, &cuts, &chains, package_name, &root, package_exists);
+                    report::print_cut(
+                        &graph,
+                        &cuts,
+                        &chains,
+                        &resolved.label,
+                        &root,
+                        resolved.exists,
+                    );
                 }
                 return;
             }

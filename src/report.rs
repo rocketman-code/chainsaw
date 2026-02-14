@@ -174,15 +174,15 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str) {
 pub fn print_chains(
     graph: &ModuleGraph,
     chains: &[Vec<ModuleId>],
-    package_name: &str,
+    target_label: &str,
     root: &Path,
-    package_exists: bool,
+    target_exists: bool,
 ) {
     if chains.is_empty() {
-        if package_exists {
-            println!("Package \"{package_name}\" exists in the graph but is not reachable from this entry point.");
+        if target_exists {
+            println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
         } else {
-            println!("Package \"{package_name}\" is not in the dependency graph. Check the spelling or verify it's installed.");
+            println!("\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed.");
         }
         return;
     }
@@ -191,7 +191,7 @@ pub fn print_chains(
         "{} chain{} to \"{}\" ({} hop{}):\n",
         chains.len(),
         if chains.len() == 1 { "" } else { "s" },
-        package_name,
+        target_label,
         hops,
         if hops == 1 { "" } else { "s" },
     );
@@ -204,14 +204,14 @@ pub fn print_chains(
 pub fn print_chains_json(
     graph: &ModuleGraph,
     chains: &[Vec<ModuleId>],
-    package_name: &str,
+    target_label: &str,
     root: &Path,
-    package_exists: bool,
+    target_exists: bool,
 ) {
     if chains.is_empty() {
         let json = JsonChainsEmpty {
-            package: package_name.to_string(),
-            found_in_graph: package_exists,
+            target: target_label.to_string(),
+            found_in_graph: target_exists,
             chain_count: 0,
             chains: Vec::new(),
         };
@@ -219,7 +219,7 @@ pub fn print_chains_json(
         return;
     }
     let json = JsonChains {
-        package: package_name.to_string(),
+        target: target_label.to_string(),
         chain_count: chains.len(),
         hop_count: chains.first().map(|c| c.len().saturating_sub(1)).unwrap_or(0),
         chains: chains
@@ -234,15 +234,15 @@ pub fn print_cut(
     graph: &ModuleGraph,
     cuts: &[CutModule],
     chains: &[Vec<ModuleId>],
-    package_name: &str,
+    target_label: &str,
     root: &Path,
-    package_exists: bool,
+    target_exists: bool,
 ) {
     if chains.is_empty() {
-        if package_exists {
-            println!("Package \"{package_name}\" exists in the graph but is not reachable from this entry point.");
+        if target_exists {
+            println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
         } else {
-            println!("Package \"{package_name}\" is not in the dependency graph. Check the spelling or verify it's installed.");
+            println!("\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed.");
         }
         return;
     }
@@ -251,11 +251,11 @@ pub fn print_cut(
         let is_direct = chains.iter().all(|c| c.len() == 2);
         if is_direct {
             println!(
-                "Entry file directly imports \"{package_name}\" — remove the import to sever the dependency."
+                "Entry file directly imports \"{target_label}\" — remove the import to sever the dependency."
             );
         } else {
             println!(
-                "No single cut point can sever all {} chain{} to \"{package_name}\".",
+                "No single cut point can sever all {} chain{} to \"{target_label}\".",
                 chains.len(),
                 if chains.len() == 1 { "" } else { "s" },
             );
@@ -270,7 +270,7 @@ pub fn print_cut(
         if cuts.len() == 1 { "" } else { "s" },
         chains.len(),
         if chains.len() == 1 { "" } else { "s" },
-        package_name,
+        target_label,
     );
     for cut in cuts {
         println!(
@@ -287,14 +287,14 @@ pub fn print_cut_json(
     graph: &ModuleGraph,
     cuts: &[CutModule],
     chains: &[Vec<ModuleId>],
-    package_name: &str,
+    target_label: &str,
     root: &Path,
-    package_exists: bool,
+    target_exists: bool,
 ) {
     if chains.is_empty() {
         let json = JsonChainsEmpty {
-            package: package_name.to_string(),
-            found_in_graph: package_exists,
+            target: target_label.to_string(),
+            found_in_graph: target_exists,
             chain_count: 0,
             chains: Vec::new(),
         };
@@ -303,7 +303,7 @@ pub fn print_cut_json(
     }
 
     let json = JsonCut {
-        package: package_name.to_string(),
+        target: target_label.to_string(),
         chain_count: chains.len(),
         direct_import: cuts.is_empty() && chains.iter().all(|c| c.len() == 2),
         cut_points: cuts
@@ -322,7 +322,7 @@ pub fn print_cut_json(
 
 #[derive(Serialize)]
 struct JsonCut {
-    package: String,
+    target: String,
     chain_count: usize,
     direct_import: bool,
     cut_points: Vec<JsonCutPoint>,
@@ -337,7 +337,7 @@ struct JsonCutPoint {
 
 #[derive(Serialize)]
 struct JsonChains {
-    package: String,
+    target: String,
     chain_count: usize,
     hop_count: usize,
     chains: Vec<Vec<String>>,
@@ -345,7 +345,7 @@ struct JsonChains {
 
 #[derive(Serialize)]
 struct JsonChainsEmpty {
-    package: String,
+    target: String,
     found_in_graph: bool,
     chain_count: usize,
     chains: Vec<Vec<String>>,
