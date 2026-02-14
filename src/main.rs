@@ -1,13 +1,10 @@
-#![allow(clippy::too_many_lines)]
-
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use chainsaw::{cache, graph, lang, query, report, walker};
-use lang::LanguageSupport;
+use chainsaw::{error::Error, loader, query, report};
 
 #[derive(Parser)]
 #[command(
@@ -159,7 +156,18 @@ fn main() {
     let no_color = cli.no_color;
     let sc = report::StderrColor::new(no_color);
 
-    match cli.command {
+    if let Err(e) = run(cli.command, no_color, &sc) {
+        eprintln!("{} {e}", sc.error("error:"));
+        if let Some(hint) = e.hint() {
+            eprintln!("hint: {hint}");
+        }
+        std::process::exit(1);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run(command: Commands, no_color: bool, sc: &report::StderrColor) -> Result<(), Error> {
+    match command {
         Commands::Trace {
             entry,
             diff,
@@ -176,38 +184,10 @@ fn main() {
             quiet,
             limit,
             max_weight,
-            ..
         } => {
             let start = Instant::now();
 
-            // Determine project root from entry file
-            let entry = entry.canonicalize().unwrap_or_else(|e| {
-                eprintln!("error: cannot find entry file '{}': {e}", entry.display());
-                std::process::exit(1);
-            });
-
-            if entry.is_dir() {
-                eprintln!("error: '{}' is a directory, not a source file", entry.display());
-                std::process::exit(1);
-            }
-
-            let (root, kind) = lang::detect_project(&entry).unwrap_or_else(|| {
-                let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
-                eprintln!("error: unsupported file type '.{ext}'");
-                eprintln!("hint: chainsaw supports TypeScript/JavaScript and Python files");
-                std::process::exit(1);
-            });
-            let lang_support: Box<dyn LanguageSupport> = match kind {
-                lang::ProjectKind::TypeScript => {
-                    Box::new(lang::typescript::TypeScriptSupport::new(&root))
-                }
-                lang::ProjectKind::Python => {
-                    Box::new(lang::python::PythonSupport::new(&root))
-                }
-            };
-            let valid_extensions = lang_support.extensions();
-
-            // Validate mutually exclusive flags
+            // Validate mutually exclusive flags before loading graph
             let query_flags: Vec<&str> = [
                 chain.as_ref().map(|_| "--chain"),
                 cut.as_ref().map(|_| "--cut"),
@@ -218,44 +198,45 @@ fn main() {
             .flatten()
             .collect();
             if query_flags.len() > 1 {
-                eprintln!("{} {} cannot be used together", sc.error("error:"), query_flags.join(" and "));
+                eprintln!(
+                    "{} {} cannot be used together",
+                    sc.error("error:"),
+                    query_flags.join(" and ")
+                );
                 std::process::exit(1);
             }
 
             // Load or build graph
-            let (load_result, _cache_write) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
-            let graph = load_result.graph;
-            let unresolvable_count = load_result.unresolvable_dynamic_count;
+            let (loaded, _cache_write) = loader::load_graph(&entry, no_cache)?;
             if !quiet {
                 eprintln!(
                     "{} ({} modules) in {:.1}ms",
-                    sc.status(if load_result.from_cache { "Loaded cached graph" } else { "Built graph" }),
-                    graph.module_count(),
+                    sc.status(if loaded.from_cache {
+                        "Loaded cached graph"
+                    } else {
+                        "Built graph"
+                    }),
+                    loaded.graph.module_count(),
                     start.elapsed().as_secs_f64() * 1000.0
                 );
-                if unresolvable_count > 0 && !load_result.from_cache {
+                if loaded.unresolvable_dynamic_count > 0 && !loaded.from_cache {
+                    let count = loaded.unresolvable_dynamic_count;
                     eprintln!(
-                        "{} {} dynamic import{} with non-literal argument{} could not be traced:",
+                        "{} {count} dynamic import{} with non-literal argument{} could not be traced:",
                         sc.warning("warning:"),
-                        unresolvable_count,
-                        if unresolvable_count == 1 { "" } else { "s" },
-                        if unresolvable_count == 1 { "" } else { "s" },
+                        if count == 1 { "" } else { "s" },
+                        if count == 1 { "" } else { "s" },
                     );
-                    for (path, count) in &load_result.unresolvable_dynamic_files {
-                        let rel = report::relative_path(path, &root);
-                        eprintln!("  {rel} ({count})");
+                    for (path, file_count) in &loaded.unresolvable_dynamic_files {
+                        let rel = report::relative_path(path, &loaded.root);
+                        eprintln!("  {rel} ({file_count})");
                     }
                 }
             }
 
             // Resolve entry module ID
-            let Some(&entry_id) = graph.path_to_id.get(&entry) else {
-                eprintln!(
-                    "error: entry file '{}' not found in graph",
-                    entry.display()
-                );
-                eprintln!("hint: is it reachable from the project root?");
-                std::process::exit(1);
+            let Some(&entry_id) = loaded.graph.path_to_id.get(&loaded.entry) else {
+                return Err(Error::EntryNotInGraph(loaded.entry));
             };
 
             let opts = query::TraceOptions {
@@ -263,10 +244,11 @@ fn main() {
                 top_n: top,
                 ignore,
             };
-            let result = query::trace(&graph, entry_id, &opts);
-            let entry_rel = entry
-                .strip_prefix(&root)
-                .unwrap_or(&entry)
+            let result = query::trace(&loaded.graph, entry_id, &opts);
+            let entry_rel = loaded
+                .entry
+                .strip_prefix(&loaded.root)
+                .unwrap_or(&loaded.entry)
                 .to_string_lossy()
                 .into_owned();
 
@@ -275,29 +257,42 @@ fn main() {
                 let snapshot = result.to_snapshot(&entry_rel);
                 let data = serde_json::to_string_pretty(&snapshot).unwrap();
                 std::fs::write(save_path, data).unwrap_or_else(|e| {
-                    eprintln!("error: cannot write snapshot '{}': {e}", save_path.display());
+                    eprintln!(
+                        "{} cannot write snapshot '{}': {e}",
+                        sc.error("error:"),
+                        save_path.display()
+                    );
                     std::process::exit(1);
                 });
                 if !quiet {
-                    eprintln!("{} to {}", sc.status("Snapshot saved"), save_path.display());
+                    eprintln!(
+                        "{} to {}",
+                        sc.status("Snapshot saved"),
+                        save_path.display()
+                    );
                 }
             }
 
             // Resolve --chain/--cut argument: file path or package name
             let resolve_target = |arg: &str| -> ResolvedTarget {
-                let looks_like_path = looks_like_path(arg, valid_extensions);
-                if looks_like_path {
-                    let target_path = root.join(arg).canonicalize().unwrap_or_else(|e| {
-                        eprintln!("error: cannot find file '{arg}': {e}");
-                        std::process::exit(1);
-                    });
-                    let Some(&id) = graph.path_to_id.get(&target_path) else {
-                        eprintln!("error: '{arg}' is not in the dependency graph");
+                let is_path = looks_like_path(arg, loaded.valid_extensions);
+                if is_path {
+                    let target_path =
+                        loaded.root.join(arg).canonicalize().unwrap_or_else(|e| {
+                            eprintln!("{} cannot find file '{arg}': {e}", sc.error("error:"));
+                            std::process::exit(1);
+                        });
+                    let Some(&id) = loaded.graph.path_to_id.get(&target_path) else {
+                        eprintln!(
+                            "{} '{arg}' is not in the dependency graph",
+                            sc.error("error:")
+                        );
                         eprintln!("hint: is it reachable from the entry point?");
                         std::process::exit(1);
                     };
-                    let p = &graph.module(id).path;
-                    let label = p.strip_prefix(&root)
+                    let p = &loaded.graph.module(id).path;
+                    let label = p
+                        .strip_prefix(&loaded.root)
                         .unwrap_or(p)
                         .to_string_lossy()
                         .into_owned();
@@ -310,7 +305,7 @@ fn main() {
                     ResolvedTarget {
                         target: query::ChainTarget::Package(arg.to_string()),
                         label: arg.to_string(),
-                        exists: graph.package_map.contains_key(arg),
+                        exists: loaded.graph.package_map.contains_key(arg),
                     }
                 }
             };
@@ -319,41 +314,66 @@ fn main() {
             if let Some(ref chain_arg) = chain {
                 let resolved = resolve_target(chain_arg);
                 if resolved.target == query::ChainTarget::Module(entry_id) {
-                    eprintln!("error: --chain target is the entry point itself");
-                    eprintln!("hint: --chain finds import chains from the entry to a dependency");
+                    eprintln!(
+                        "{} --chain target is the entry point itself",
+                        sc.error("error:")
+                    );
+                    eprintln!(
+                        "hint: --chain finds import chains from the entry to a dependency"
+                    );
                     std::process::exit(1);
                 }
-                let chains =
-                    query::find_all_chains(&graph, entry_id, &resolved.target, include_dynamic);
+                let chains = query::find_all_chains(
+                    &loaded.graph,
+                    entry_id,
+                    &resolved.target,
+                    include_dynamic,
+                );
                 if json {
                     report::print_chains_json(
-                        &graph,
+                        &loaded.graph,
                         &chains,
                         &resolved.label,
-                        &root,
+                        &loaded.root,
                         resolved.exists,
                     );
                 } else {
-                    report::print_chains(&graph, &chains, &resolved.label, &root, resolved.exists, no_color);
+                    report::print_chains(
+                        &loaded.graph,
+                        &chains,
+                        &resolved.label,
+                        &loaded.root,
+                        resolved.exists,
+                        no_color,
+                    );
                 }
                 if chains.is_empty() {
                     std::process::exit(1);
                 }
-                return;
+                return Ok(());
             }
 
             // Handle --cut mode
             if let Some(ref cut_arg) = cut {
                 let resolved = resolve_target(cut_arg);
                 if resolved.target == query::ChainTarget::Module(entry_id) {
-                    eprintln!("error: --cut target is the entry point itself");
-                    eprintln!("hint: --cut finds where to sever import chains to a dependency");
+                    eprintln!(
+                        "{} --cut target is the entry point itself",
+                        sc.error("error:")
+                    );
+                    eprintln!(
+                        "hint: --cut finds where to sever import chains to a dependency"
+                    );
                     std::process::exit(1);
                 }
-                let chains =
-                    query::find_all_chains(&graph, entry_id, &resolved.target, include_dynamic);
+                let chains = query::find_all_chains(
+                    &loaded.graph,
+                    entry_id,
+                    &resolved.target,
+                    include_dynamic,
+                );
                 let cuts = query::find_cut_modules(
-                    &graph,
+                    &loaded.graph,
                     &chains,
                     entry_id,
                     &resolved.target,
@@ -362,20 +382,20 @@ fn main() {
                 );
                 if json {
                     report::print_cut_json(
-                        &graph,
+                        &loaded.graph,
                         &cuts,
                         &chains,
                         &resolved.label,
-                        &root,
+                        &loaded.root,
                         resolved.exists,
                     );
                 } else {
                     report::print_cut(
-                        &graph,
+                        &loaded.graph,
                         &cuts,
                         &chains,
                         &resolved.label,
-                        &root,
+                        &loaded.root,
                         resolved.exists,
                         no_color,
                     );
@@ -383,93 +403,112 @@ fn main() {
                 if chains.is_empty() {
                     std::process::exit(1);
                 }
-                return;
+                return Ok(());
             }
 
             // Handle --diff-from mode (compare against saved snapshot)
             if let Some(ref snapshot_path) = diff_from {
                 let data = std::fs::read_to_string(snapshot_path).unwrap_or_else(|e| {
                     eprintln!(
-                        "error: cannot read snapshot '{}': {e}",
+                        "{} cannot read snapshot '{}': {e}",
+                        sc.error("error:"),
                         snapshot_path.display()
                     );
                     std::process::exit(1);
                 });
-                let saved: query::TraceSnapshot = serde_json::from_str(&data).unwrap_or_else(|e| {
-                    eprintln!(
-                        "error: invalid snapshot '{}': {e}",
-                        snapshot_path.display()
-                    );
-                    std::process::exit(1);
-                });
-                let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
-                report::print_diff(&diff_output, &saved.entry, &entry_rel, limit, no_color);
-                return;
+                let saved: query::TraceSnapshot =
+                    serde_json::from_str(&data).unwrap_or_else(|e| {
+                        eprintln!(
+                            "{} invalid snapshot '{}': {e}",
+                            sc.error("error:"),
+                            snapshot_path.display()
+                        );
+                        std::process::exit(1);
+                    });
+                let diff_output =
+                    query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
+                report::print_diff(
+                    &diff_output,
+                    &saved.entry,
+                    &entry_rel,
+                    limit,
+                    no_color,
+                );
+                return Ok(());
             }
 
             // Handle --diff mode
             if let Some(diff_path) = diff {
-                let diff_entry = diff_path.canonicalize().unwrap_or_else(|e| {
+                let diff_entry = diff_path
+                    .canonicalize()
+                    .map_err(|e| Error::EntryNotFound(diff_path.clone(), e))?;
+                if diff_entry == loaded.entry {
                     eprintln!(
-                        "error: cannot find diff entry file '{}': {e}",
-                        diff_path.display()
+                        "{} both entry points are the same file, diff will be empty",
+                        sc.warning("warning:")
                     );
-                    std::process::exit(1);
-                });
-                if diff_entry == entry {
-                    eprintln!("{} both entry points are the same file, diff will be empty", sc.warning("warning:"));
                 }
 
-                let diff_rel = {
-                    let dr = lang::detect_project(&diff_entry)
-                        .map_or_else(|| diff_entry.parent().unwrap_or(&diff_entry).to_path_buf(), |(r, _)| r);
-                    diff_entry
-                        .strip_prefix(&dr)
-                        .unwrap_or(&diff_entry)
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                let diff_snapshot = if let Some(&diff_id) = graph.path_to_id.get(&diff_entry) {
-                    // Same graph — trace directly
-                    query::trace(&graph, diff_id, &opts).to_snapshot(&diff_rel)
-                } else {
-                    // Different package — build a second graph from its root
-                    let (diff_root, diff_kind) = lang::detect_project(&diff_entry).unwrap_or_else(|| {
-                        let ext = diff_entry.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
-                        eprintln!("error: unsupported file type '.{ext}'");
-                        eprintln!("hint: chainsaw supports TypeScript/JavaScript and Python files");
-                        std::process::exit(1);
-                    });
-                    let diff_lang: Box<dyn LanguageSupport> = match diff_kind {
-                        lang::ProjectKind::TypeScript => {
-                            Box::new(lang::typescript::TypeScriptSupport::new(&diff_root))
-                        }
-                        lang::ProjectKind::Python => {
-                            Box::new(lang::python::PythonSupport::new(&diff_root))
-                        }
+                let diff_snapshot =
+                    if let Some(&diff_id) = loaded.graph.path_to_id.get(&diff_entry) {
+                        // Same graph — trace directly
+                        let diff_rel = diff_entry
+                            .strip_prefix(&loaded.root)
+                            .unwrap_or(&diff_entry)
+                            .to_string_lossy()
+                            .into_owned();
+                        query::trace(&loaded.graph, diff_id, &opts).to_snapshot(&diff_rel)
+                    } else {
+                        // Different project — build second graph
+                        let (diff_loaded, _diff_cache_write) =
+                            loader::load_graph(&diff_entry, no_cache)?;
+                        let Some(&diff_id) =
+                            diff_loaded.graph.path_to_id.get(&diff_loaded.entry)
+                        else {
+                            return Err(Error::EntryNotInGraph(diff_loaded.entry));
+                        };
+                        let diff_rel = diff_loaded
+                            .entry
+                            .strip_prefix(&diff_loaded.root)
+                            .unwrap_or(&diff_loaded.entry)
+                            .to_string_lossy()
+                            .into_owned();
+                        query::trace(&diff_loaded.graph, diff_id, &opts)
+                            .to_snapshot(&diff_rel)
                     };
-                    let (diff_load, _diff_cache_write) = load_or_build_graph(&diff_entry, &diff_root, no_cache, diff_lang.as_ref());
-                    let diff_graph = diff_load.graph;
-                    let Some(&diff_id) = diff_graph.path_to_id.get(&diff_entry) else {
-                        eprintln!(
-                            "error: diff entry file '{}' not found in graph",
-                            diff_entry.display()
-                        );
-                        std::process::exit(1);
-                    };
-                    query::trace(&diff_graph, diff_id, &opts).to_snapshot(&diff_rel)
-                };
 
-                let diff_output = query::diff_snapshots(&result.to_snapshot(&entry_rel), &diff_snapshot);
-                report::print_diff(&diff_output, &entry_rel, &diff_rel, limit, no_color);
-                return;
+                let diff_output =
+                    query::diff_snapshots(&result.to_snapshot(&entry_rel), &diff_snapshot);
+                report::print_diff(
+                    &diff_output,
+                    &entry_rel,
+                    &diff_snapshot.entry,
+                    limit,
+                    no_color,
+                );
+                return Ok(());
             }
 
             // Normal trace output
             if json {
-                report::print_trace_json(&graph, &result, &entry, &root, top_modules);
+                report::print_trace_json(
+                    &loaded.graph,
+                    &result,
+                    &loaded.entry,
+                    &loaded.root,
+                    top_modules,
+                );
             } else {
-                report::print_trace(&graph, &result, &entry, &root, top, top_modules, include_dynamic, no_color);
+                report::print_trace(
+                    &loaded.graph,
+                    &result,
+                    &loaded.entry,
+                    &loaded.root,
+                    top,
+                    top_modules,
+                    include_dynamic,
+                    no_color,
+                );
             }
 
             if let Some(threshold) = max_weight
@@ -484,20 +523,31 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let elapsed = start.elapsed();
             if !quiet {
-                eprintln!("\n{} in {:.1}ms", sc.status("Completed"), elapsed.as_secs_f64() * 1000.0);
+                eprintln!(
+                    "\n{} in {:.1}ms",
+                    sc.status("Completed"),
+                    start.elapsed().as_secs_f64() * 1000.0
+                );
             }
         }
 
         Commands::Diff { a, b, limit } => {
             let load_snapshot = |path: &Path| -> query::TraceSnapshot {
                 let data = std::fs::read_to_string(path).unwrap_or_else(|e| {
-                    eprintln!("error: cannot read snapshot '{}': {e}", path.display());
+                    eprintln!(
+                        "{} cannot read snapshot '{}': {e}",
+                        sc.error("error:"),
+                        path.display()
+                    );
                     std::process::exit(1);
                 });
                 serde_json::from_str(&data).unwrap_or_else(|e| {
-                    eprintln!("error: invalid snapshot '{}': {e}", path.display());
+                    eprintln!(
+                        "{} invalid snapshot '{}': {e}",
+                        sc.error("error:"),
+                        path.display()
+                    );
                     std::process::exit(1);
                 })
             };
@@ -505,228 +555,54 @@ fn main() {
             let snap_a = load_snapshot(&a);
             let snap_b = load_snapshot(&b);
             let diff_output = query::diff_snapshots(&snap_a, &snap_b);
-
-            report::print_diff(&diff_output, &snap_a.entry, &snap_b.entry, limit, no_color);
+            report::print_diff(
+                &diff_output,
+                &snap_a.entry,
+                &snap_b.entry,
+                limit,
+                no_color,
+            );
         }
 
-        Commands::Packages { entry, json, no_cache, top, quiet } => {
+        Commands::Packages {
+            entry,
+            json,
+            no_cache,
+            top,
+            quiet,
+        } => {
             let start = Instant::now();
-
-            let entry = entry.canonicalize().unwrap_or_else(|e| {
-                eprintln!("error: cannot find entry file '{}': {e}", entry.display());
-                std::process::exit(1);
-            });
-
-            if entry.is_dir() {
-                eprintln!("error: '{}' is a directory, not a source file", entry.display());
-                std::process::exit(1);
-            }
-
-            let (root, kind) = lang::detect_project(&entry).unwrap_or_else(|| {
-                let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("(none)");
-                eprintln!("error: unsupported file type '.{ext}'");
-                eprintln!("hint: chainsaw supports TypeScript/JavaScript and Python files");
-                std::process::exit(1);
-            });
-
-            let lang_support: Box<dyn LanguageSupport> = match kind {
-                lang::ProjectKind::TypeScript => {
-                    Box::new(lang::typescript::TypeScriptSupport::new(&root))
-                }
-                lang::ProjectKind::Python => {
-                    Box::new(lang::python::PythonSupport::new(&root))
-                }
-            };
-
-            let (load_result, _cache_write) = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
+            let (loaded, _cache_write) = loader::load_graph(&entry, no_cache)?;
             if !quiet {
                 eprintln!(
                     "{} ({} modules) in {:.1}ms",
-                    sc.status(if load_result.from_cache { "Loaded cached graph" } else { "Built graph" }),
-                    load_result.graph.module_count(),
+                    sc.status(if loaded.from_cache {
+                        "Loaded cached graph"
+                    } else {
+                        "Built graph"
+                    }),
+                    loaded.graph.module_count(),
                     start.elapsed().as_secs_f64() * 1000.0
                 );
             }
 
             if json {
-                report::print_packages_json(&load_result.graph, top);
+                report::print_packages_json(&loaded.graph, top);
             } else {
-                report::print_packages(&load_result.graph, top, no_color);
+                report::print_packages(&loaded.graph, top, no_color);
             }
         }
 
         Commands::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "chainsaw", &mut std::io::stdout());
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "chainsaw",
+                &mut std::io::stdout(),
+            );
         }
     }
-}
-
-struct LoadResult {
-    graph: graph::ModuleGraph,
-    unresolvable_dynamic_count: usize,
-    unresolvable_dynamic_files: Vec<(std::path::PathBuf, usize)>,
-    from_cache: bool,
-}
-
-fn load_or_build_graph(
-    entry: &Path,
-    root: &Path,
-    no_cache: bool,
-    lang: &dyn LanguageSupport,
-) -> (LoadResult, cache::CacheWriteHandle) {
-    let mut cache = if no_cache {
-        cache::ParseCache::new()
-    } else {
-        cache::ParseCache::load(root)
-    };
-
-    // Tier 1: try whole-graph cache
-    if !no_cache {
-        let resolve_fn = |spec: &str| lang.resolve(root, spec).is_some();
-        match cache.try_load_graph(entry, &resolve_fn) {
-            cache::GraphCacheResult::Hit { graph, unresolvable_dynamic, unresolved_specifiers, needs_resave } => {
-                let handle = if needs_resave {
-                    cache.save(root, entry, &graph, unresolved_specifiers, unresolvable_dynamic)
-                } else {
-                    cache::CacheWriteHandle::none()
-                };
-                return (
-                    LoadResult {
-                        graph,
-                        unresolvable_dynamic_count: unresolvable_dynamic,
-                        unresolvable_dynamic_files: Vec::new(),
-                        from_cache: true,
-                    },
-                    handle,
-                );
-            }
-            cache::GraphCacheResult::Stale {
-                mut graph,
-                unresolvable_dynamic,
-                changed_files,
-            } => {
-                // Tier 1.5: incremental update — re-parse only changed files,
-                // reuse the cached graph if imports haven't changed.
-                if let Some(result) = try_incremental_update(
-                    &mut cache,
-                    &mut graph,
-                    &changed_files,
-                    unresolvable_dynamic,
-                    lang,
-                ) {
-                    graph.compute_package_info();
-                    let handle = cache.save_incremental(
-                        root,
-                        entry,
-                        &graph,
-                        &changed_files,
-                        result.unresolvable_dynamic,
-                    );
-                    return (
-                        LoadResult {
-                            graph,
-                            unresolvable_dynamic_count: result.unresolvable_dynamic,
-                            unresolvable_dynamic_files: Vec::new(),
-                            from_cache: true,
-                        },
-                        handle,
-                    );
-                }
-                // Imports changed — fall through to full BFS
-            }
-            cache::GraphCacheResult::Miss => {}
-        }
-    }
-
-    // Tier 2: BFS walk with per-file parse cache
-    let result = walker::build_graph(entry, root, lang, &mut cache);
-    let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
-    let handle = cache.save(
-        root,
-        entry,
-        &result.graph,
-        result.unresolved_specifiers,
-        unresolvable_count,
-    );
-    (
-        LoadResult {
-            graph: result.graph,
-            unresolvable_dynamic_count: unresolvable_count,
-            unresolvable_dynamic_files: result.unresolvable_dynamic,
-            from_cache: false,
-        },
-        handle,
-    )
-}
-
-struct IncrementalResult {
-    unresolvable_dynamic: usize,
-}
-
-/// Try to incrementally update the cached graph when only a few files changed.
-/// Re-parses the changed files and checks if their imports match the old parse.
-/// Returns None if imports changed (caller should fall back to full BFS).
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
-fn try_incremental_update(
-    cache: &mut cache::ParseCache,
-    graph: &mut graph::ModuleGraph,
-    changed_files: &[PathBuf],
-    old_unresolvable_total: usize,
-    lang: &dyn LanguageSupport,
-) -> Option<IncrementalResult> {
-    let mut unresolvable_delta: isize = 0;
-
-    for path in changed_files {
-        // Get old imports without mtime check
-        let old_result = cache.lookup_unchecked(path)?;
-        let old_import_count = old_result.imports.len();
-        let old_unresolvable = old_result.unresolvable_dynamic;
-        let old_imports: Vec<_> = old_result
-            .imports
-            .iter()
-            .map(|i| (i.specifier.as_str(), i.kind))
-            .collect();
-
-        // Re-parse the changed file
-        let source = std::fs::read_to_string(path).ok()?;
-        let new_result = lang.parse(path, &source).ok()?;
-
-        // Compare import lists — if anything changed, bail out
-        if new_result.imports.len() != old_import_count
-            || new_result
-                .imports
-                .iter()
-                .zip(old_imports.iter())
-                .any(|(new, &(old_spec, old_kind))| {
-                    new.specifier != old_spec || new.kind != old_kind
-                })
-        {
-            return None;
-        }
-
-        // Track unresolvable dynamic count changes
-        unresolvable_delta +=
-            new_result.unresolvable_dynamic as isize - old_unresolvable as isize;
-
-        // Update file size in graph
-        let mid = *graph.path_to_id.get(path)?;
-        let new_size = source.len() as u64;
-        graph.modules[mid.0 as usize].size_bytes = new_size;
-
-        // Update parse cache entry
-        let dir = path.parent().unwrap_or(Path::new("."));
-        let resolved_paths: Vec<Option<PathBuf>> = new_result
-            .imports
-            .iter()
-            .map(|imp| lang.resolve(dir, &imp.specifier))
-            .collect();
-        cache.insert(path.clone(), &new_result, &resolved_paths);
-    }
-
-    let new_total = (old_unresolvable_total as isize + unresolvable_delta).max(0) as usize;
-    Some(IncrementalResult {
-        unresolvable_dynamic: new_total,
-    })
+    Ok(())
 }
 
 /// Determine whether a --chain/--cut argument looks like a file path
