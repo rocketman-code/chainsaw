@@ -1,7 +1,9 @@
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use crate::graph::ModuleGraph;
@@ -96,13 +98,25 @@ impl ParseCache {
         if cached.entry != entry {
             return None;
         }
-        // Check all file mtimes
-        for (path, saved) in &cached.file_mtimes {
-            let meta = fs::metadata(path).ok()?;
-            let current_mtime = mtime_of(&meta)?;
-            if current_mtime != saved.mtime_nanos || meta.len() != saved.size {
-                return None;
+        // Check all file mtimes in parallel — bail early on first mismatch
+        let valid = AtomicBool::new(true);
+        cached.file_mtimes.par_iter().for_each(|(path, saved)| {
+            if !valid.load(Ordering::Relaxed) {
+                return;
             }
+            let ok = fs::metadata(path)
+                .ok()
+                .and_then(|meta| {
+                    let mtime = mtime_of(&meta)?;
+                    Some(mtime == saved.mtime_nanos && meta.len() == saved.size)
+                })
+                .unwrap_or(false);
+            if !ok {
+                valid.store(false, Ordering::Relaxed);
+            }
+        });
+        if !valid.load(Ordering::Relaxed) {
+            return None;
         }
         // Check if any previously-unresolved specifier now resolves
         for spec in &cached.unresolved_specifiers {
@@ -123,7 +137,7 @@ impl ParseCache {
     ) {
         let file_mtimes: HashMap<PathBuf, CachedMtime> = graph
             .modules
-            .iter()
+            .par_iter()
             .filter_map(|m| {
                 let meta = fs::metadata(&m.path).ok()?;
                 let mtime = mtime_of(&meta)?;
