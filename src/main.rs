@@ -73,6 +73,10 @@ enum Commands {
         /// Exclude packages from the heavy dependencies list
         #[arg(long, num_args = 1..)]
         ignore: Vec<String>,
+
+        /// Suppress informational output (timing, warnings)
+        #[arg(long, short)]
+        quiet: bool,
     },
 
     /// Compare two saved trace snapshots
@@ -116,6 +120,7 @@ fn main() {
             json,
             no_cache,
             ignore,
+            quiet,
             ..
         } => {
             let start = Instant::now();
@@ -151,19 +156,21 @@ fn main() {
             let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
             let graph = load_result.graph;
             let unresolvable_dynamic = load_result.unresolvable_dynamic;
-            eprintln!(
-                "{} ({} modules) in {:.1}ms",
-                if load_result.from_cache { "Loaded cached graph" } else { "Built graph" },
-                graph.module_count(),
-                start.elapsed().as_secs_f64() * 1000.0
-            );
-            if unresolvable_dynamic > 0 && !load_result.from_cache {
+            if !quiet {
                 eprintln!(
-                    "warning: {} dynamic import{} with non-literal argument{} could not be traced",
-                    unresolvable_dynamic,
-                    if unresolvable_dynamic == 1 { "" } else { "s" },
-                    if unresolvable_dynamic == 1 { "" } else { "s" },
+                    "{} ({} modules) in {:.1}ms",
+                    if load_result.from_cache { "Loaded cached graph" } else { "Built graph" },
+                    graph.module_count(),
+                    start.elapsed().as_secs_f64() * 1000.0
                 );
+                if unresolvable_dynamic > 0 && !load_result.from_cache {
+                    eprintln!(
+                        "warning: {} dynamic import{} with non-literal argument{} could not be traced",
+                        unresolvable_dynamic,
+                        if unresolvable_dynamic == 1 { "" } else { "s" },
+                        if unresolvable_dynamic == 1 { "" } else { "s" },
+                    );
+                }
             }
 
             // Resolve entry module ID
@@ -209,7 +216,9 @@ fn main() {
                     eprintln!("error: cannot write snapshot '{}': {e}", save_path.display());
                     std::process::exit(1);
                 });
-                eprintln!("Snapshot saved to {}", save_path.display());
+                if !quiet {
+                    eprintln!("Snapshot saved to {}", save_path.display());
+                }
             }
 
             // Resolve --chain/--cut argument: file path or package name
@@ -401,7 +410,9 @@ fn main() {
             }
 
             let elapsed = start.elapsed();
-            eprintln!("\nCompleted in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+            if !quiet {
+                eprintln!("\nCompleted in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+            }
         }
 
         Commands::Diff { a, b } => {
