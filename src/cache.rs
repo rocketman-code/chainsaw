@@ -53,10 +53,26 @@ struct CachedGraph {
     unresolvable_dynamic: usize,
 }
 
+pub enum GraphCacheResult {
+    /// All files unchanged — graph is valid.
+    Hit(ModuleGraph, usize),
+    /// Some files have different mtimes — incremental update possible.
+    Stale {
+        graph: ModuleGraph,
+        unresolvable_dynamic: usize,
+        changed_files: Vec<PathBuf>,
+    },
+    /// Cache miss — wrong entry, no cache, file deleted, or new imports resolve.
+    Miss,
+}
+
 pub struct ParseCache {
     entries: HashMap<PathBuf, CachedParse>,
     deferred_parse_data: Option<Vec<u8>>,
     cached_graph: Option<CachedGraph>,
+    /// Preserved from Stale result for incremental save.
+    stale_file_mtimes: Option<HashMap<PathBuf, CachedMtime>>,
+    stale_unresolved: Option<Vec<String>>,
 }
 
 impl ParseCache {
@@ -65,6 +81,8 @@ impl ParseCache {
             entries: HashMap::new(),
             deferred_parse_data: None,
             cached_graph: None,
+            stale_file_mtimes: None,
+            stale_unresolved: None,
         }
     }
 
@@ -103,6 +121,8 @@ impl ParseCache {
             entries: HashMap::new(),
             deferred_parse_data: deferred,
             cached_graph,
+            stale_file_mtimes: None,
+            stale_unresolved: None,
         }
     }
 
@@ -112,46 +132,107 @@ impl ParseCache {
         }
     }
 
-    /// Try to load the cached graph (tier 1). Takes ownership of the graph
-    /// to avoid a clone. Returns the graph and unresolvable_dynamic count
-    /// if the cache is valid for this entry point.
+    /// Try to load the cached graph (tier 1).
+    ///
+    /// Returns `Hit` if all files are unchanged, `Stale` if some files changed
+    /// (incremental update possible), or `Miss` for entry mismatch/deleted files/
+    /// newly-resolved imports.
     pub fn try_load_graph(
         &mut self,
         entry: &Path,
         resolve_fn: &dyn Fn(&str) -> bool,
-    ) -> Option<(ModuleGraph, usize)> {
-        let cached = self.cached_graph.as_ref()?;
-        if cached.entry != entry {
-            return None;
-        }
-        // Check all file mtimes in parallel — bail early on first mismatch
-        let valid = AtomicBool::new(true);
-        cached.file_mtimes.par_iter().for_each(|(path, saved)| {
-            if !valid.load(Ordering::Relaxed) {
-                return;
-            }
-            let ok = fs::metadata(path)
-                .ok()
-                .and_then(|meta| {
+    ) -> GraphCacheResult {
+        let cached = match self.cached_graph.as_ref() {
+            Some(c) if c.entry == entry => c,
+            _ => return GraphCacheResult::Miss,
+        };
+
+        // Check all file mtimes in parallel — collect changed files.
+        // If any file is missing (deleted), return Miss.
+        let any_missing = AtomicBool::new(false);
+        let changed_files: Vec<PathBuf> = cached
+            .file_mtimes
+            .par_iter()
+            .filter_map(|(path, saved)| match fs::metadata(path) {
+                Ok(meta) => {
                     let mtime = mtime_of(&meta)?;
-                    Some(mtime == saved.mtime_nanos && meta.len() == saved.size)
-                })
-                .unwrap_or(false);
-            if !ok {
-                valid.store(false, Ordering::Relaxed);
-            }
-        });
-        if !valid.load(Ordering::Relaxed) {
-            return None;
+                    if mtime != saved.mtime_nanos || meta.len() != saved.size {
+                        Some(path.clone())
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => {
+                    any_missing.store(true, Ordering::Relaxed);
+                    None
+                }
+            })
+            .collect();
+
+        if any_missing.load(Ordering::Relaxed) {
+            return GraphCacheResult::Miss;
         }
+
         // Check if any previously-unresolved specifier now resolves
         for spec in &cached.unresolved_specifiers {
             if resolve_fn(spec) {
-                return None;
+                return GraphCacheResult::Miss;
             }
         }
+
+        if changed_files.is_empty() {
+            let cached = self.cached_graph.take().unwrap();
+            return GraphCacheResult::Hit(cached.graph, cached.unresolvable_dynamic);
+        }
+
+        // Files changed — extract graph and preserve mtimes for incremental save
         let cached = self.cached_graph.take().unwrap();
-        Some((cached.graph, cached.unresolvable_dynamic))
+        self.stale_file_mtimes = Some(cached.file_mtimes);
+        self.stale_unresolved = Some(cached.unresolved_specifiers);
+        GraphCacheResult::Stale {
+            graph: cached.graph,
+            unresolvable_dynamic: cached.unresolvable_dynamic,
+            changed_files,
+        }
+    }
+
+    /// Get the cached parse result for a file WITHOUT verifying its mtime.
+    /// Used by incremental update to compare old imports against new parse results.
+    pub fn lookup_unchecked(&mut self, path: &Path) -> Option<&ParseResult> {
+        self.ensure_entries();
+        self.entries.get(path).map(|e| &e.result)
+    }
+
+    /// Save after incremental update. Uses the preserved file_mtimes from the
+    /// Stale result, updating only the changed files' mtimes instead of
+    /// re-statting every file.
+    pub fn save_incremental(
+        &mut self,
+        root: &Path,
+        entry: &Path,
+        graph: &ModuleGraph,
+        changed_files: &[PathBuf],
+        unresolvable_dynamic: usize,
+    ) {
+        let mut file_mtimes = match self.stale_file_mtimes.take() {
+            Some(m) => m,
+            None => return,
+        };
+        let unresolved_specifiers = self.stale_unresolved.take().unwrap_or_default();
+
+        // Update only changed files' mtimes
+        for path in changed_files {
+            if let Ok(meta) = fs::metadata(path) {
+                if let Some(mtime) = mtime_of(&meta) {
+                    if let Some(saved) = file_mtimes.get_mut(path) {
+                        saved.mtime_nanos = mtime;
+                        saved.size = meta.len();
+                    }
+                }
+            }
+        }
+
+        self.write_cache(root, entry, graph, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
     }
 
     pub fn save(
@@ -179,6 +260,20 @@ impl ParseCache {
                 ))
             })
             .collect();
+
+        self.write_cache(root, entry, graph, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
+    }
+
+    fn write_cache(
+        &mut self,
+        root: &Path,
+        entry: &Path,
+        graph: &ModuleGraph,
+        file_mtimes: HashMap<PathBuf, CachedMtime>,
+        unresolved_specifiers: Vec<String>,
+        unresolvable_dynamic: usize,
+    ) {
+        self.ensure_entries();
 
         let graph_cache = CachedGraph {
             entry: entry.to_path_buf(),
@@ -365,14 +460,15 @@ mod tests {
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
         let result = loaded.try_load_graph(&file, &resolve_fn);
-        assert!(result.is_some());
-        let (g, unresolvable) = result.unwrap();
-        assert_eq!(g.module_count(), 1);
-        assert_eq!(unresolvable, 2);
+        assert!(matches!(result, GraphCacheResult::Hit(_, _)));
+        if let GraphCacheResult::Hit(g, unresolvable) = result {
+            assert_eq!(g.module_count(), 1);
+            assert_eq!(unresolvable, 2);
+        }
     }
 
     #[test]
-    fn graph_cache_invalidates_when_file_modified() {
+    fn graph_cache_stale_when_file_modified() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let file = root.join("entry.py");
@@ -389,7 +485,12 @@ mod tests {
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
-        assert!(loaded.try_load_graph(&file, &resolve_fn).is_none());
+        let result = loaded.try_load_graph(&file, &resolve_fn);
+        assert!(matches!(result, GraphCacheResult::Stale { .. }));
+        if let GraphCacheResult::Stale { changed_files, .. } = result {
+            assert_eq!(changed_files.len(), 1);
+            assert_eq!(changed_files[0], file);
+        }
     }
 
     #[test]
@@ -408,7 +509,10 @@ mod tests {
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |spec: &str| spec == "foo";
-        assert!(loaded.try_load_graph(&file, &resolve_fn).is_none());
+        assert!(matches!(
+            loaded.try_load_graph(&file, &resolve_fn),
+            GraphCacheResult::Miss
+        ));
     }
 
     #[test]
@@ -429,6 +533,45 @@ mod tests {
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
-        assert!(loaded.try_load_graph(&file_b, &resolve_fn).is_none());
+        assert!(matches!(
+            loaded.try_load_graph(&file_b, &resolve_fn),
+            GraphCacheResult::Miss
+        ));
+    }
+
+    #[test]
+    fn incremental_save_updates_changed_mtimes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let file = root.join("entry.py");
+        fs::write(&file, "x = 1").unwrap();
+
+        let mut graph = ModuleGraph::new();
+        let size = fs::metadata(&file).unwrap().len();
+        graph.add_module(file.clone(), size, None);
+
+        let mut cache = ParseCache::new();
+        cache.save(&root, &file, &graph, vec![], 0);
+
+        // Modify the file
+        fs::write(&file, "x = 2").unwrap();
+
+        let mut loaded = ParseCache::load(&root);
+        let resolve_fn = |_: &str| false;
+        let result = loaded.try_load_graph(&file, &resolve_fn);
+        assert!(matches!(result, GraphCacheResult::Stale { .. }));
+
+        if let GraphCacheResult::Stale { graph, changed_files, .. } = result {
+            // Incremental save with updated mtimes
+            loaded.save_incremental(&root, &file, &graph, &changed_files, 0);
+
+            // Reload — should now be a Hit
+            let mut reloaded = ParseCache::load(&root);
+            let result = reloaded.try_load_graph(&file, &resolve_fn);
+            assert!(
+                matches!(result, GraphCacheResult::Hit(_, _)),
+                "expected Hit after incremental save"
+            );
+        }
     }
 }

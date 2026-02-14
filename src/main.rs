@@ -576,16 +576,50 @@ fn load_or_build_graph(
         cache::ParseCache::load(root)
     };
 
-    // Tier 1: try whole-graph cache (nothing changed since last run)
+    // Tier 1: try whole-graph cache
     if !no_cache {
         let resolve_fn = |spec: &str| lang.resolve(root, spec).is_some();
-        if let Some((graph, unresolvable_dynamic)) = cache.try_load_graph(entry, &resolve_fn) {
-            return LoadResult {
-                graph,
-                unresolvable_dynamic_count: unresolvable_dynamic,
-                unresolvable_dynamic_files: Vec::new(),
-                from_cache: true,
-            };
+        match cache.try_load_graph(entry, &resolve_fn) {
+            cache::GraphCacheResult::Hit(graph, unresolvable_dynamic) => {
+                return LoadResult {
+                    graph,
+                    unresolvable_dynamic_count: unresolvable_dynamic,
+                    unresolvable_dynamic_files: Vec::new(),
+                    from_cache: true,
+                };
+            }
+            cache::GraphCacheResult::Stale {
+                mut graph,
+                unresolvable_dynamic,
+                changed_files,
+            } => {
+                // Tier 1.5: incremental update — re-parse only changed files,
+                // reuse the cached graph if imports haven't changed.
+                if let Some(result) = try_incremental_update(
+                    &mut cache,
+                    &mut graph,
+                    &changed_files,
+                    unresolvable_dynamic,
+                    lang,
+                ) {
+                    graph.compute_package_info();
+                    cache.save_incremental(
+                        root,
+                        entry,
+                        &graph,
+                        &changed_files,
+                        result.unresolvable_dynamic,
+                    );
+                    return LoadResult {
+                        graph,
+                        unresolvable_dynamic_count: result.unresolvable_dynamic,
+                        unresolvable_dynamic_files: Vec::new(),
+                        from_cache: true,
+                    };
+                }
+                // Imports changed — fall through to full BFS
+            }
+            cache::GraphCacheResult::Miss => {}
         }
     }
 
@@ -605,6 +639,74 @@ fn load_or_build_graph(
         unresolvable_dynamic_files: result.unresolvable_dynamic,
         from_cache: false,
     }
+}
+
+struct IncrementalResult {
+    unresolvable_dynamic: usize,
+}
+
+/// Try to incrementally update the cached graph when only a few files changed.
+/// Re-parses the changed files and checks if their imports match the old parse.
+/// Returns None if imports changed (caller should fall back to full BFS).
+fn try_incremental_update(
+    cache: &mut cache::ParseCache,
+    graph: &mut graph::ModuleGraph,
+    changed_files: &[PathBuf],
+    old_unresolvable_total: usize,
+    lang: &dyn LanguageSupport,
+) -> Option<IncrementalResult> {
+    let mut unresolvable_delta: isize = 0;
+
+    for path in changed_files {
+        // Get old imports without mtime check
+        let old_result = cache.lookup_unchecked(path)?;
+        let old_import_count = old_result.imports.len();
+        let old_unresolvable = old_result.unresolvable_dynamic;
+        let old_imports: Vec<_> = old_result
+            .imports
+            .iter()
+            .map(|i| (i.specifier.as_str(), i.kind))
+            .collect();
+
+        // Re-parse the changed file
+        let new_result = lang.parse(path).ok()?;
+
+        // Compare import lists — if anything changed, bail out
+        if new_result.imports.len() != old_import_count
+            || new_result
+                .imports
+                .iter()
+                .zip(old_imports.iter())
+                .any(|(new, &(old_spec, old_kind))| {
+                    new.specifier != old_spec || new.kind != old_kind
+                })
+        {
+            return None;
+        }
+
+        // Track unresolvable dynamic count changes
+        unresolvable_delta +=
+            new_result.unresolvable_dynamic as isize - old_unresolvable as isize;
+
+        // Update file size in graph
+        let mid = *graph.path_to_id.get(path)?;
+        let new_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        graph.modules[mid.0 as usize].size_bytes = new_size;
+
+        // Update parse cache entry
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let resolved_paths: Vec<Option<PathBuf>> = new_result
+            .imports
+            .iter()
+            .map(|imp| lang.resolve(dir, &imp.specifier))
+            .collect();
+        cache.insert(path.clone(), &new_result, &resolved_paths);
+    }
+
+    let new_total = (old_unresolvable_total as isize + unresolvable_delta).max(0) as usize;
+    Some(IncrementalResult {
+        unresolvable_dynamic: new_total,
+    })
 }
 
 /// Determine whether a --chain/--cut argument looks like a file path
