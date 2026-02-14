@@ -137,19 +137,19 @@ impl ModuleGraph {
         }
 
         let num_modules = self.modules.len();
-        for (pkg_name, module_ids) in &package_entries {
+        for (pkg_name, module_ids) in package_entries {
             let mut total_size: u64 = 0;
             let mut total_files: u32 = 0;
             let mut visited = vec![false; num_modules];
 
             let mut queue: VecDeque<ModuleId> = module_ids.iter().copied().collect();
-            for &id in module_ids {
+            for &id in &module_ids {
                 visited[id.0 as usize] = true;
             }
 
             while let Some(mid) = queue.pop_front() {
                 let module = &self.modules[mid.0 as usize];
-                if module.package.as_deref() == Some(pkg_name) {
+                if module.package.as_deref() == Some(pkg_name.as_str()) {
                     total_size += module.size_bytes;
                     total_files += 1;
                 }
@@ -158,7 +158,7 @@ impl ModuleGraph {
                     let edge = &self.edges[edge_id.0 as usize];
                     if edge.kind == EdgeKind::Static {
                         let target = &self.modules[edge.to.0 as usize];
-                        if target.package.as_deref() == Some(pkg_name)
+                        if target.package.as_deref() == Some(pkg_name.as_str())
                             && !visited[edge.to.0 as usize]
                         {
                             visited[edge.to.0 as usize] = true;
@@ -169,15 +169,13 @@ impl ModuleGraph {
             }
 
             let entry_module = module_ids[0];
-            self.package_map.insert(
-                pkg_name.clone(),
-                PackageInfo {
-                    name: pkg_name.clone(),
-                    entry_module,
-                    total_reachable_size: total_size,
-                    total_reachable_files: total_files,
-                },
-            );
+            let info = PackageInfo {
+                name: pkg_name.clone(),
+                entry_module,
+                total_reachable_size: total_size,
+                total_reachable_files: total_files,
+            };
+            self.package_map.insert(pkg_name, info);
         }
     }
 }
