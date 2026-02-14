@@ -5,11 +5,12 @@ use chainsaw::cache::ParseCache;
 use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
 use chainsaw::lang::LanguageSupport;
+use chainsaw::query;
 
 fn ts_root() -> PathBuf {
     std::env::var("TS_BENCH_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/openclaw-fresh"))
+        .unwrap_or_else(|_| PathBuf::from("/Users/hlal/dev/cloudflare/workers-sdk"))
 }
 
 fn py_root() -> PathBuf {
@@ -20,7 +21,7 @@ fn py_root() -> PathBuf {
 
 fn bench_ts_parse_file(c: &mut Criterion) {
     let root = ts_root();
-    let entry = root.join("packages/web-app/src/index.tsx");
+    let entry = root.join("packages/wrangler/src/index.ts");
     if !entry.exists() {
         eprintln!("Skipping: {} not found", root.display());
         return;
@@ -51,7 +52,7 @@ fn bench_ts_resolve(c: &mut Criterion) {
         return;
     }
     let lang = TypeScriptSupport::new(&root);
-    let from_dir = root.join("packages/web-app/src");
+    let from_dir = root.join("packages/wrangler/src");
     c.bench_function("ts_resolve", |b| {
         b.iter(|| lang.resolve(black_box(&from_dir), black_box("./index")))
     });
@@ -71,7 +72,7 @@ fn bench_py_resolve(c: &mut Criterion) {
 
 fn bench_build_graph_ts(c: &mut Criterion) {
     let root = ts_root();
-    let entry = root.join("packages/web-app/src/index.tsx");
+    let entry = root.join("packages/wrangler/src/index.ts");
     if !entry.exists() {
         eprintln!("Skipping: {} not found", root.display());
         return;
@@ -109,7 +110,7 @@ fn bench_build_graph_py(c: &mut Criterion) {
 
 fn bench_cache_load_validate(c: &mut Criterion) {
     let root = ts_root();
-    let entry = root.join("packages/web-app/src/index.tsx");
+    let entry = root.join("packages/wrangler/src/index.ts");
     if !entry.exists() {
         eprintln!("Skipping: {} not found", root.display());
         return;
@@ -129,6 +130,44 @@ fn bench_cache_load_validate(c: &mut Criterion) {
     });
 }
 
+fn bench_query_trace_ts(c: &mut Criterion) {
+    let root = ts_root();
+    let entry = root.join("packages/wrangler/src/index.ts");
+    if !entry.exists() {
+        eprintln!("Skipping: {} not found", root.display());
+        return;
+    }
+    let lang = TypeScriptSupport::new(&root);
+    let mut cache = ParseCache::new();
+    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+    let graph = result.graph;
+    let entry_id = graph.path_to_id[&entry];
+    let opts = query::TraceOptions::default();
+
+    c.bench_function("query_trace_ts", |b| {
+        b.iter(|| query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)))
+    });
+}
+
+fn bench_query_trace_py(c: &mut Criterion) {
+    let root = py_root();
+    let entry = root.join("awscli/__init__.py");
+    if !entry.exists() {
+        eprintln!("Skipping: {} not found", root.display());
+        return;
+    }
+    let lang = PythonSupport::new(&root);
+    let mut cache = ParseCache::new();
+    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+    let graph = result.graph;
+    let entry_id = graph.path_to_id[&entry];
+    let opts = query::TraceOptions::default();
+
+    c.bench_function("query_trace_py", |b| {
+        b.iter(|| query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)))
+    });
+}
+
 criterion_group!(
     benches,
     bench_ts_parse_file,
@@ -138,5 +177,7 @@ criterion_group!(
     bench_build_graph_ts,
     bench_build_graph_py,
     bench_cache_load_validate,
+    bench_query_trace_ts,
+    bench_query_trace_py,
 );
 criterion_main!(benches);

@@ -219,38 +219,44 @@ fn compute_exclusive_weights(
 }
 
 /// BFS from entry point, collecting all reachable modules.
-/// Returns (static_reachable, dynamic_only_reachable) as sets of ModuleIds.
+/// Returns (static_reachable, dynamic_only_reachable) as Vecs of ModuleIds.
 fn bfs_reachable(
     graph: &ModuleGraph,
     entry: ModuleId,
-) -> (HashSet<ModuleId>, HashSet<ModuleId>) {
-    let mut static_visited: HashSet<ModuleId> = HashSet::new();
-    let mut static_queue: VecDeque<ModuleId> = VecDeque::new();
+) -> (Vec<ModuleId>, Vec<ModuleId>) {
+    let n = graph.modules.len();
+    let mut visited = vec![false; n];
+    let mut static_set: Vec<ModuleId> = Vec::new();
+    let mut queue: VecDeque<ModuleId> = VecDeque::new();
 
-    static_visited.insert(entry);
-    static_queue.push_back(entry);
+    visited[entry.0 as usize] = true;
+    static_set.push(entry);
+    queue.push_back(entry);
 
     // BFS following static edges
-    while let Some(mid) = static_queue.pop_front() {
+    while let Some(mid) = queue.pop_front() {
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
-            if edge.kind == EdgeKind::Static && static_visited.insert(edge.to) {
-                static_queue.push_back(edge.to);
+            let idx = edge.to.0 as usize;
+            if edge.kind == EdgeKind::Static && !visited[idx] {
+                visited[idx] = true;
+                static_set.push(edge.to);
+                queue.push_back(edge.to);
             }
         }
     }
 
     // BFS following dynamic edges from all statically reachable modules
-    let mut dynamic_only: HashSet<ModuleId> = HashSet::new();
+    let mut dynamic_set: Vec<ModuleId> = Vec::new();
     let mut dyn_queue: VecDeque<ModuleId> = VecDeque::new();
 
-    for &mid in &static_visited {
+    for &mid in &static_set {
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
-            if edge.kind == EdgeKind::Dynamic
-                && !static_visited.contains(&edge.to)
-                && dynamic_only.insert(edge.to)
-            {
+            let idx = edge.to.0 as usize;
+            if edge.kind == EdgeKind::Dynamic && !visited[idx] {
+                visited[idx] = true;
+                dynamic_set.push(edge.to);
                 dyn_queue.push_back(edge.to);
             }
         }
@@ -260,16 +266,18 @@ fn bfs_reachable(
     while let Some(mid) = dyn_queue.pop_front() {
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
+            let idx = edge.to.0 as usize;
             if (edge.kind == EdgeKind::Static || edge.kind == EdgeKind::Dynamic)
-                && !static_visited.contains(&edge.to)
-                && dynamic_only.insert(edge.to)
+                && !visited[idx]
             {
+                visited[idx] = true;
+                dynamic_set.push(edge.to);
                 dyn_queue.push_back(edge.to);
             }
         }
     }
 
-    (static_visited, dynamic_only)
+    (static_set, dynamic_set)
 }
 
 /// BFS shortest path from entry to any module in the target package.
@@ -278,11 +286,12 @@ fn shortest_chain_to_package(
     entry: ModuleId,
     package_name: &str,
 ) -> Vec<ModuleId> {
-    let mut visited: HashSet<ModuleId> = HashSet::new();
-    let mut parent: HashMap<ModuleId, ModuleId> = HashMap::new();
+    let n = graph.modules.len();
+    let mut visited = vec![false; n];
+    let mut parent = vec![u32::MAX; n];
     let mut queue: VecDeque<ModuleId> = VecDeque::new();
 
-    visited.insert(entry);
+    visited[entry.0 as usize] = true;
     queue.push_back(entry);
 
     while let Some(mid) = queue.pop_front() {
@@ -290,9 +299,10 @@ fn shortest_chain_to_package(
         if module.package.as_deref() == Some(package_name) {
             // Reconstruct path
             let mut chain = vec![mid];
-            let mut current = mid;
-            while let Some(&p) = parent.get(&current) {
-                chain.push(p);
+            let mut current = mid.0;
+            while parent[current as usize] != u32::MAX {
+                let p = parent[current as usize];
+                chain.push(ModuleId(p));
                 current = p;
             }
             chain.reverse();
@@ -301,8 +311,10 @@ fn shortest_chain_to_package(
 
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
-            if edge.kind == EdgeKind::Static && visited.insert(edge.to) {
-                parent.insert(edge.to, mid);
+            let idx = edge.to.0 as usize;
+            if edge.kind == EdgeKind::Static && !visited[idx] {
+                visited[idx] = true;
+                parent[idx] = mid.0;
                 queue.push_back(edge.to);
             }
         }
@@ -326,7 +338,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     }
 
     let (dynamic_only_weight, dynamic_only_module_count) = if opts.include_dynamic {
-        reachable.extend(&dynamic_only);
+        reachable.extend_from_slice(&dynamic_only);
         (0, 0)
     } else {
         let w: u64 = dynamic_only.iter().map(|&mid| graph.module(mid).size_bytes).sum();
@@ -465,18 +477,19 @@ fn all_shortest_chains(
     max_chains: usize,
     include_dynamic: bool,
 ) -> Vec<Vec<ModuleId>> {
-    let mut parents: HashMap<ModuleId, Vec<ModuleId>> = HashMap::new();
-    let mut depth: HashMap<ModuleId, u32> = HashMap::new();
+    let n = graph.modules.len();
+    let mut parents: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut depth: Vec<u32> = vec![u32::MAX; n];
     let mut queue: VecDeque<ModuleId> = VecDeque::new();
 
-    depth.insert(entry, 0);
+    depth[entry.0 as usize] = 0;
     queue.push_back(entry);
 
     let mut target_depth: Option<u32> = None;
     let mut targets: Vec<ModuleId> = Vec::new();
 
     while let Some(mid) = queue.pop_front() {
-        let d = depth[&mid];
+        let d = depth[mid.0 as usize];
 
         // If we've found targets and moved past their depth, stop
         if let Some(td) = target_depth
@@ -503,15 +516,16 @@ fn all_shortest_chains(
             }
 
             let next_depth = d + 1;
-            match depth.get(&edge.to) {
-                Some(&existing) if existing == next_depth => {
+            let idx = edge.to.0 as usize;
+            match depth[idx] {
+                d if d == next_depth => {
                     // Same depth -- add as alternate parent
-                    parents.entry(edge.to).or_default().push(mid);
+                    parents[idx].push(mid.0);
                 }
-                None => {
+                u32::MAX => {
                     // First visit
-                    depth.insert(edge.to, next_depth);
-                    parents.entry(edge.to).or_default().push(mid);
+                    depth[idx] = next_depth;
+                    parents[idx].push(mid.0);
                     queue.push_back(edge.to);
                 }
                 _ => {} // Already visited at shorter depth, skip
@@ -525,8 +539,8 @@ fn all_shortest_chains(
 
     // Backtrack from each target to reconstruct all paths
     let mut all_chains: Vec<Vec<ModuleId>> = Vec::new();
-    for &target in &targets {
-        let mut partial_paths: Vec<Vec<ModuleId>> = vec![vec![target]];
+    for &target_mid in &targets {
+        let mut partial_paths: Vec<Vec<ModuleId>> = vec![vec![target_mid]];
 
         loop {
             let mut next_partial: Vec<Vec<ModuleId>> = Vec::new();
@@ -538,11 +552,12 @@ fn all_shortest_chains(
                     next_partial.push(path.clone());
                     continue;
                 }
-                if let Some(pars) = parents.get(&head) {
+                let pars = &parents[head.0 as usize];
+                if !pars.is_empty() {
                     any_extended = true;
                     for &p in pars {
                         let mut new_path = path.clone();
-                        new_path.push(p);
+                        new_path.push(ModuleId(p));
                         next_partial.push(new_path);
                         if next_partial.len() > max_chains * 2 {
                             break; // Prevent combinatorial explosion
@@ -596,24 +611,26 @@ pub fn find_cut_modules(
     let exclusive = compute_exclusive_weights(graph, entry, include_dynamic);
 
     let total = chains.len();
-    let mut frequency: HashMap<ModuleId, usize> = HashMap::new();
+    let mut frequency = vec![0usize; graph.modules.len()];
     for chain in chains {
         for &mid in chain {
-            *frequency.entry(mid).or_insert(0) += 1;
+            frequency[mid.0 as usize] += 1;
         }
     }
 
     let mut cuts: Vec<CutModule> = frequency
-        .into_iter()
-        .filter(|&(mid, count)| {
+        .iter()
+        .enumerate()
+        .filter(|&(idx, &count)| {
+            let mid = ModuleId(idx as u32);
             count == total
                 && mid != entry
                 && !target.matches(graph, mid)
         })
-        .map(|(mid, count)| CutModule {
-            module_id: mid,
+        .map(|(idx, &count)| CutModule {
+            module_id: ModuleId(idx as u32),
             chains_broken: count,
-            exclusive_size: exclusive[mid.0 as usize],
+            exclusive_size: exclusive[idx],
         })
         .collect();
 
