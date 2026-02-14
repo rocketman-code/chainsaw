@@ -157,7 +157,7 @@ fn main() {
                 graph.module_count(),
                 start.elapsed().as_secs_f64() * 1000.0
             );
-            if unresolvable_dynamic > 0 {
+            if unresolvable_dynamic > 0 && !load_result.from_cache {
                 eprintln!(
                     "warning: {} dynamic import{} with non-literal argument{} could not be traced",
                     unresolvable_dynamic,
