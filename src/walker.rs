@@ -49,8 +49,18 @@ fn concurrent_discover(
                 loop {
                     if let Some(path) = queue.pop() {
                         spin_count = 0;
-                        // Parse
-                        let result = match lang.parse(&path) {
+                        // Read file once — parse and get size from the same read
+                        let source = match fs::read_to_string(&path) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("warning: {}: {e}", path.display());
+                                active.fetch_sub(1, Ordering::AcqRel);
+                                continue;
+                            }
+                        };
+                        let size = source.len() as u64;
+
+                        let result = match lang.parse(&path, &source) {
                             Ok(r) => r,
                             Err(e) => {
                                 eprintln!("warning: {e}");
@@ -58,8 +68,6 @@ fn concurrent_discover(
                                 continue;
                             }
                         };
-
-                        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                         let package = if path == entry {
                             None
                         } else {

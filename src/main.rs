@@ -683,7 +683,8 @@ fn try_incremental_update(
             .collect();
 
         // Re-parse the changed file
-        let new_result = lang.parse(path).ok()?;
+        let source = std::fs::read_to_string(path).ok()?;
+        let new_result = lang.parse(path, &source).ok()?;
 
         // Compare import lists — if anything changed, bail out
         if new_result.imports.len() != old_import_count
@@ -704,7 +705,7 @@ fn try_incremental_update(
 
         // Update file size in graph
         let mid = *graph.path_to_id.get(path)?;
-        let new_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let new_size = source.len() as u64;
         graph.modules[mid.0 as usize].size_bytes = new_size;
 
         // Update parse cache entry
