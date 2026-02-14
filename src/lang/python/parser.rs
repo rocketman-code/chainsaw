@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use tree_sitter::Parser;
@@ -6,10 +5,8 @@ use tree_sitter::Parser;
 use crate::graph::EdgeKind;
 use crate::lang::{ParseResult, RawImport};
 
-pub fn parse_file(path: &Path) -> Result<ParseResult, String> {
-    let source =
-        fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    parse_source(&source)
+pub fn parse_file(_path: &Path, source: &str) -> Result<ParseResult, String> {
+    parse_source(source)
 }
 
 fn parse_source(source: &str) -> Result<ParseResult, String> {
