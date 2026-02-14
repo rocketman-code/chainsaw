@@ -90,6 +90,7 @@ fn detect_pnpm_virtual_store(root: &Path) -> Option<PathBuf> {
     }
 }
 
+#[derive(Debug)]
 pub struct ImportResolver {
     resolver: Resolver,
     /// Path to pnpm virtual store (e.g. `/project/node_modules/.pnpm`), if detected

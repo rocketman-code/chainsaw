@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[derive(Debug)]
 pub struct PythonResolver {
     source_roots: Vec<PathBuf>,
     site_packages_dirs: Vec<PathBuf>,

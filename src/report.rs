@@ -57,6 +57,7 @@ impl C {
     }
 }
 
+#[derive(Debug)]
 pub struct StderrColor {
     color: bool,
 }
