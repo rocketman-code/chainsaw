@@ -137,6 +137,14 @@ fn package_relative_path(path: &Path, package_name: &str) -> String {
         .to_string()
 }
 
+#[derive(Debug)]
+pub struct DisplayOpts {
+    pub top: i32,
+    pub top_modules: i32,
+    pub include_dynamic: bool,
+    pub no_color: bool,
+}
+
 /// Build display names for a chain, expanding duplicate package nodes
 /// to package-relative file paths for disambiguation.
 fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> Vec<String> {
@@ -160,11 +168,11 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
         .collect()
 }
 
-#[allow(clippy::cast_sign_loss, clippy::too_many_arguments)]
-pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32, include_dynamic: bool, no_color: bool) {
-    let c = C::new(no_color);
+#[allow(clippy::cast_sign_loss)]
+pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, opts: &DisplayOpts) {
+    let c = C::new(opts.no_color);
     println!("{}", relative_path(entry_path, root));
-    if include_dynamic {
+    if opts.include_dynamic {
         println!(
             "{} {} ({} module{}, static + dynamic)",
             c.bold_green("Total transitive weight:"),
@@ -192,8 +200,8 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
     println!();
 
-    if top != 0 {
-        let deps_label = if include_dynamic { "Heavy dependencies (static + dynamic):" } else { "Heavy dependencies (static):" };
+    if opts.top != 0 {
+        let deps_label = if opts.include_dynamic { "Heavy dependencies (static + dynamic):" } else { "Heavy dependencies (static):" };
         println!("{}", c.bold_green(deps_label));
         if result.heavy_packages.is_empty() {
             println!("  (none \u{2014} all reachable modules are first-party)");
@@ -215,12 +223,12 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
         println!();
     }
 
-    if top_modules != 0 && !result.modules_by_cost.is_empty() {
+    if opts.top_modules != 0 && !result.modules_by_cost.is_empty() {
         println!("{}", c.bold_green("Modules (sorted by exclusive weight):"));
-        let display_count = if top_modules < 0 {
+        let display_count = if opts.top_modules < 0 {
             result.modules_by_cost.len()
         } else {
-            result.modules_by_cost.len().min(top_modules as usize)
+            result.modules_by_cost.len().min(opts.top_modules as usize)
         };
         for mc in &result.modules_by_cost[..display_count] {
             let m = graph.module(mc.module_id);
