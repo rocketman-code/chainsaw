@@ -11,7 +11,7 @@ use crate::graph::ModuleGraph;
 use crate::lang::ParseResult;
 
 const CACHE_FILE: &str = ".chainsaw.cache";
-const CACHE_VERSION: u32 = 6;
+const CACHE_VERSION: u32 = 7;
 // 16-byte header: magic (4) + version (4) + graph_len (8)
 const CACHE_MAGIC: u32 = 0x4348_5357; // "CHSW"
 const HEADER_SIZE: usize = 16;
@@ -52,11 +52,42 @@ struct CachedGraph {
     file_mtimes: HashMap<PathBuf, CachedMtime>,
     unresolved_specifiers: Vec<String>,
     unresolvable_dynamic: usize,
+    /// Lockfile mtimes — if unchanged, skip re-resolving unresolved specifiers.
+    dep_sentinels: Vec<(PathBuf, u128)>,
+}
+
+const LOCKFILES: &[&str] = &[
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    "poetry.lock",
+    "Pipfile.lock",
+    "uv.lock",
+    "requirements.txt",
+];
+
+fn find_dep_sentinels(root: &Path) -> Vec<(PathBuf, u128)> {
+    LOCKFILES
+        .iter()
+        .filter_map(|name| {
+            let path = root.join(name);
+            let meta = fs::metadata(&path).ok()?;
+            let mtime = mtime_of(&meta)?;
+            Some((path, mtime))
+        })
+        .collect()
 }
 
 pub enum GraphCacheResult {
     /// All files unchanged — graph is valid.
-    Hit(ModuleGraph, usize),
+    Hit {
+        graph: ModuleGraph,
+        unresolvable_dynamic: usize,
+        unresolved_specifiers: Vec<String>,
+        /// True if the graph is valid but sentinel mtimes need updating.
+        needs_resave: bool,
+    },
     /// Some files have different mtimes — incremental update possible.
     Stale {
         graph: ModuleGraph,
@@ -159,7 +190,7 @@ impl ParseCache {
     pub fn try_load_graph(
         &mut self,
         entry: &Path,
-        resolve_fn: &dyn Fn(&str) -> bool,
+        resolve_fn: &(dyn Fn(&str) -> bool + Sync),
     ) -> GraphCacheResult {
         let cached = match self.cached_graph.as_ref() {
             Some(c) if c.entry == entry => c,
@@ -192,16 +223,36 @@ impl ParseCache {
             return GraphCacheResult::Miss;
         }
 
-        // Check if any previously-unresolved specifier now resolves
-        for spec in &cached.unresolved_specifiers {
-            if resolve_fn(spec) {
+        // Check if any previously-unresolved specifier now resolves.
+        // Optimization: if we have lockfile sentinels and none changed, skip the
+        // expensive re-resolution check. A new `npm install` / `pip install` would
+        // modify the lockfile, triggering the full check.
+        let sentinels_unchanged = !cached.dep_sentinels.is_empty()
+            && cached.dep_sentinels.iter().all(|(path, saved_mtime)| {
+                fs::metadata(path)
+                    .ok()
+                    .and_then(|m| mtime_of(&m))
+                    .is_some_and(|t| t == *saved_mtime)
+            });
+
+        if !sentinels_unchanged {
+            let any_resolves = cached
+                .unresolved_specifiers
+                .par_iter()
+                .any(|spec| resolve_fn(spec));
+            if any_resolves {
                 return GraphCacheResult::Miss;
             }
         }
 
         if changed_files.is_empty() {
             let cached = self.cached_graph.take().unwrap();
-            return GraphCacheResult::Hit(cached.graph, cached.unresolvable_dynamic);
+            return GraphCacheResult::Hit {
+                graph: cached.graph,
+                unresolvable_dynamic: cached.unresolvable_dynamic,
+                unresolved_specifiers: cached.unresolved_specifiers,
+                needs_resave: !sentinels_unchanged,
+            };
         }
 
         // Files changed — extract graph and preserve mtimes for incremental save
@@ -257,9 +308,10 @@ impl ParseCache {
         let root = root.to_path_buf();
         let entry = entry.to_path_buf();
         let graph = graph.clone();
+        let dep_sentinels = find_dep_sentinels(&root);
 
         CacheWriteHandle(Some(thread::spawn(move || {
-            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
+            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic, dep_sentinels);
         })))
     }
 
@@ -279,6 +331,8 @@ impl ParseCache {
         let entry = entry.to_path_buf();
         let graph = graph.clone();
 
+        let dep_sentinels = find_dep_sentinels(&root);
+
         CacheWriteHandle(Some(thread::spawn(move || {
             let file_mtimes: HashMap<PathBuf, CachedMtime> = graph
                 .modules
@@ -296,7 +350,7 @@ impl ParseCache {
                 })
                 .collect();
 
-            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic);
+            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic, dep_sentinels);
         })))
     }
 
@@ -346,6 +400,7 @@ fn write_cache_to_disk(
     file_mtimes: HashMap<PathBuf, CachedMtime>,
     unresolved_specifiers: Vec<String>,
     unresolvable_dynamic: usize,
+    dep_sentinels: Vec<(PathBuf, u128)>,
 ) {
     let graph_cache = CachedGraph {
         entry,
@@ -353,6 +408,7 @@ fn write_cache_to_disk(
         file_mtimes,
         unresolved_specifiers,
         unresolvable_dynamic,
+        dep_sentinels,
     };
 
     let graph_data = match bitcode::serialize(&graph_cache) {
@@ -495,8 +551,8 @@ mod tests {
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
         let result = loaded.try_load_graph(&file, &resolve_fn);
-        assert!(matches!(result, GraphCacheResult::Hit(_, _)));
-        if let GraphCacheResult::Hit(g, unresolvable) = result {
+        assert!(matches!(result, GraphCacheResult::Hit { .. }));
+        if let GraphCacheResult::Hit { graph: g, unresolvable_dynamic: unresolvable, .. } = result {
             assert_eq!(g.module_count(), 1);
             assert_eq!(unresolvable, 2);
         }
@@ -604,7 +660,7 @@ mod tests {
             let mut reloaded = ParseCache::load(&root);
             let result = reloaded.try_load_graph(&file, &resolve_fn);
             assert!(
-                matches!(result, GraphCacheResult::Hit(_, _)),
+                matches!(result, GraphCacheResult::Hit { .. }),
                 "expected Hit after incremental save"
             );
         }

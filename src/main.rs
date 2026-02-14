@@ -580,7 +580,12 @@ fn load_or_build_graph(
     if !no_cache {
         let resolve_fn = |spec: &str| lang.resolve(root, spec).is_some();
         match cache.try_load_graph(entry, &resolve_fn) {
-            cache::GraphCacheResult::Hit(graph, unresolvable_dynamic) => {
+            cache::GraphCacheResult::Hit { graph, unresolvable_dynamic, unresolved_specifiers, needs_resave } => {
+                let handle = if needs_resave {
+                    cache.save(root, entry, &graph, unresolved_specifiers, unresolvable_dynamic)
+                } else {
+                    cache::CacheWriteHandle::none()
+                };
                 return (
                     LoadResult {
                         graph,
@@ -588,7 +593,7 @@ fn load_or_build_graph(
                         unresolvable_dynamic_files: Vec::new(),
                         from_cache: true,
                     },
-                    cache::CacheWriteHandle::none(),
+                    handle,
                 );
             }
             cache::GraphCacheResult::Stale {
