@@ -41,6 +41,12 @@ pub struct StderrColor {
     color: bool,
 }
 
+impl Default for StderrColor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StderrColor {
     pub fn new() -> Self {
         Self { color: std::io::stderr().is_terminal() }
@@ -59,6 +65,7 @@ impl StderrColor {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 pub fn format_size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
         format!("{:.1} MB", bytes as f64 / 1_000_000.0)
@@ -92,11 +99,11 @@ fn package_relative_path(path: &Path, package_name: &str) -> String {
     // Scoped packages: match @scope then name as consecutive components
     if let Some((scope, name)) = package_name.split_once('/') {
         for i in 0..components.len().saturating_sub(1) {
-            if let (Component::Normal(a), Component::Normal(b)) = (&components[i], &components[i + 1]) {
-                if a.to_str() == Some(scope) && b.to_str() == Some(name) {
-                    let sub: PathBuf = components[i..].iter().collect();
-                    return sub.to_string_lossy().into_owned();
-                }
+            if let (Component::Normal(a), Component::Normal(b)) = (&components[i], &components[i + 1])
+                && a.to_str() == Some(scope) && b.to_str() == Some(name)
+            {
+                let sub: PathBuf = components[i..].iter().collect();
+                return sub.to_string_lossy().into_owned();
             }
         }
     } else {
@@ -138,6 +145,7 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
         .collect()
 }
 
+#[allow(clippy::cast_sign_loss)]
 pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, top: i32, top_modules: i32, include_dynamic: bool) {
     let c = C::stdout();
     println!("{}", relative_path(entry_path, root));
@@ -214,6 +222,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
 }
 
+#[allow(clippy::cast_sign_loss)]
 pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
     let c = C::stdout();
     println!("Diff: {entry_a} vs {entry_b}");
@@ -369,7 +378,7 @@ pub fn print_chains_json(
     let json = JsonChains {
         target: target_label.to_string(),
         chain_count: chains.len(),
-        hop_count: chains.first().map(|c| c.len().saturating_sub(1)).unwrap_or(0),
+        hop_count: chains.first().map_or(0, |c| c.len().saturating_sub(1)),
         chains: chains
             .iter()
             .map(|chain| chain_display_names(graph, chain, root))
@@ -478,6 +487,7 @@ pub fn print_cut_json(
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }
 
+#[allow(clippy::cast_sign_loss)]
 pub fn print_packages(graph: &ModuleGraph, top: i32) {
     let c = C::stdout();
     let mut packages: Vec<_> = graph.package_map.values().collect();
@@ -507,6 +517,7 @@ pub fn print_packages(graph: &ModuleGraph, top: i32) {
     }
 }
 
+#[allow(clippy::cast_sign_loss)]
 pub fn print_packages_json(graph: &ModuleGraph, top: i32) {
     let mut packages: Vec<_> = graph.package_map.values().collect();
     packages.sort_by(|a, b| b.total_reachable_size.cmp(&a.total_reachable_size));
@@ -588,6 +599,7 @@ struct JsonModuleCost {
     exclusive_size_bytes: u64,
 }
 
+#[allow(clippy::cast_sign_loss)]
 pub fn print_trace_json(
     graph: &ModuleGraph,
     result: &TraceResult,

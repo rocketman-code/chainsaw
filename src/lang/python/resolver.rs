@@ -34,6 +34,7 @@ impl PythonResolver {
         &self.site_packages_dirs
     }
 
+    #[allow(clippy::unused_self)]
     fn resolve_relative(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf> {
         let dots = specifier.bytes().take_while(|&b| b == b'.').count();
         let module = &specifier[dots..];

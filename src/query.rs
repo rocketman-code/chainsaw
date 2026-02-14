@@ -67,7 +67,7 @@ impl ChainTarget {
     }
 }
 
-/// Whether to follow an edge based on its kind and the include_dynamic flag.
+/// Whether to follow an edge based on its kind and the `include_dynamic` flag.
 fn should_follow(kind: EdgeKind, include_dynamic: bool) -> bool {
     match kind {
         EdgeKind::Static => true,
@@ -137,6 +137,7 @@ fn intersect_idom(idom: &[u32], rpo_num: &[u32], mut a: u32, mut b: u32) -> u32 
 /// Exclusive weight of module M = total size of all modules in M's dominator
 /// subtree (modules that become unreachable if M is removed from the graph).
 /// Uses the Cooper-Harvey-Kennedy iterative dominator algorithm: O(N).
+#[allow(clippy::cast_possible_truncation)]
 fn compute_exclusive_weights(
     graph: &ModuleGraph,
     entry: ModuleId,
@@ -219,7 +220,7 @@ struct BfsResult {
     dynamic_set: Vec<ModuleId>,
     /// BFS parent pointers from the static traversal. parent[i] is the
     /// predecessor of module i on the shortest static path from entry.
-    /// Entry and unreachable modules have u32::MAX.
+    /// Entry and unreachable modules have `u32::MAX`.
     static_parent: Vec<u32>,
 }
 
@@ -304,6 +305,7 @@ fn reconstruct_chain(parent: &[u32], entry: ModuleId, target: ModuleId) -> Vec<M
     chain
 }
 
+#[allow(clippy::cast_sign_loss)]
 pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> TraceResult {
     let bfs = bfs_reachable(graph, entry);
     let mut reachable = bfs.static_set;
@@ -590,6 +592,7 @@ pub struct CutModule {
 /// Removing any one of these severs every import path to the target.
 /// Sorted by exclusive weight descending (highest-impact first),
 /// truncated to `top_n`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn find_cut_modules(
     graph: &ModuleGraph,
     chains: &[Vec<ModuleId>],
@@ -698,9 +701,10 @@ pub struct DiffResult {
     pub dynamic_only_in_b: Vec<DiffPackage>,
 }
 
+#[allow(clippy::cast_possible_wrap)]
 pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
-    let keys_a: HashSet<&str> = a.packages.keys().map(|s| s.as_str()).collect();
-    let keys_b: HashSet<&str> = b.packages.keys().map(|s| s.as_str()).collect();
+    let keys_a: HashSet<&str> = a.packages.keys().map(String::as_str).collect();
+    let keys_b: HashSet<&str> = b.packages.keys().map(String::as_str).collect();
 
     let mut only_in_a: Vec<DiffPackage> = keys_a
         .difference(&keys_b)
@@ -720,8 +724,8 @@ pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
         .collect();
     only_in_b.sort_by(|x, y| y.size.cmp(&x.size));
 
-    let dyn_keys_a: HashSet<&str> = a.dynamic_packages.keys().map(|s| s.as_str()).collect();
-    let dyn_keys_b: HashSet<&str> = b.dynamic_packages.keys().map(|s| s.as_str()).collect();
+    let dyn_keys_a: HashSet<&str> = a.dynamic_packages.keys().map(String::as_str).collect();
+    let dyn_keys_b: HashSet<&str> = b.dynamic_packages.keys().map(String::as_str).collect();
 
     let mut dynamic_only_in_a: Vec<DiffPackage> = dyn_keys_a
         .difference(&dyn_keys_b)
