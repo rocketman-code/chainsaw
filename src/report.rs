@@ -117,7 +117,7 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     println!();
 
     if top != 0 {
-        let deps_label = if include_dynamic { "Heavy dependencies:" } else { "Heavy dependencies (static):" };
+        let deps_label = if include_dynamic { "Heavy dependencies (static + dynamic):" } else { "Heavy dependencies (static):" };
         println!("{deps_label}");
         if result.heavy_packages.is_empty() {
             println!("  (none \u{2014} all reachable modules are first-party)");
