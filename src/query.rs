@@ -364,9 +364,21 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
     let all_packages: HashMap<String, u64> =
         package_sizes.iter().map(|(k, (size, _))| (k.clone(), *size)).collect();
 
-    let mut heavy_packages: Vec<HeavyPackage> = package_sizes
+    // Sort and truncate BEFORE computing chains (each chain is a full BFS)
+    let mut sorted_packages: Vec<(String, u64, u32)> = package_sizes
         .into_iter()
-        .map(|(name, (total_size, file_count))| {
+        .map(|(name, (total_size, file_count))| (name, total_size, file_count))
+        .collect();
+    sorted_packages.sort_by(|a, b| b.1.cmp(&a.1));
+    if !opts.ignore.is_empty() {
+        sorted_packages.retain(|(name, _, _)| !opts.ignore.iter().any(|i| i == name));
+    }
+    if opts.top_n >= 0 {
+        sorted_packages.truncate(opts.top_n as usize);
+    }
+    let heavy_packages: Vec<HeavyPackage> = sorted_packages
+        .into_iter()
+        .map(|(name, total_size, file_count)| {
             let chain = shortest_chain_to_package(graph, entry, &name);
             HeavyPackage {
                 name,
@@ -376,13 +388,6 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
             }
         })
         .collect();
-    heavy_packages.sort_by(|a, b| b.total_size.cmp(&a.total_size));
-    if !opts.ignore.is_empty() {
-        heavy_packages.retain(|pkg| !opts.ignore.iter().any(|i| i == &pkg.name));
-    }
-    if opts.top_n >= 0 {
-        heavy_packages.truncate(opts.top_n as usize);
-    }
 
     // Compute exclusive weight for all reachable modules via dominator tree
     let exclusive = compute_exclusive_weights(graph, entry, opts.include_dynamic);
