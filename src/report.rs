@@ -228,7 +228,7 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
         entry_b,
         format_size(diff.entry_b_weight)
     );
-    let sign = if diff.weight_delta >= 0 { "+" } else { "" };
+    let sign = if diff.weight_delta >= 0 { "+" } else { "-" };
     println!(
         "  {:<40} {sign}{}",
         "Delta",
