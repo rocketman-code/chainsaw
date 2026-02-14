@@ -53,14 +53,36 @@ pub fn build_graph(
         }
     }
 
-    // BFS: resolve imports, discover and parse new files
-    while let Some((source_path, imports)) = pending.pop_front() {
-        let source_dir = source_path.parent().unwrap_or(Path::new("."));
-        let source_id = graph.path_to_id[&source_path];
-        let mut new_files: Vec<PathBuf> = Vec::new();
+    // BFS: resolve imports in parallel, discover and parse new files
+    while !pending.is_empty() {
+        // Drain entire BFS frontier
+        let frontier: Vec<_> = pending.drain(..).collect();
 
-        for raw_import in &imports {
-            let resolved = match lang.resolve(source_dir, &raw_import.specifier) {
+        // Collect all (source_dir, source_id, import) tuples across the frontier
+        let all_imports: Vec<_> = frontier
+            .iter()
+            .flat_map(|(path, imports)| {
+                let dir = path.parent().unwrap_or(Path::new("."));
+                let source_id = graph.path_to_id[path];
+                imports
+                    .iter()
+                    .map(move |imp| (dir, source_id, imp))
+            })
+            .collect();
+
+        // Resolve all imports in parallel
+        let resolved: Vec<_> = all_imports
+            .par_iter()
+            .map(|(dir, source_id, imp)| {
+                let path = lang.resolve(dir, &imp.specifier);
+                (*source_id, *imp, path)
+            })
+            .collect();
+
+        // Serial graph mutations with resolved results
+        let mut new_files: Vec<PathBuf> = Vec::new();
+        for (source_id, raw_import, resolved_path) in resolved {
+            let resolved = match resolved_path {
                 Some(p) => p,
                 None => {
                     unresolved.insert(raw_import.specifier.clone());
