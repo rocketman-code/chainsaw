@@ -22,6 +22,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tree-sitter = "0.24"
 tree-sitter-python = "0.23"
+crossbeam-queue = "0.3"
+dashmap = "6"
 
 [lib]
 name = "chainsaw"
