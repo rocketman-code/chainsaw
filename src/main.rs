@@ -352,6 +352,9 @@ fn main() {
                     );
                     std::process::exit(1);
                 });
+                if diff_entry == entry {
+                    eprintln!("warning: both entry points are the same file, diff will be empty");
+                }
 
                 let diff_rel = {
                     let dr = lang::detect_project(&diff_entry)
