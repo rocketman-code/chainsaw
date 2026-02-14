@@ -6,7 +6,7 @@ mod conformance;
 
 use std::path::{Path, PathBuf};
 
-use crate::lang::{LanguageSupport, ParseResult};
+use crate::lang::{LanguageSupport, ParseError, ParseResult};
 
 use self::resolver::{PythonResolver, package_name_from_path};
 
@@ -28,7 +28,7 @@ impl LanguageSupport for PythonSupport {
         &["py"]
     }
 
-    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, String> {
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, ParseError> {
         parser::parse_file(path, source)
     }
 

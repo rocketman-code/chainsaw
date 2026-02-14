@@ -7,6 +7,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph::EdgeKind;
 
+/// Opaque error from a language parser.
+///
+/// Callers never need to distinguish parse failure causes — they log
+/// and skip the file — so this is intentionally opaque.
+#[derive(Debug, Clone)]
+pub struct ParseError(String);
+
+impl ParseError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImport {
     pub specifier: String,
@@ -21,7 +42,7 @@ pub struct ParseResult {
 
 pub trait LanguageSupport: Send + Sync {
     fn extensions(&self) -> &[&str];
-    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, String>;
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, ParseError>;
     fn resolve(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf>;
     fn package_name(&self, resolved_path: &Path) -> Option<String>;
     fn workspace_package_name(&self, file_path: &Path, project_root: &Path) -> Option<String>;

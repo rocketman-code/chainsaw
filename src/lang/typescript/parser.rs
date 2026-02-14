@@ -6,7 +6,7 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 
 use crate::graph::EdgeKind;
-use crate::lang::{ParseResult, RawImport};
+use crate::lang::{ParseError, ParseResult, RawImport};
 
 /// A raw import tagged with its byte offset in the source for ordering.
 struct PositionedImport {
@@ -25,7 +25,7 @@ fn source_type_for_path(path: &Path) -> SourceType {
 }
 
 #[allow(clippy::unnecessary_wraps)] // trait LanguageSupport::parse requires Result
-pub fn parse_file(path: &Path, source: &str) -> Result<ParseResult, String> {
+pub fn parse_file(path: &Path, source: &str) -> Result<ParseResult, ParseError> {
     let source_type = source_type_for_path(path);
     Ok(extract_all(source, source_type))
 }

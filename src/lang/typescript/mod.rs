@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::lang::{LanguageSupport, ParseResult};
+use crate::lang::{LanguageSupport, ParseError, ParseResult};
 
 use self::resolver::{package_name_from_path, ImportResolver};
 
@@ -30,7 +30,7 @@ impl LanguageSupport for TypeScriptSupport {
         EXTENSIONS
     }
 
-    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, String> {
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, ParseError> {
         parser::parse_file(path, source)
     }
 
