@@ -782,7 +782,7 @@ mod tests {
                 ModuleId(from as u32),
                 ModuleId(to as u32),
                 kind,
-                String::new(),
+                "",
             );
         }
         graph

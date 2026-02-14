@@ -111,7 +111,7 @@ pub fn build_graph(
                         source_id,
                         target_id,
                         raw_import.kind,
-                        raw_import.specifier.clone(),
+                        &raw_import.specifier,
                     );
                     continue;
                 }
@@ -126,7 +126,7 @@ pub fn build_graph(
                     source_id,
                     target_id,
                     raw_import.kind,
-                    raw_import.specifier.clone(),
+                    &raw_import.specifier,
                 );
 
                 if is_parseable(resolved, lang.extensions())
