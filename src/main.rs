@@ -8,7 +8,8 @@ mod walker;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use lang::LanguageSupport;
 
@@ -112,6 +113,12 @@ enum Commands {
         /// Force full re-parse, ignoring cache
         #[arg(long)]
         no_cache: bool,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 }
 
@@ -519,6 +526,10 @@ fn main() {
             } else {
                 report::print_packages(&graph);
             }
+        }
+
+        Commands::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "chainsaw", &mut std::io::stdout());
         }
     }
 }
