@@ -24,12 +24,13 @@ fn source_type_for_path(path: &Path) -> SourceType {
     }
 }
 
+#[allow(clippy::unnecessary_wraps)] // trait LanguageSupport::parse requires Result
 pub fn parse_file(path: &Path, source: &str) -> Result<ParseResult, String> {
     let source_type = source_type_for_path(path);
-    extract_all(source, source_type)
+    Ok(extract_all(source, source_type))
 }
 
-fn extract_all(source: &str, source_type: SourceType) -> Result<ParseResult, String> {
+fn extract_all(source: &str, source_type: SourceType) -> ParseResult {
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, source, source_type).parse();
 
@@ -80,10 +81,10 @@ fn extract_all(source: &str, source_type: SourceType) -> Result<ParseResult, Str
     // but sort is needed for interleaving)
     let imports = positioned.into_iter().map(|p| p.import).collect();
 
-    Ok(ParseResult { imports, unresolvable_dynamic })
+    ParseResult { imports, unresolvable_dynamic }
 }
 
-/// Process ModuleRecord import_entries, grouping by module_request to determine
+/// Process `ModuleRecord` `import_entries`, grouping by `module_request` to determine
 /// whether all bindings for a given specifier are type-only.
 fn extract_import_entries(
     entries: &[oxc_syntax::module_record::ImportEntry<'_>],
@@ -120,8 +121,8 @@ fn extract_import_entries(
     }
 }
 
-/// Process ModuleRecord export entries (star_export_entries or indirect_export_entries),
-/// grouping by module_request to determine type-only status.
+/// Process `ModuleRecord` export entries (`star_export_entries` or `indirect_export_entries`),
+/// grouping by `module_request` to determine type-only status.
 fn extract_export_entries(
     entries: &[oxc_syntax::module_record::ExportEntry<'_>],
     positioned: &mut Vec<PositionedImport>,
@@ -358,9 +359,7 @@ mod tests {
     /// Parse TypeScript source and extract imports without touching the filesystem.
     fn parse_ts(source: &str) -> Vec<RawImport> {
         let source_type = SourceType::ts();
-        extract_all(source, source_type)
-            .expect("test source should parse")
-            .imports
+        extract_all(source, source_type).imports
     }
 
     // --- Static imports ---
@@ -591,8 +590,7 @@ mod tests {
     #[test]
     fn dynamic_import_variable_unresolvable() {
         let source_type = SourceType::ts();
-        let result = extract_all("const m = import(someVar);", source_type)
-            .expect("test source should parse");
+        let result = extract_all("const m = import(someVar);", source_type);
         assert_eq!(result.imports.len(), 0);
         assert_eq!(result.unresolvable_dynamic, 1);
     }
@@ -600,8 +598,7 @@ mod tests {
     #[test]
     fn require_variable_unresolvable() {
         let source_type = SourceType::mjs();
-        let result = extract_all("const m = require(moduleName);", source_type)
-            .expect("test source should parse");
+        let result = extract_all("const m = require(moduleName);", source_type);
         assert_eq!(result.imports.len(), 0);
         assert_eq!(result.unresolvable_dynamic, 1);
     }
@@ -609,8 +606,7 @@ mod tests {
     #[test]
     fn dynamic_import_literal_still_works_ts() {
         let source_type = SourceType::ts();
-        let result = extract_all(r#"const m = import("./foo");"#, source_type)
-            .expect("test source should parse");
+        let result = extract_all(r#"const m = import("./foo");"#, source_type);
         assert_eq!(result.imports.len(), 1);
         assert_eq!(result.imports[0].specifier, "./foo");
         assert_eq!(result.unresolvable_dynamic, 0);
