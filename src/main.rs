@@ -403,7 +403,7 @@ fn main() {
             if json {
                 report::print_trace_json(&graph, &result, &entry, &root, top_modules);
             } else {
-                report::print_trace(&graph, &result, &entry, &root, top, top_modules);
+                report::print_trace(&graph, &result, &entry, &root, top, top_modules, include_dynamic);
             }
 
             let elapsed = start.elapsed();
