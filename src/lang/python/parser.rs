@@ -3,21 +3,21 @@ use std::path::Path;
 use tree_sitter::Parser;
 
 use crate::graph::EdgeKind;
-use crate::lang::{ParseResult, RawImport};
+use crate::lang::{ParseError, ParseResult, RawImport};
 
-pub fn parse_file(_path: &Path, source: &str) -> Result<ParseResult, String> {
+pub fn parse_file(_path: &Path, source: &str) -> Result<ParseResult, ParseError> {
     parse_source(source)
 }
 
-fn parse_source(source: &str) -> Result<ParseResult, String> {
+fn parse_source(source: &str) -> Result<ParseResult, ParseError> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
-        .map_err(|e| format!("Failed to set Python language: {e}"))?;
+        .map_err(|e| ParseError::new(format!("failed to set Python language: {e}")))?;
 
     let tree = parser
         .parse(source, None)
-        .ok_or_else(|| "tree-sitter returned no parse tree".to_string())?;
+        .ok_or_else(|| ParseError::new("tree-sitter returned no parse tree"))?;
 
     let mut imports = Vec::new();
     let mut unresolvable_dynamic = 0;
