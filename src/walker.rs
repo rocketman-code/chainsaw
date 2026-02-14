@@ -23,8 +23,12 @@ pub struct BuildResult {
     pub unresolved_specifiers: Vec<String>,
 }
 
+/// An import with its pre-resolved path (None if resolution failed).
+type ResolvedImport = (RawImport, Option<PathBuf>);
+
 /// Build a complete ModuleGraph via BFS from the given entry point.
 /// Uses the parse cache for acceleration: unchanged files are not re-parsed.
+/// Parse and resolve are fused into a single parallel pass per BFS level.
 pub fn build_graph(
     entry: &Path,
     root: &Path,
@@ -35,9 +39,9 @@ pub fn build_graph(
     let mut unresolvable_files: Vec<(PathBuf, usize)> = Vec::new();
     let mut unresolved: HashSet<String> = HashSet::new();
     let mut parse_failures: HashSet<PathBuf> = HashSet::new();
-    let mut pending: VecDeque<(PathBuf, Vec<RawImport>)> = VecDeque::new();
+    let mut pending: VecDeque<(PathBuf, usize, Vec<ResolvedImport>)> = VecDeque::new();
 
-    // Parse entry file
+    // Parse entry file and resolve its imports
     let entry_size = fs::metadata(entry).map(|m| m.len()).unwrap_or(0);
     graph.add_module(entry.to_path_buf(), entry_size, None);
 
@@ -46,91 +50,140 @@ pub fn build_graph(
             if result.unresolvable_dynamic > 0 {
                 unresolvable_files.push((entry.to_path_buf(), result.unresolvable_dynamic));
             }
-            pending.push_back((entry.to_path_buf(), result.imports));
+            let entry_dir = entry.parent().unwrap_or(Path::new("."));
+            let resolved_imports: Vec<ResolvedImport> = result
+                .imports
+                .into_par_iter()
+                .map(|imp| {
+                    let r = lang.resolve(entry_dir, &imp.specifier);
+                    (imp, r)
+                })
+                .collect();
+            pending.push_back((entry.to_path_buf(), 0, resolved_imports));
         }
         None => {
             parse_failures.insert(entry.to_path_buf());
         }
     }
 
-    // BFS: resolve imports in parallel, discover and parse new files
+    // BFS: each iteration processes pre-resolved imports, then fuses
+    // parsing and resolution for newly discovered files in one parallel pass.
     while !pending.is_empty() {
-        // Drain entire BFS frontier
         let frontier: Vec<_> = pending.drain(..).collect();
 
-        // Collect all (source_dir, source_id, import) tuples across the frontier
-        let all_imports: Vec<_> = frontier
-            .iter()
-            .flat_map(|(path, imports)| {
-                let dir = path.parent().unwrap_or(Path::new("."));
-                let source_id = graph.path_to_id[path];
-                imports
-                    .iter()
-                    .map(move |imp| (dir, source_id, imp))
-            })
-            .collect();
-
-        // Resolve all imports in parallel
-        let resolved: Vec<_> = all_imports
-            .par_iter()
-            .map(|(dir, source_id, imp)| {
-                let path = lang.resolve(dir, &imp.specifier);
-                (*source_id, *imp, path)
-            })
-            .collect();
-
-        // Serial graph mutations with resolved results
+        // Phase 1: Serial graph mutations from pre-resolved imports
         let mut new_files: Vec<PathBuf> = Vec::new();
-        for (source_id, raw_import, resolved_path) in resolved {
-            let resolved = match resolved_path {
-                Some(p) => p,
-                None => {
-                    unresolved.insert(raw_import.specifier.clone());
+        for (source_path, unresolvable_dynamic, resolved_imports) in &frontier {
+            let source_id = graph.path_to_id[source_path];
+            if *unresolvable_dynamic > 0 {
+                unresolvable_files
+                    .push((source_path.clone(), *unresolvable_dynamic));
+            }
+
+            for (raw_import, resolved_path) in resolved_imports {
+                let resolved = match resolved_path {
+                    Some(p) => p,
+                    None => {
+                        unresolved.insert(raw_import.specifier.clone());
+                        continue;
+                    }
+                };
+
+                if let Some(&target_id) = graph.path_to_id.get(resolved) {
+                    graph.add_edge(
+                        source_id,
+                        target_id,
+                        raw_import.kind,
+                        raw_import.specifier.clone(),
+                    );
                     continue;
                 }
-            };
 
-            // Fast path: module already in graph, just add the edge
-            if let Some(&target_id) = graph.path_to_id.get(&resolved) {
+                let package = lang
+                    .package_name(resolved)
+                    .or_else(|| lang.workspace_package_name(resolved, root));
+                let size = fs::metadata(resolved).map(|m| m.len()).unwrap_or(0);
+
+                let target_id = graph.add_module(resolved.clone(), size, package);
                 graph.add_edge(
                     source_id,
                     target_id,
                     raw_import.kind,
                     raw_import.specifier.clone(),
                 );
-                continue;
-            }
 
-            let package = lang
-                .package_name(&resolved)
-                .or_else(|| lang.workspace_package_name(&resolved, root));
-            let size = fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
-
-            let target_id = graph.add_module(resolved.clone(), size, package);
-            graph.add_edge(
-                source_id,
-                target_id,
-                raw_import.kind,
-                raw_import.specifier.clone(),
-            );
-
-            if is_parseable(&resolved, lang.extensions())
-                && !parse_failures.contains(&resolved)
-            {
-                new_files.push(resolved);
-            }
-        }
-
-        if !new_files.is_empty() {
-            let (results, failures) = parse_batch(new_files, cache, lang);
-            parse_failures.extend(failures);
-            for (path, result) in results {
-                if result.unresolvable_dynamic > 0 {
-                    unresolvable_files.push((path.clone(), result.unresolvable_dynamic));
+                if is_parseable(resolved, lang.extensions())
+                    && !parse_failures.contains(resolved)
+                {
+                    new_files.push(resolved.clone());
                 }
-                pending.push_back((path, result.imports));
             }
         }
+
+        if new_files.is_empty() {
+            continue;
+        }
+
+        // Phase 2: Check parse cache (serial — cache is &mut)
+        let mut to_parse: Vec<PathBuf> = Vec::new();
+        let mut work: Vec<(PathBuf, Option<ParseResult>)> = Vec::new();
+        for path in new_files {
+            if let Some(result) = cache.lookup(&path) {
+                work.push((path, Some(result)));
+            } else {
+                to_parse.push(path.clone());
+                work.push((path, None));
+            }
+        }
+
+        // Phase 3: Parse (if needed) + resolve imports in a single parallel pass
+        // Returns (path, Option<ParseResult> for cache, unresolvable_count, resolved_imports)
+        let results: Vec<_> = work
+            .into_par_iter()
+            .filter_map(|(path, cached_result)| {
+                let (result, needs_caching) = match cached_result {
+                    Some(r) => (r, false),
+                    None => match lang.parse(&path) {
+                        Ok(r) => (r, true),
+                        Err(e) => {
+                            eprintln!("warning: {e}");
+                            return None;
+                        }
+                    },
+                };
+                let dir = path.parent().unwrap_or(Path::new("."));
+                let resolved: Vec<ResolvedImport> = result
+                    .imports
+                    .iter()
+                    .map(|imp| {
+                        let r = lang.resolve(dir, &imp.specifier);
+                        (imp.clone(), r)
+                    })
+                    .collect();
+                let unresolvable = result.unresolvable_dynamic;
+                let for_cache = if needs_caching { Some(result) } else { None };
+                Some((path, for_cache, unresolvable, resolved))
+            })
+            .collect();
+
+        // Track parse failures and update cache (serial)
+        let result_paths: HashSet<_> = results.iter().map(|(p, _, _, _)| p.clone()).collect();
+        for path in &to_parse {
+            if !result_paths.contains(path) {
+                parse_failures.insert(path.clone());
+            }
+        }
+        for (path, for_cache, _, _) in &results {
+            if let Some(result) = for_cache {
+                cache.insert(path.clone(), result);
+            }
+        }
+
+        pending.extend(
+            results
+                .into_iter()
+                .map(|(path, _, unresolvable, resolved)| (path, unresolvable, resolved)),
+        );
     }
 
     compute_package_info(&mut graph);
@@ -161,49 +214,6 @@ fn parse_or_cache(
     }
 }
 
-fn parse_batch(
-    files: Vec<PathBuf>,
-    cache: &mut ParseCache,
-    lang: &dyn LanguageSupport,
-) -> (Vec<(PathBuf, ParseResult)>, HashSet<PathBuf>) {
-    let mut results = Vec::new();
-    let mut to_parse = Vec::new();
-
-    for path in files {
-        if let Some(result) = cache.lookup(&path) {
-            results.push((path, result));
-        } else {
-            to_parse.push(path);
-        }
-    }
-
-    // Parse cache misses in parallel
-    let parsed: Vec<_> = to_parse
-        .par_iter()
-        .filter_map(|path| match lang.parse(path) {
-            Ok(result) => Some((path.clone(), result)),
-            Err(e) => {
-                eprintln!("warning: {e}");
-                None
-            }
-        })
-        .collect();
-
-    let parsed_paths: HashSet<_> = parsed.iter().map(|(p, _)| p.clone()).collect();
-    let mut failures: HashSet<PathBuf> = HashSet::new();
-    for path in &to_parse {
-        if !parsed_paths.contains(path) {
-            failures.insert(path.clone());
-        }
-    }
-
-    for (path, result) in parsed {
-        cache.insert(path.clone(), &result);
-        results.push((path, result));
-    }
-
-    (results, failures)
-}
 
 #[cfg(test)]
 mod tests {
