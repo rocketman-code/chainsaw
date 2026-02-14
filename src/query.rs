@@ -76,15 +76,16 @@ fn should_follow(kind: EdgeKind, include_dynamic: bool) -> bool {
     }
 }
 
-/// Iterative DFS to compute reverse postorder of reachable modules.
-fn reverse_postorder(
+/// Iterative DFS to compute reverse postorder and predecessor lists in one pass.
+fn reverse_postorder_with_preds(
     graph: &ModuleGraph,
     entry: ModuleId,
     include_dynamic: bool,
-) -> Vec<ModuleId> {
+) -> (Vec<ModuleId>, Vec<Vec<u32>>) {
     let n = graph.modules.len();
     let mut visited = vec![false; n];
     let mut postorder = Vec::new();
+    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); n];
     let mut stack: Vec<(ModuleId, bool)> = vec![(entry, false)];
 
     while let Some((mid, post_visit)) = stack.pop() {
@@ -100,14 +101,22 @@ fn reverse_postorder(
         stack.push((mid, true));
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
-            if should_follow(edge.kind, include_dynamic) && !visited[edge.to.0 as usize] {
-                stack.push((edge.to, false));
+            if should_follow(edge.kind, include_dynamic) {
+                let to_idx = edge.to.0 as usize;
+                if visited[to_idx] {
+                    // Back/cross edge to already-visited (reachable) node
+                    preds[to_idx].push(mid.0);
+                } else {
+                    // Tree edge — record predecessor and visit
+                    preds[to_idx].push(mid.0);
+                    stack.push((edge.to, false));
+                }
             }
         }
     }
 
     postorder.reverse();
-    postorder
+    (postorder, preds)
 }
 
 /// Walk up dominator tree to find common dominator of a and b.
@@ -135,8 +144,8 @@ fn compute_exclusive_weights(
 ) -> Vec<u64> {
     let n = graph.modules.len();
 
-    // Step 1: Reverse postorder DFS
-    let rpo = reverse_postorder(graph, entry, include_dynamic);
+    // Step 1+3: DFS for reverse postorder and predecessor lists in one pass
+    let (rpo, preds) = reverse_postorder_with_preds(graph, entry, include_dynamic);
     if rpo.is_empty() {
         return vec![0; n];
     }
@@ -145,19 +154,6 @@ fn compute_exclusive_weights(
     let mut rpo_num = vec![u32::MAX; n];
     for (i, &mid) in rpo.iter().enumerate() {
         rpo_num[mid.0 as usize] = i as u32;
-    }
-
-    // Step 3: Build predecessor lists
-    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for &mid in &rpo {
-        for &edge_id in graph.outgoing_edges(mid) {
-            let edge = graph.edge(edge_id);
-            if should_follow(edge.kind, include_dynamic)
-                && rpo_num[edge.to.0 as usize] != u32::MAX
-            {
-                preds[edge.to.0 as usize].push(mid.0);
-            }
-        }
     }
 
     // Step 4: Cooper-Harvey-Kennedy iterative idom computation
