@@ -74,6 +74,15 @@ enum Commands {
         #[arg(long, num_args = 1..)]
         ignore: Vec<String>,
     },
+
+    /// Compare two saved trace snapshots
+    Diff {
+        /// First snapshot file (the "before" or "baseline")
+        a: PathBuf,
+
+        /// Second snapshot file (the "after" or "current")
+        b: PathBuf,
+    },
 }
 
 fn main() {
@@ -315,6 +324,27 @@ fn main() {
 
             let elapsed = start.elapsed();
             eprintln!("\nCompleted in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+        }
+
+        Commands::Diff { a, b } => {
+            let load_snapshot = |path: &Path| -> query::TraceSnapshot {
+                let data = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                    eprintln!("error: cannot read snapshot '{}': {e}", path.display());
+                    std::process::exit(1);
+                });
+                serde_json::from_str(&data).unwrap_or_else(|e| {
+                    eprintln!("error: invalid snapshot '{}': {e}", path.display());
+                    std::process::exit(1);
+                })
+            };
+
+            let snap_a = load_snapshot(&a);
+            let snap_b = load_snapshot(&b);
+            let diff_output = query::diff_snapshots(&snap_a, &snap_b);
+
+            let label_a = a.file_name().unwrap_or(a.as_os_str()).to_string_lossy();
+            let label_b = b.file_name().unwrap_or(b.as_os_str()).to_string_lossy();
+            report::print_diff(&diff_output, &label_a, &label_b);
         }
     }
 }
