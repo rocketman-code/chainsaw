@@ -9,9 +9,11 @@ keywords = ["typescript", "python", "imports", "dependencies"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-swc_ecma_parser = { version = "33", features = ["typescript"] }
-swc_ecma_ast = "20"
-swc_common = "18"
+oxc_parser = "0.113"
+oxc_allocator = "0.113"
+oxc_span = "0.113"
+oxc_ast = "0.113"
+oxc_syntax = "0.113"
 oxc_resolver = "11"
 rayon = "1"
 ignore = "0.4"
