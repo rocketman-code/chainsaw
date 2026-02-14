@@ -214,11 +214,7 @@ fn main() {
                 exists: bool,
             }
             let resolve_target = |arg: &str| -> ResolvedTarget {
-                let looks_like_path = arg.contains('/')
-                    || arg.contains(std::path::MAIN_SEPARATOR)
-                    || arg.rsplit_once('.').is_some_and(|(_, suffix)| {
-                        valid_extensions.contains(&suffix)
-                    });
+                let looks_like_path = looks_like_path(arg, valid_extensions);
                 if looks_like_path {
                     let target_path = root.join(arg).canonicalize().unwrap_or_else(|e| {
                         eprintln!("error: cannot find file '{arg}': {e}");
@@ -510,5 +506,52 @@ fn load_or_build_graph(
         graph: result.graph,
         unresolvable_dynamic: result.unresolvable_dynamic,
         from_cache: false,
+    }
+}
+
+/// Determine whether a --chain/--cut argument looks like a file path
+/// (as opposed to a package name).
+fn looks_like_path(arg: &str, extensions: &[&str]) -> bool {
+    !arg.starts_with('@')
+        && (arg.contains('/')
+            || arg.contains(std::path::MAIN_SEPARATOR)
+            || arg.rsplit_once('.').is_some_and(|(_, suffix)| extensions.contains(&suffix)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_npm_package_is_not_path() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(!looks_like_path("@slack/web-api", exts));
+        assert!(!looks_like_path("@aws-sdk/client-s3", exts));
+        assert!(!looks_like_path("@anthropic-ai/sdk", exts));
+    }
+
+    #[test]
+    fn relative_file_path_is_path() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(looks_like_path("src/index.ts", exts));
+        assert!(looks_like_path("lib/utils.js", exts));
+    }
+
+    #[test]
+    fn bare_package_name_is_not_path() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(!looks_like_path("zod", exts));
+        assert!(!looks_like_path("express", exts));
+        // highlight.js is ambiguous — .js extension triggers path heuristic.
+        // Acceptable: canonicalize will error clearly if no such file exists.
+        assert!(looks_like_path("highlight.js", exts));
+    }
+
+    #[test]
+    fn file_with_extension_is_path() {
+        let exts = &["ts", "tsx", "js", "jsx", "py"];
+        assert!(looks_like_path("utils.ts", exts));
+        assert!(looks_like_path("main.py", exts));
+        assert!(!looks_like_path("utils.txt", exts));
     }
 }
