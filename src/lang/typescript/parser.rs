@@ -1,328 +1,353 @@
 use std::path::Path;
-use std::sync::Arc;
-use swc_common::SourceMap;
-use swc_ecma_ast::{
-    Callee, EsVersion, Expr, ExportSpecifier, ImportSpecifier, Lit, Module, ModuleDecl,
-    ModuleItem, Stmt,
-};
-use swc_ecma_parser::{parse_file_as_module, EsSyntax, Syntax, TsSyntax};
+
+use oxc_allocator::Allocator;
+use oxc_ast::ast::{Argument, ArrayExpressionElement, Expression, ObjectPropertyKind, Statement};
+use oxc_parser::Parser;
+use oxc_span::SourceType;
 
 use crate::graph::EdgeKind;
 use crate::lang::{ParseResult, RawImport};
 
-/// Convert a WTF-8 atom (from SWC's Str.value) to a String.
-/// Import specifiers are always valid UTF-8, so lossy conversion is safe.
-fn wtf8_to_string(atom: &swc_ecma_ast::Str) -> String {
-    atom.value.to_string_lossy().into_owned()
+/// A raw import tagged with its byte offset in the source for ordering.
+struct PositionedImport {
+    offset: u32,
+    import: RawImport,
 }
 
-fn syntax_for_path(path: &Path) -> Syntax {
+fn source_type_for_path(path: &Path) -> SourceType {
     match path.extension().and_then(|e| e.to_str()) {
-        Some("ts") => Syntax::Typescript(TsSyntax {
-            tsx: false,
-            decorators: true,
-            ..Default::default()
-        }),
-        Some("tsx") => Syntax::Typescript(TsSyntax {
-            tsx: true,
-            decorators: true,
-            ..Default::default()
-        }),
-        Some("jsx") => Syntax::Es(EsSyntax {
-            jsx: true,
-            ..Default::default()
-        }),
-        // .js, .mjs, .cjs, and anything else: parse as JS
-        _ => Syntax::Es(EsSyntax {
-            jsx: false,
-            ..Default::default()
-        }),
+        Some("ts") => SourceType::ts(),
+        Some("tsx") => SourceType::tsx(),
+        Some("jsx") => SourceType::jsx(),
+        // .js, .mjs, .cjs, and anything else: parse as ESM JS
+        _ => SourceType::mjs(),
     }
 }
 
 pub fn parse_file(path: &Path, source: &str) -> Result<ParseResult, String> {
-    let cm = Arc::<SourceMap>::default();
-    let fm = cm.new_source_file(
-        swc_common::FileName::Custom(path.display().to_string()).into(),
-        source.to_string(),
-    );
-
-    let syntax = syntax_for_path(path);
-    let mut errors = vec![];
-
-    let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
-        .map_err(|e| format!("Parse error in {}: {e:?}", path.display()))?;
-
-    Ok(extract_imports(&module))
+    let source_type = source_type_for_path(path);
+    extract_all(source, source_type)
 }
 
-fn extract_imports(module: &Module) -> ParseResult {
-    let mut imports = Vec::new();
-    let mut unresolvable_dynamic = 0;
+fn extract_all(source: &str, source_type: SourceType) -> Result<ParseResult, String> {
+    let allocator = Allocator::default();
+    let ret = Parser::new(&allocator, source, source_type).parse();
 
-    for item in &module.body {
-        match item {
-            ModuleItem::ModuleDecl(decl) => extract_from_decl(decl, &mut imports),
-            ModuleItem::Stmt(stmt) => walk_stmt(stmt, &mut imports, &mut unresolvable_dynamic),
-        }
-    }
+    let mut positioned: Vec<PositionedImport> = Vec::new();
+    let mut unresolvable_dynamic: usize = 0;
 
-    ParseResult { imports, unresolvable_dynamic }
-}
+    // --- Static imports from ModuleRecord ---
+    extract_import_entries(&ret.module_record.import_entries, &mut positioned);
 
-fn extract_from_decl(decl: &ModuleDecl, imports: &mut Vec<RawImport>) {
-    match decl {
-        // import { x } from "y"  /  import type { x } from "y"
-        ModuleDecl::Import(import_decl) => {
-            let kind = if import_decl.type_only {
-                EdgeKind::TypeOnly
-            } else {
-                // Check if ALL specifiers are type-only
-                let all_type = !import_decl.specifiers.is_empty()
-                    && import_decl.specifiers.iter().all(|s| match s {
-                        ImportSpecifier::Named(n) => n.is_type_only,
-                        _ => false,
-                    });
-                if all_type {
-                    EdgeKind::TypeOnly
-                } else {
-                    EdgeKind::Static
-                }
-            };
-            imports.push(RawImport {
-                specifier: wtf8_to_string(&import_decl.src),
-                kind,
-            });
-        }
+    // --- Re-exports from ModuleRecord ---
+    extract_export_entries(&ret.module_record.star_export_entries, &mut positioned);
+    extract_export_entries(&ret.module_record.indirect_export_entries, &mut positioned);
 
-        // export * from "y"  /  export type * from "y"
-        ModuleDecl::ExportAll(export_all) => {
-            let kind = if export_all.type_only {
-                EdgeKind::TypeOnly
-            } else {
-                EdgeKind::Static
-            };
-            imports.push(RawImport {
-                specifier: wtf8_to_string(&export_all.src),
-                kind,
-            });
-        }
-
-        // export { x } from "y"  /  export type { x } from "y"
-        ModuleDecl::ExportNamed(named) => {
-            if let Some(src) = &named.src {
-                let kind = if named.type_only {
-                    EdgeKind::TypeOnly
-                } else {
-                    let all_type = !named.specifiers.is_empty()
-                        && named.specifiers.iter().all(|s| matches!(
-                            s,
-                            ExportSpecifier::Named(n) if n.is_type_only
-                        ));
-                    if all_type {
-                        EdgeKind::TypeOnly
-                    } else {
-                        EdgeKind::Static
-                    }
-                };
-                imports.push(RawImport {
-                    specifier: wtf8_to_string(src),
-                    kind,
+    // --- Dynamic imports from ModuleRecord ---
+    for di in &ret.module_record.dynamic_imports {
+        let start = di.module_request.start as usize;
+        let end = di.module_request.end as usize;
+        if start < end && end <= source.len() {
+            let text = &source[start..end];
+            if text.starts_with('"') || text.starts_with('\'') {
+                // String literal — strip quotes
+                let specifier = &text[1..text.len() - 1];
+                positioned.push(PositionedImport {
+                    offset: di.span.start,
+                    import: RawImport {
+                        specifier: specifier.to_string(),
+                        kind: EdgeKind::Dynamic,
+                    },
                 });
+            } else {
+                unresolvable_dynamic += 1;
             }
+        } else {
+            unresolvable_dynamic += 1;
         }
+    }
 
-        _ => {}
+    // --- require() calls from AST walking ---
+    for stmt in &ret.program.body {
+        walk_stmt(stmt, &mut positioned, &mut unresolvable_dynamic);
+    }
+
+    // Sort all collected imports by source position
+    positioned.sort_by_key(|p| p.offset);
+
+    // Deduplicate: ModuleRecord may produce entries that overlap with AST walking
+    // (shouldn't happen since ModuleRecord handles ESM and we only walk for require,
+    // but sort is needed for interleaving)
+    let imports = positioned.into_iter().map(|p| p.import).collect();
+
+    Ok(ParseResult { imports, unresolvable_dynamic })
+}
+
+/// Process ModuleRecord import_entries, grouping by module_request to determine
+/// whether all bindings for a given specifier are type-only.
+fn extract_import_entries(
+    entries: &[oxc_syntax::module_record::ImportEntry<'_>],
+    positioned: &mut Vec<PositionedImport>,
+) {
+    // Group entries by (module_request name, statement_span.start) to handle
+    // multiple import statements from the same module.
+    // We use statement_span.start as a unique key for each import statement.
+    let mut seen: Vec<(u32, &str, bool)> = Vec::new(); // (stmt_start, specifier, all_type_so_far)
+
+    for entry in entries {
+        let specifier = entry.module_request.name.as_str();
+        let stmt_start = entry.statement_span.start;
+
+        if let Some(existing) = seen.iter_mut().find(|(s, spec, _)| *s == stmt_start && *spec == specifier) {
+            // Another binding from the same import statement — AND the is_type flags
+            if !entry.is_type {
+                existing.2 = false;
+            }
+        } else {
+            seen.push((stmt_start, specifier, entry.is_type));
+        }
+    }
+
+    for (stmt_start, specifier, all_type) in seen {
+        let kind = if all_type { EdgeKind::TypeOnly } else { EdgeKind::Static };
+        positioned.push(PositionedImport {
+            offset: stmt_start,
+            import: RawImport {
+                specifier: specifier.to_string(),
+                kind,
+            },
+        });
     }
 }
 
-/// Recursively walk statements to find require() and import() calls.
-fn walk_stmt(stmt: &Stmt, imports: &mut Vec<RawImport>, unresolvable: &mut usize) {
+/// Process ModuleRecord export entries (star_export_entries or indirect_export_entries),
+/// grouping by module_request to determine type-only status.
+fn extract_export_entries(
+    entries: &[oxc_syntax::module_record::ExportEntry<'_>],
+    positioned: &mut Vec<PositionedImport>,
+) {
+    let mut seen: Vec<(u32, &str, bool)> = Vec::new();
+
+    for entry in entries {
+        let Some(ref module_request) = entry.module_request else {
+            continue;
+        };
+        let specifier = module_request.name.as_str();
+        let stmt_start = entry.statement_span.start;
+
+        if let Some(existing) = seen.iter_mut().find(|(s, spec, _)| *s == stmt_start && *spec == specifier) {
+            if !entry.is_type {
+                existing.2 = false;
+            }
+        } else {
+            seen.push((stmt_start, specifier, entry.is_type));
+        }
+    }
+
+    for (stmt_start, specifier, all_type) in seen {
+        let kind = if all_type { EdgeKind::TypeOnly } else { EdgeKind::Static };
+        positioned.push(PositionedImport {
+            offset: stmt_start,
+            import: RawImport {
+                specifier: specifier.to_string(),
+                kind,
+            },
+        });
+    }
+}
+
+// --- AST walking for require() calls ---
+
+fn walk_stmt(stmt: &Statement<'_>, imports: &mut Vec<PositionedImport>, unresolvable: &mut usize) {
     match stmt {
-        Stmt::Expr(expr_stmt) => walk_expr(&expr_stmt.expr, imports, unresolvable),
-        Stmt::Decl(decl) => walk_decl(decl, imports, unresolvable),
-        Stmt::Block(block) => {
-            for s in &block.stmts {
-                walk_stmt(s, imports, unresolvable);
+        Statement::ExpressionStatement(expr_stmt) => {
+            walk_expr(&expr_stmt.expression, imports, unresolvable);
+        }
+        Statement::VariableDeclaration(var_decl) => {
+            for decl in &var_decl.declarations {
+                if let Some(init) = &decl.init {
+                    walk_expr(init, imports, unresolvable);
+                }
             }
         }
-        Stmt::If(if_stmt) => {
-            walk_stmt(&if_stmt.cons, imports, unresolvable);
-            if let Some(alt) = &if_stmt.alt {
-                walk_stmt(alt, imports, unresolvable);
-            }
-        }
-        Stmt::Switch(switch) => {
-            walk_expr(&switch.discriminant, imports, unresolvable);
-            for case in &switch.cases {
-                for s in &case.cons {
+        Statement::FunctionDeclaration(fn_decl) => {
+            if let Some(body) = &fn_decl.body {
+                for s in &body.statements {
                     walk_stmt(s, imports, unresolvable);
                 }
             }
         }
-        Stmt::Try(try_stmt) => {
-            for s in &try_stmt.block.stmts {
+        Statement::BlockStatement(block) => {
+            for s in &block.body {
+                walk_stmt(s, imports, unresolvable);
+            }
+        }
+        Statement::IfStatement(if_stmt) => {
+            walk_stmt(&if_stmt.consequent, imports, unresolvable);
+            if let Some(alt) = &if_stmt.alternate {
+                walk_stmt(alt, imports, unresolvable);
+            }
+        }
+        Statement::SwitchStatement(switch) => {
+            walk_expr(&switch.discriminant, imports, unresolvable);
+            for case in &switch.cases {
+                for s in &case.consequent {
+                    walk_stmt(s, imports, unresolvable);
+                }
+            }
+        }
+        Statement::TryStatement(try_stmt) => {
+            for s in &try_stmt.block.body {
                 walk_stmt(s, imports, unresolvable);
             }
             if let Some(catch) = &try_stmt.handler {
-                for s in &catch.body.stmts {
+                for s in &catch.body.body {
                     walk_stmt(s, imports, unresolvable);
                 }
             }
             if let Some(finalizer) = &try_stmt.finalizer {
-                for s in &finalizer.stmts {
+                for s in &finalizer.body {
                     walk_stmt(s, imports, unresolvable);
                 }
             }
         }
-        Stmt::While(while_stmt) => {
+        Statement::WhileStatement(while_stmt) => {
             walk_stmt(&while_stmt.body, imports, unresolvable);
         }
-        Stmt::DoWhile(do_while) => {
+        Statement::DoWhileStatement(do_while) => {
             walk_stmt(&do_while.body, imports, unresolvable);
         }
-        Stmt::For(for_stmt) => {
+        Statement::ForStatement(for_stmt) => {
             walk_stmt(&for_stmt.body, imports, unresolvable);
         }
-        Stmt::ForIn(for_in) => {
+        Statement::ForInStatement(for_in) => {
             walk_stmt(&for_in.body, imports, unresolvable);
         }
-        Stmt::ForOf(for_of) => {
+        Statement::ForOfStatement(for_of) => {
             walk_stmt(&for_of.body, imports, unresolvable);
         }
-        Stmt::Return(ret) => {
-            if let Some(arg) = &ret.arg {
+        Statement::ReturnStatement(ret) => {
+            if let Some(arg) = &ret.argument {
                 walk_expr(arg, imports, unresolvable);
             }
         }
-        Stmt::Labeled(labeled) => {
+        Statement::LabeledStatement(labeled) => {
             walk_stmt(&labeled.body, imports, unresolvable);
         }
         _ => {}
     }
 }
 
-fn walk_decl(decl: &swc_ecma_ast::Decl, imports: &mut Vec<RawImport>, unresolvable: &mut usize) {
-    match decl {
-        swc_ecma_ast::Decl::Var(var_decl) => {
-            for decl in &var_decl.decls {
-                if let Some(init) = &decl.init {
-                    walk_expr(init, imports, unresolvable);
-                }
+fn walk_expr(expr: &Expression<'_>, imports: &mut Vec<PositionedImport>, unresolvable: &mut usize) {
+    match expr {
+        Expression::CallExpression(call) => {
+            // require("...")
+            if let Some(str_lit) = call.common_js_require() {
+                imports.push(PositionedImport {
+                    offset: call.span.start,
+                    import: RawImport {
+                        specifier: str_lit.value.to_string(),
+                        kind: EdgeKind::Static,
+                    },
+                });
+                return;
+            }
+            // require(variable) — unresolvable
+            if call.callee.is_specific_id("require") && !call.arguments.is_empty() {
+                *unresolvable += 1;
+                return;
+            }
+            // Walk callee and arguments for nested require/import calls
+            walk_expr(&call.callee, imports, unresolvable);
+            for arg in &call.arguments {
+                walk_argument(arg, imports, unresolvable);
             }
         }
-        swc_ecma_ast::Decl::Fn(fn_decl) => {
-            if let Some(body) = &fn_decl.function.body {
-                for s in &body.stmts {
+        Expression::ArrowFunctionExpression(arrow) => {
+            for s in &arrow.body.statements {
+                walk_stmt(s, imports, unresolvable);
+            }
+        }
+        Expression::FunctionExpression(fn_expr) => {
+            if let Some(body) = &fn_expr.body {
+                for s in &body.statements {
                     walk_stmt(s, imports, unresolvable);
                 }
             }
         }
+        Expression::AssignmentExpression(assign) => {
+            walk_expr(&assign.right, imports, unresolvable);
+        }
+        Expression::SequenceExpression(seq) => {
+            for e in &seq.expressions {
+                walk_expr(e, imports, unresolvable);
+            }
+        }
+        Expression::ParenthesizedExpression(paren) => {
+            walk_expr(&paren.expression, imports, unresolvable);
+        }
+        Expression::AwaitExpression(await_expr) => {
+            walk_expr(&await_expr.argument, imports, unresolvable);
+        }
+        Expression::ConditionalExpression(cond) => {
+            walk_expr(&cond.test, imports, unresolvable);
+            walk_expr(&cond.consequent, imports, unresolvable);
+            walk_expr(&cond.alternate, imports, unresolvable);
+        }
+        Expression::BinaryExpression(bin) => {
+            walk_expr(&bin.left, imports, unresolvable);
+            walk_expr(&bin.right, imports, unresolvable);
+        }
+        Expression::LogicalExpression(logical) => {
+            walk_expr(&logical.left, imports, unresolvable);
+            walk_expr(&logical.right, imports, unresolvable);
+        }
+        Expression::UnaryExpression(unary) => {
+            walk_expr(&unary.argument, imports, unresolvable);
+        }
+        Expression::StaticMemberExpression(member) => {
+            walk_expr(&member.object, imports, unresolvable);
+        }
+        Expression::ComputedMemberExpression(member) => {
+            walk_expr(&member.object, imports, unresolvable);
+        }
+        Expression::ArrayExpression(array) => {
+            for elem in &array.elements {
+                if let Some(expr) = elem.as_expression() {
+                    walk_expr(expr, imports, unresolvable);
+                } else if let ArrayExpressionElement::SpreadElement(spread) = elem {
+                    walk_expr(&spread.argument, imports, unresolvable);
+                }
+            }
+        }
+        Expression::ObjectExpression(object) => {
+            for prop in &object.properties {
+                match prop {
+                    ObjectPropertyKind::ObjectProperty(p) => {
+                        walk_expr(&p.value, imports, unresolvable);
+                    }
+                    ObjectPropertyKind::SpreadProperty(spread) => {
+                        walk_expr(&spread.argument, imports, unresolvable);
+                    }
+                }
+            }
+        }
+        Expression::TemplateLiteral(tpl) => {
+            for expr in &tpl.expressions {
+                walk_expr(expr, imports, unresolvable);
+            }
+        }
+        // Dynamic import expressions are already handled by ModuleRecord,
+        // so we don't need to walk into ImportExpression here.
         _ => {}
     }
 }
 
-fn walk_expr(expr: &Expr, imports: &mut Vec<RawImport>, unresolvable: &mut usize) {
-    match expr {
-        Expr::Call(call) => {
-            // Dynamic import()
-            if let Callee::Import(_) = &call.callee {
-                if let Some(arg) = call.args.first()
-                    && let Expr::Lit(Lit::Str(s)) = &*arg.expr
-                {
-                    imports.push(RawImport {
-                        specifier: wtf8_to_string(s),
-                        kind: EdgeKind::Dynamic,
-                    });
-                } else if !call.args.is_empty() {
-                    *unresolvable += 1;
-                }
-                return;
-            }
-            // require("...")
-            if let Callee::Expr(callee_expr) = &call.callee {
-                if let Expr::Ident(ident) = &**callee_expr
-                    && ident.sym.as_str() == "require"
-                {
-                    if let Some(arg) = call.args.first()
-                        && let Expr::Lit(Lit::Str(s)) = &*arg.expr
-                    {
-                        imports.push(RawImport {
-                            specifier: wtf8_to_string(s),
-                            kind: EdgeKind::Static,
-                        });
-                    } else if !call.args.is_empty() {
-                        *unresolvable += 1;
-                    }
-                    return;
-                }
-                walk_expr(callee_expr, imports, unresolvable);
-            }
-            for arg in &call.args {
-                walk_expr(&arg.expr, imports, unresolvable);
-            }
-        }
-        Expr::Arrow(arrow) => match &*arrow.body {
-            swc_ecma_ast::BlockStmtOrExpr::BlockStmt(block) => {
-                for s in &block.stmts {
-                    walk_stmt(s, imports, unresolvable);
-                }
-            }
-            swc_ecma_ast::BlockStmtOrExpr::Expr(e) => walk_expr(e, imports, unresolvable),
-        },
-        Expr::Fn(fn_expr) => {
-            if let Some(body) = &fn_expr.function.body {
-                for s in &body.stmts {
-                    walk_stmt(s, imports, unresolvable);
-                }
-            }
-        }
-        Expr::Assign(assign) => {
-            walk_expr(&assign.right, imports, unresolvable);
-        }
-        Expr::Seq(seq) => {
-            for e in &seq.exprs {
-                walk_expr(e, imports, unresolvable);
-            }
-        }
-        Expr::Paren(paren) => walk_expr(&paren.expr, imports, unresolvable),
-        Expr::Await(await_expr) => walk_expr(&await_expr.arg, imports, unresolvable),
-        Expr::Cond(cond) => {
-            walk_expr(&cond.test, imports, unresolvable);
-            walk_expr(&cond.cons, imports, unresolvable);
-            walk_expr(&cond.alt, imports, unresolvable);
-        }
-        Expr::Bin(bin) => {
-            walk_expr(&bin.left, imports, unresolvable);
-            walk_expr(&bin.right, imports, unresolvable);
-        }
-        Expr::Unary(unary) => walk_expr(&unary.arg, imports, unresolvable),
-        Expr::Member(member) => walk_expr(&member.obj, imports, unresolvable),
-        Expr::Array(array) => {
-            for elem in array.elems.iter().flatten() {
-                walk_expr(&elem.expr, imports, unresolvable);
-            }
-        }
-        Expr::Object(object) => {
-            for prop in &object.props {
-                match prop {
-                    swc_ecma_ast::PropOrSpread::Prop(p) => {
-                        if let swc_ecma_ast::Prop::KeyValue(kv) = &**p {
-                            walk_expr(&kv.value, imports, unresolvable);
-                        }
-                    }
-                    swc_ecma_ast::PropOrSpread::Spread(spread) => {
-                        walk_expr(&spread.expr, imports, unresolvable);
-                    }
-                }
-            }
-        }
-        Expr::Tpl(tpl) => {
-            for expr in &tpl.exprs {
-                walk_expr(expr, imports, unresolvable);
-            }
-        }
-        _ => {}
+fn walk_argument(arg: &Argument<'_>, imports: &mut Vec<PositionedImport>, unresolvable: &mut usize) {
+    if let Some(expr) = arg.as_expression() {
+        walk_expr(expr, imports, unresolvable);
+    } else if let Argument::SpreadElement(spread) = arg {
+        walk_expr(&spread.argument, imports, unresolvable);
     }
 }
 
@@ -332,20 +357,10 @@ mod tests {
 
     /// Parse TypeScript source and extract imports without touching the filesystem.
     fn parse_ts(source: &str) -> Vec<RawImport> {
-        let cm = Arc::<SourceMap>::default();
-        let fm = cm.new_source_file(
-            swc_common::FileName::Custom("test.ts".into()).into(),
-            source.to_string(),
-        );
-        let syntax = Syntax::Typescript(TsSyntax {
-            tsx: false,
-            decorators: true,
-            ..Default::default()
-        });
-        let mut errors = vec![];
-        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
-            .expect("test source should parse");
-        extract_imports(&module).imports
+        let source_type = SourceType::ts();
+        extract_all(source, source_type)
+            .expect("test source should parse")
+            .imports
     }
 
     // --- Static imports ---
@@ -575,59 +590,27 @@ mod tests {
 
     #[test]
     fn dynamic_import_variable_unresolvable() {
-        let cm = Arc::<SourceMap>::default();
-        let fm = cm.new_source_file(
-            swc_common::FileName::Custom("test.ts".into()).into(),
-            "const m = import(someVar);".to_string(),
-        );
-        let syntax = Syntax::Typescript(TsSyntax {
-            tsx: false,
-            decorators: true,
-            ..Default::default()
-        });
-        let mut errors = vec![];
-        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
+        let source_type = SourceType::ts();
+        let result = extract_all("const m = import(someVar);", source_type)
             .expect("test source should parse");
-        let result = extract_imports(&module);
         assert_eq!(result.imports.len(), 0);
         assert_eq!(result.unresolvable_dynamic, 1);
     }
 
     #[test]
     fn require_variable_unresolvable() {
-        let cm = Arc::<SourceMap>::default();
-        let fm = cm.new_source_file(
-            swc_common::FileName::Custom("test.js".into()).into(),
-            "const m = require(moduleName);".to_string(),
-        );
-        let syntax = Syntax::Es(EsSyntax {
-            jsx: false,
-            ..Default::default()
-        });
-        let mut errors = vec![];
-        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
+        let source_type = SourceType::mjs();
+        let result = extract_all("const m = require(moduleName);", source_type)
             .expect("test source should parse");
-        let result = extract_imports(&module);
         assert_eq!(result.imports.len(), 0);
         assert_eq!(result.unresolvable_dynamic, 1);
     }
 
     #[test]
     fn dynamic_import_literal_still_works_ts() {
-        let cm = Arc::<SourceMap>::default();
-        let fm = cm.new_source_file(
-            swc_common::FileName::Custom("test.ts".into()).into(),
-            r#"const m = import("./foo");"#.to_string(),
-        );
-        let syntax = Syntax::Typescript(TsSyntax {
-            tsx: false,
-            decorators: true,
-            ..Default::default()
-        });
-        let mut errors = vec![];
-        let module = parse_file_as_module(&fm, syntax, EsVersion::EsNext, None, &mut errors)
+        let source_type = SourceType::ts();
+        let result = extract_all(r#"const m = import("./foo");"#, source_type)
             .expect("test source should parse");
-        let result = extract_imports(&module);
         assert_eq!(result.imports.len(), 1);
         assert_eq!(result.imports[0].specifier, "./foo");
         assert_eq!(result.unresolvable_dynamic, 0);
