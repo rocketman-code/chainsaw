@@ -234,6 +234,28 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
         "Delta",
         format_size(diff.weight_delta.unsigned_abs())
     );
+
+    let has_dynamic = diff.dynamic_a_weight > 0 || diff.dynamic_b_weight > 0;
+    if has_dynamic {
+        println!();
+        println!(
+            "  {:<40} {}",
+            "Dynamic-only (before)",
+            format_size(diff.dynamic_a_weight)
+        );
+        println!(
+            "  {:<40} {}",
+            "Dynamic-only (after)",
+            format_size(diff.dynamic_b_weight)
+        );
+        let dyn_sign = if diff.dynamic_weight_delta >= 0 { "+" } else { "-" };
+        println!(
+            "  {:<40} {dyn_sign}{}",
+            "Dynamic delta",
+            format_size(diff.dynamic_weight_delta.unsigned_abs())
+        );
+    }
+
     println!();
 
     if !diff.only_in_a.is_empty() {
@@ -258,6 +280,30 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) {
             println!("{}", c.dim(&format!("  + ... and {remaining} more")));
         }
     }
+
+    if !diff.dynamic_only_in_a.is_empty() {
+        let show = if limit < 0 { diff.dynamic_only_in_a.len() } else { diff.dynamic_only_in_a.len().min(limit as usize) };
+        println!("{}", c.red(&format!("Dynamic only in {entry_a}:")));
+        for pkg in &diff.dynamic_only_in_a[..show] {
+            println!("{}", c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size))));
+        }
+        let remaining = diff.dynamic_only_in_a.len() - show;
+        if remaining > 0 {
+            println!("{}", c.dim(&format!("  - ... and {remaining} more")));
+        }
+    }
+    if !diff.dynamic_only_in_b.is_empty() {
+        let show = if limit < 0 { diff.dynamic_only_in_b.len() } else { diff.dynamic_only_in_b.len().min(limit as usize) };
+        println!("{}", c.green(&format!("Dynamic only in {entry_b}:")));
+        for pkg in &diff.dynamic_only_in_b[..show] {
+            println!("{}", c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size))));
+        }
+        let remaining = diff.dynamic_only_in_b.len() - show;
+        if remaining > 0 {
+            println!("{}", c.dim(&format!("  + ... and {remaining} more")));
+        }
+    }
+
     if diff.shared_count > 0 {
         println!(
             "{}", c.dim(&format!(

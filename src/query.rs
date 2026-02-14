@@ -19,6 +19,8 @@ pub struct TraceResult {
     pub modules_by_cost: Vec<ModuleCost>,
     /// All statically reachable packages with their total size
     pub all_packages: HashMap<String, u64>,
+    /// Packages reachable only via dynamic imports (not in static set)
+    pub dynamic_packages: HashMap<String, u64>,
 }
 
 pub struct HeavyPackage {
@@ -314,6 +316,15 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
 
     // When --include-dynamic is set, fold dynamic modules into the reachable
     // set. There's nothing "only dynamic" when the user asked to include them.
+    // Compute dynamic-only packages before potentially merging sets
+    let mut dynamic_pkg_sizes: HashMap<String, u64> = HashMap::new();
+    for &mid in &dynamic_only {
+        let module = graph.module(mid);
+        if let Some(ref pkg) = module.package {
+            *dynamic_pkg_sizes.entry(pkg.clone()).or_default() += module.size_bytes;
+        }
+    }
+
     let (dynamic_only_weight, dynamic_only_module_count) = if opts.include_dynamic {
         reachable.extend(&dynamic_only);
         (0, 0)
@@ -396,6 +407,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         heavy_packages,
         modules_by_cost,
         all_packages,
+        dynamic_packages: dynamic_pkg_sizes,
     }
 }
 
@@ -636,6 +648,10 @@ pub struct TraceSnapshot {
     pub entry: String,
     pub static_weight: u64,
     pub packages: HashMap<String, u64>,
+    #[serde(default)]
+    pub dynamic_weight: u64,
+    #[serde(default)]
+    pub dynamic_packages: HashMap<String, u64>,
 }
 
 impl TraceResult {
@@ -644,6 +660,8 @@ impl TraceResult {
             entry: entry.to_string(),
             static_weight: self.static_weight,
             packages: self.all_packages.clone(),
+            dynamic_weight: self.dynamic_only_weight,
+            dynamic_packages: self.dynamic_packages.clone(),
         }
     }
 }
@@ -659,9 +677,14 @@ pub struct DiffResult {
     pub entry_a_weight: u64,
     pub entry_b_weight: u64,
     pub weight_delta: i64,
+    pub dynamic_a_weight: u64,
+    pub dynamic_b_weight: u64,
+    pub dynamic_weight_delta: i64,
     pub shared_count: usize,
     pub only_in_a: Vec<DiffPackage>,
     pub only_in_b: Vec<DiffPackage>,
+    pub dynamic_only_in_a: Vec<DiffPackage>,
+    pub dynamic_only_in_b: Vec<DiffPackage>,
 }
 
 pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
@@ -686,13 +709,39 @@ pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
         .collect();
     only_in_b.sort_by(|x, y| y.size.cmp(&x.size));
 
+    let dyn_keys_a: HashSet<&str> = a.dynamic_packages.keys().map(|s| s.as_str()).collect();
+    let dyn_keys_b: HashSet<&str> = b.dynamic_packages.keys().map(|s| s.as_str()).collect();
+
+    let mut dynamic_only_in_a: Vec<DiffPackage> = dyn_keys_a
+        .difference(&dyn_keys_b)
+        .map(|&name| DiffPackage {
+            name: name.to_string(),
+            size: a.dynamic_packages[name],
+        })
+        .collect();
+    dynamic_only_in_a.sort_by(|x, y| y.size.cmp(&x.size));
+
+    let mut dynamic_only_in_b: Vec<DiffPackage> = dyn_keys_b
+        .difference(&dyn_keys_a)
+        .map(|&name| DiffPackage {
+            name: name.to_string(),
+            size: b.dynamic_packages[name],
+        })
+        .collect();
+    dynamic_only_in_b.sort_by(|x, y| y.size.cmp(&x.size));
+
     DiffResult {
         entry_a_weight: a.static_weight,
         entry_b_weight: b.static_weight,
         weight_delta: b.static_weight as i64 - a.static_weight as i64,
+        dynamic_a_weight: a.dynamic_weight,
+        dynamic_b_weight: b.dynamic_weight,
+        dynamic_weight_delta: b.dynamic_weight as i64 - a.dynamic_weight as i64,
         shared_count: keys_a.intersection(&keys_b).count(),
         only_in_a,
         only_in_b,
+        dynamic_only_in_a,
+        dynamic_only_in_b,
     }
 }
 
@@ -964,24 +1013,36 @@ mod tests {
 
     // --- Diff ---
 
+    fn snap(entry: &str, static_weight: u64, packages: &[(&str, u64)]) -> TraceSnapshot {
+        TraceSnapshot {
+            entry: entry.to_string(),
+            static_weight,
+            packages: packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            dynamic_weight: 0,
+            dynamic_packages: HashMap::new(),
+        }
+    }
+
+    fn snap_with_dynamic(
+        entry: &str,
+        static_weight: u64,
+        packages: &[(&str, u64)],
+        dynamic_weight: u64,
+        dynamic_packages: &[(&str, u64)],
+    ) -> TraceSnapshot {
+        TraceSnapshot {
+            entry: entry.to_string(),
+            static_weight,
+            packages: packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            dynamic_weight,
+            dynamic_packages: dynamic_packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        }
+    }
+
     #[test]
     fn diff_snapshots_computes_sets() {
-        let a = TraceSnapshot {
-            entry: "a.ts".to_string(),
-            static_weight: 1000,
-            packages: [("zod", 500), ("chalk", 200), ("tslog", 300)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        };
-        let b = TraceSnapshot {
-            entry: "b.ts".to_string(),
-            static_weight: 800,
-            packages: [("chalk", 200), ("tslog", 300), ("ajv", 100)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        };
+        let a = snap("a.ts", 1000, &[("zod", 500), ("chalk", 200), ("tslog", 300)]);
+        let b = snap("b.ts", 800, &[("chalk", 200), ("tslog", 300), ("ajv", 100)]);
         let diff = diff_snapshots(&a, &b);
 
         assert_eq!(diff.entry_a_weight, 1000);
@@ -998,25 +1059,29 @@ mod tests {
 
     #[test]
     fn diff_snapshots_sorted_by_size_descending() {
-        let a = TraceSnapshot {
-            entry: "a.ts".to_string(),
-            static_weight: 1000,
-            packages: [("small", 10), ("big", 500), ("medium", 100)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        };
-        let b = TraceSnapshot {
-            entry: "b.ts".to_string(),
-            static_weight: 0,
-            packages: HashMap::new(),
-        };
+        let a = snap("a.ts", 1000, &[("small", 10), ("big", 500), ("medium", 100)]);
+        let b = snap("b.ts", 0, &[]);
         let diff = diff_snapshots(&a, &b);
 
         assert_eq!(diff.only_in_a.len(), 3);
         assert_eq!(diff.only_in_a[0].name, "big");
         assert_eq!(diff.only_in_a[1].name, "medium");
         assert_eq!(diff.only_in_a[2].name, "small");
+    }
+
+    #[test]
+    fn diff_snapshots_dynamic_packages() {
+        let a = snap_with_dynamic("a.ts", 1000, &[("zod", 500)], 200, &[("lodash", 200)]);
+        let b = snap_with_dynamic("b.ts", 800, &[("zod", 500)], 350, &[("moment", 350)]);
+        let diff = diff_snapshots(&a, &b);
+
+        assert_eq!(diff.dynamic_a_weight, 200);
+        assert_eq!(diff.dynamic_b_weight, 350);
+        assert_eq!(diff.dynamic_weight_delta, 150);
+        assert_eq!(diff.dynamic_only_in_a.len(), 1);
+        assert_eq!(diff.dynamic_only_in_a[0].name, "lodash");
+        assert_eq!(diff.dynamic_only_in_b.len(), 1);
+        assert_eq!(diff.dynamic_only_in_b[0].name, "moment");
     }
 
     // --- Exclusive weight ---
