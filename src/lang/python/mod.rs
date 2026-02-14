@@ -24,7 +24,7 @@ impl PythonSupport {
 }
 
 impl LanguageSupport for PythonSupport {
-    fn extensions(&self) -> &[&str] {
+    fn extensions(&self) -> &'static [&'static str] {
         &["py"]
     }
 

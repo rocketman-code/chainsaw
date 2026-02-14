@@ -26,7 +26,7 @@ impl TypeScriptSupport {
 }
 
 impl LanguageSupport for TypeScriptSupport {
-    fn extensions(&self) -> &[&str] {
+    fn extensions(&self) -> &'static [&'static str] {
         EXTENSIONS
     }
 
