@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::cache::ParseCache;
-use crate::graph::ModuleGraph;
+use crate::graph::{ModuleGraph, ModuleId};
 use crate::lang::{LanguageSupport, RawImport};
 
 fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
@@ -38,12 +38,12 @@ pub fn build_graph(
     let mut graph = ModuleGraph::new();
     let mut unresolvable_files: Vec<(PathBuf, usize)> = Vec::new();
     let mut unresolved: HashSet<String> = HashSet::new();
-    let mut parse_failures: HashSet<PathBuf> = HashSet::new();
-    let mut pending: VecDeque<(PathBuf, usize, Vec<ResolvedImport>)> = VecDeque::new();
+    let mut parse_failures: HashSet<u32> = HashSet::new();
+    let mut pending: VecDeque<(ModuleId, usize, Vec<ResolvedImport>)> = VecDeque::new();
 
     // Parse entry file and resolve its imports
     let entry_size = fs::metadata(entry).map(|m| m.len()).unwrap_or(0);
-    graph.add_module(entry.to_path_buf(), entry_size, None);
+    let entry_id = graph.add_module(entry.to_path_buf(), entry_size, None);
 
     match cache.lookup(entry) {
         Some((result, resolved_paths)) => {
@@ -55,7 +55,7 @@ pub fn build_graph(
                 .into_iter()
                 .zip(resolved_paths)
                 .collect();
-            pending.push_back((entry.to_path_buf(), 0, resolved_imports));
+            pending.push_back((entry_id, 0, resolved_imports));
         }
         None => match lang.parse(entry) {
             Ok(result) => {
@@ -74,11 +74,11 @@ pub fn build_graph(
                 let resolved_paths: Vec<Option<PathBuf>> =
                     resolved_imports.iter().map(|(_, p)| p.clone()).collect();
                 cache.insert(entry.to_path_buf(), &result, &resolved_paths);
-                pending.push_back((entry.to_path_buf(), 0, resolved_imports));
+                pending.push_back((entry_id, 0, resolved_imports));
             }
             Err(e) => {
                 eprintln!("warning: {e}");
-                parse_failures.insert(entry.to_path_buf());
+                parse_failures.insert(entry_id.0);
             }
         },
     }
@@ -89,12 +89,12 @@ pub fn build_graph(
         let frontier: Vec<_> = pending.drain(..).collect();
 
         // Phase 1: Serial graph mutations from pre-resolved imports
-        let mut new_files: Vec<PathBuf> = Vec::new();
-        for (source_path, unresolvable_dynamic, resolved_imports) in &frontier {
-            let source_id = graph.path_to_id[source_path];
+        let mut new_files: Vec<ModuleId> = Vec::new();
+        for (source_id, unresolvable_dynamic, resolved_imports) in &frontier {
+            let source_id = *source_id;
             if *unresolvable_dynamic > 0 {
                 unresolvable_files
-                    .push((source_path.clone(), *unresolvable_dynamic));
+                    .push((graph.module(source_id).path.clone(), *unresolvable_dynamic));
             }
 
             for (raw_import, resolved_path) in resolved_imports {
@@ -130,9 +130,9 @@ pub fn build_graph(
                 );
 
                 if is_parseable(resolved, lang.extensions())
-                    && !parse_failures.contains(resolved)
+                    && !parse_failures.contains(&target_id.0)
                 {
-                    new_files.push(resolved.clone());
+                    new_files.push(target_id);
                 }
             }
         }
@@ -143,17 +143,18 @@ pub fn build_graph(
 
         // Phase 2: Check parse cache (serial — cache is &mut)
         // Cache hits include resolved paths, so they skip Phase 3 entirely.
-        let mut to_parse: Vec<PathBuf> = Vec::new();
-        for path in new_files {
-            if let Some((result, resolved_paths)) = cache.lookup(&path) {
+        let mut to_parse: Vec<ModuleId> = Vec::new();
+        for mid in new_files {
+            let path = &graph.module(mid).path;
+            if let Some((result, resolved_paths)) = cache.lookup(path) {
                 let resolved: Vec<ResolvedImport> = result
                     .imports
                     .into_iter()
                     .zip(resolved_paths)
                     .collect();
-                pending.push_back((path, result.unresolvable_dynamic, resolved));
+                pending.push_back((mid, result.unresolvable_dynamic, resolved));
             } else {
-                to_parse.push(path);
+                to_parse.push(mid);
             }
         }
 
@@ -164,7 +165,8 @@ pub fn build_graph(
         // Phase 3: Parse + resolve only for cache misses
         let results: Vec<_> = to_parse
             .par_iter()
-            .filter_map(|path| {
+            .filter_map(|&mid| {
+                let path = &graph.module(mid).path;
                 let result = match lang.parse(path) {
                     Ok(r) => r,
                     Err(e) => {
@@ -182,27 +184,28 @@ pub fn build_graph(
                     })
                     .collect();
                 let unresolvable = result.unresolvable_dynamic;
-                Some((path.clone(), result, unresolvable, resolved))
+                Some((mid, result, unresolvable, resolved))
             })
             .collect();
 
         // Track parse failures and update cache with resolutions (serial)
-        let result_paths: HashSet<_> = results.iter().map(|(p, ..)| p.clone()).collect();
-        for path in &to_parse {
-            if !result_paths.contains(path) {
-                parse_failures.insert(path.clone());
+        let parsed_ids: HashSet<u32> = results.iter().map(|(mid, ..)| mid.0).collect();
+        for &mid in &to_parse {
+            if !parsed_ids.contains(&mid.0) {
+                parse_failures.insert(mid.0);
             }
         }
-        for (path, result, _, resolved) in &results {
+        for &(mid, ref result, _, ref resolved) in &results {
+            let path = &graph.module(mid).path;
             let resolved_paths: Vec<Option<PathBuf>> =
                 resolved.iter().map(|(_, p)| p.clone()).collect();
-            cache.insert(path.clone(), result, &resolved_paths);
+            cache.insert(path.to_path_buf(), result, &resolved_paths);
         }
 
         pending.extend(
             results
                 .into_iter()
-                .map(|(path, _, unresolvable, resolved)| (path, unresolvable, resolved)),
+                .map(|(mid, _, unresolvable, resolved)| (mid, unresolvable, resolved)),
         );
     }
 
@@ -250,4 +253,3 @@ mod tests {
         );
     }
 }
-
