@@ -1,7 +1,11 @@
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
+use crossbeam_queue::SegQueue;
+use dashmap::DashSet;
 use rayon::prelude::*;
 
 use crate::cache::ParseCache;
@@ -14,6 +18,99 @@ fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|ext| extensions.contains(&ext))
 }
 
+/// Result of discovering a single file during concurrent traversal.
+struct FileResult {
+    path: PathBuf,
+    size: u64,
+    package: Option<String>,
+    imports: Vec<(RawImport, Option<PathBuf>)>,
+    unresolvable_dynamic: usize,
+}
+
+/// Phase 1: Concurrent file discovery using a lock-free work queue.
+/// Returns all discovered files with their parsed imports and resolved paths.
+fn concurrent_discover(
+    entry: &Path,
+    root: &Path,
+    lang: &dyn LanguageSupport,
+) -> Vec<FileResult> {
+    let queue: SegQueue<PathBuf> = SegQueue::new();
+    let seen: DashSet<PathBuf> = DashSet::new();
+    let results: Mutex<Vec<FileResult>> = Mutex::new(Vec::new());
+    let active = AtomicUsize::new(1); // entry file is active
+    let extensions = lang.extensions();
+
+    queue.push(entry.to_path_buf());
+    seen.insert(entry.to_path_buf());
+
+    rayon::scope(|s| {
+        for _ in 0..rayon::current_num_threads() {
+            s.spawn(|_| {
+                loop {
+                    if let Some(path) = queue.pop() {
+                        // Parse
+                        let result = match lang.parse(&path) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("warning: {e}");
+                                active.fetch_sub(1, Ordering::AcqRel);
+                                continue;
+                            }
+                        };
+
+                        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        let package = lang
+                            .package_name(&path)
+                            .or_else(|| lang.workspace_package_name(&path, root));
+
+                        // Resolve imports and discover new files
+                        let dir = path.parent().unwrap_or(Path::new("."));
+                        let imports: Vec<(RawImport, Option<PathBuf>)> = result
+                            .imports
+                            .into_iter()
+                            .map(|imp| {
+                                let resolved = lang.resolve(dir, &imp.specifier);
+                                if let Some(ref p) = resolved {
+                                    if is_parseable(p, extensions) && seen.insert(p.clone()) {
+                                        active.fetch_add(1, Ordering::AcqRel);
+                                        queue.push(p.clone());
+                                    }
+                                }
+                                (imp, resolved)
+                            })
+                            .collect();
+
+                        let file_result = FileResult {
+                            path,
+                            size,
+                            package,
+                            imports,
+                            unresolvable_dynamic: result.unresolvable_dynamic,
+                        };
+                        results.lock().unwrap().push(file_result);
+
+                        if active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                            // This was the last active item; all work is done
+                            return;
+                        }
+                    } else if active.load(Ordering::Acquire) == 0 {
+                        return;
+                    } else {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+        }
+    });
+
+    let mut results = results.into_inner().unwrap();
+    results.sort_by(|a, b| a.path.cmp(&b.path));
+    results
+}
+
+/// An import with its pre-resolved path (None if resolution failed).
+type ResolvedImport = (RawImport, Option<PathBuf>);
+
 /// Result of building a module graph.
 pub struct BuildResult {
     pub graph: ModuleGraph,
@@ -22,9 +119,6 @@ pub struct BuildResult {
     /// Import specifiers that failed to resolve (for cache invalidation).
     pub unresolved_specifiers: Vec<String>,
 }
-
-/// An import with its pre-resolved path (None if resolution failed).
-type ResolvedImport = (RawImport, Option<PathBuf>);
 
 /// Build a complete ModuleGraph via BFS from the given entry point.
 /// Uses the parse cache for acceleration: unchanged files are not re-parsed.
