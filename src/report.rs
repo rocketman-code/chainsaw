@@ -88,8 +88,10 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
     }
     println!();
 
-    if !result.heavy_packages.is_empty() {
-        println!("Heavy dependencies (static):");
+    println!("Heavy dependencies (static):");
+    if result.heavy_packages.is_empty() {
+        println!("  (none \u{2014} all reachable modules are first-party)");
+    } else {
         for pkg in &result.heavy_packages {
             println!(
                 "  {:<35} {}  {} files",
@@ -102,8 +104,8 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
                 println!("    -> {}", chain_str.join(" -> "));
             }
         }
-        println!();
     }
+    println!();
 
     if top_modules != 0 && !result.modules_by_cost.is_empty() {
         println!("Modules (sorted by exclusive weight):");
