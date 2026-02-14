@@ -152,6 +152,21 @@ fn main() {
             };
             let valid_extensions = lang_support.extensions();
 
+            // Validate mutually exclusive flags
+            let query_flags: Vec<&str> = [
+                chain.as_ref().map(|_| "--chain"),
+                cut.as_ref().map(|_| "--cut"),
+                diff.as_ref().map(|_| "--diff"),
+                diff_from.as_ref().map(|_| "--diff-from"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if query_flags.len() > 1 {
+                eprintln!("error: {} cannot be used together", query_flags.join(" and "));
+                std::process::exit(1);
+            }
+
             // Load or build graph
             let load_result = load_or_build_graph(&entry, &root, no_cache, lang_support.as_ref());
             let graph = load_result.graph;
@@ -185,16 +200,6 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-
-            // Validate mutually exclusive flags
-            if chain.is_some() && cut.is_some() {
-                eprintln!("error: --chain and --cut cannot be used together");
-                std::process::exit(1);
-            }
-            if diff.is_some() && diff_from.is_some() {
-                eprintln!("error: --diff and --diff-from cannot be used together");
-                std::process::exit(1);
-            }
 
             let opts = query::TraceOptions {
                 include_dynamic,
