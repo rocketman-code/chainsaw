@@ -69,6 +69,10 @@ enum Commands {
         /// Force full re-parse, ignoring cache
         #[arg(long)]
         no_cache: bool,
+
+        /// Exclude packages from the heavy dependencies list
+        #[arg(long, num_args = 1..)]
+        ignore: Vec<String>,
     },
 }
 
@@ -88,6 +92,7 @@ fn main() {
             cut,
             json,
             no_cache,
+            ignore,
             ..
         } => {
             let start = Instant::now();
@@ -178,6 +183,7 @@ fn main() {
             let opts = query::TraceOptions {
                 include_dynamic,
                 top_n: top,
+                ignore,
             };
             let result = query::trace(&graph, entry_id, &opts);
 

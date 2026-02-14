@@ -37,6 +37,7 @@ pub struct ModuleCost {
 pub struct TraceOptions {
     pub include_dynamic: bool,
     pub top_n: usize,
+    pub ignore: Vec<String>,
 }
 
 impl Default for TraceOptions {
@@ -44,6 +45,7 @@ impl Default for TraceOptions {
         Self {
             include_dynamic: false,
             top_n: 10,
+            ignore: Vec::new(),
         }
     }
 }
@@ -336,6 +338,9 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         })
         .collect();
     heavy_packages.sort_by(|a, b| b.total_size.cmp(&a.total_size));
+    if !opts.ignore.is_empty() {
+        heavy_packages.retain(|pkg| !opts.ignore.iter().any(|i| i == &pkg.name));
+    }
     heavy_packages.truncate(opts.top_n);
 
     // Compute exclusive weight for all reachable modules via dominator tree
@@ -724,6 +729,7 @@ mod tests {
         let opts = TraceOptions {
             include_dynamic: true,
             top_n: 10,
+            ignore: Vec::new(),
         };
         let result = trace(&graph, ModuleId(0), &opts);
         // B should appear in modules_by_cost when include_dynamic is set
@@ -1034,5 +1040,55 @@ mod tests {
         let all_weights = compute_exclusive_weights(&graph, ModuleId(0), true);
         assert_eq!(all_weights[1], 200); // a: only itself (c shared with b)
         assert_eq!(all_weights[2], 300); // b: only itself (c shared with a)
+    }
+
+    // --- Ignore filter ---
+
+    #[test]
+    fn trace_ignore_filters_heavy_packages() {
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None),
+                ("a.ts", 50, Some("pkg-a")),
+                ("b.ts", 200, Some("pkg-b")),
+                ("c.ts", 300, Some("pkg-c")),
+            ],
+            &[
+                (0, 1, EdgeKind::Static),
+                (0, 2, EdgeKind::Static),
+                (0, 3, EdgeKind::Static),
+            ],
+        );
+        let opts = TraceOptions {
+            include_dynamic: false,
+            top_n: 10,
+            ignore: vec!["pkg-c".to_string()],
+        };
+        let result = trace(&graph, ModuleId(0), &opts);
+        let names: Vec<&str> = result.heavy_packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"pkg-a"));
+        assert!(names.contains(&"pkg-b"));
+        assert!(!names.contains(&"pkg-c"));
+    }
+
+    #[test]
+    fn trace_ignore_does_not_affect_total_weight() {
+        let graph = make_graph(
+            &[
+                ("entry.ts", 100, None),
+                ("a.ts", 500, Some("big-pkg")),
+            ],
+            &[
+                (0, 1, EdgeKind::Static),
+            ],
+        );
+        let opts = TraceOptions {
+            include_dynamic: false,
+            top_n: 10,
+            ignore: vec!["big-pkg".to_string()],
+        };
+        let result = trace(&graph, ModuleId(0), &opts);
+        assert!(result.heavy_packages.is_empty());
+        assert_eq!(result.static_weight, 600);
     }
 }
