@@ -55,6 +55,13 @@ def main():
         sys.path.insert(0, project_root)
     results = []
     for item in data['imports']:
+        # Save sys.path before each find_spec call. find_spec internally
+        # __import__s parent packages, which can execute __init__.py that
+        # modifies sys.path (e.g. poetry-core injecting _vendor/).
+        # Restoring sys.path ensures modifications don't leak across calls.
+        # We leave sys.modules alone: restoring it forces reimports (slow,
+        # and some packages like ansible crash on re-import).
+        saved_path = sys.path[:]
         try:
             spec_name = item['specifier']
             if spec_name.startswith('.'):
@@ -69,6 +76,8 @@ def main():
             results.append({"type": typ, "resolved": resolved})
         except Exception:
             results.append({"type": "error", "resolved": None})
+        finally:
+            sys.path[:] = saved_path
     json.dump(results, sys.stdout)
 
 if __name__ == '__main__':
