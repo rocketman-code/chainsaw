@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use crossbeam_queue::SegQueue;
 use dashmap::DashSet;
+use rayon::slice::ParallelSliceMut;
 
 use crate::cache::ParseCache;
 use crate::graph::ModuleGraph;
@@ -143,7 +144,7 @@ fn concurrent_discover(
     });
 
     let mut results = results.into_inner().unwrap();
-    results.sort_by(|a, b| a.path.cmp(&b.path));
+    results.par_sort_unstable_by(|a, b| a.path.cmp(&b.path));
     results
 }
 
