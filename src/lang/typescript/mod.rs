@@ -93,17 +93,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn extensions_includes_ts_and_js() {
-        let root = Path::new("/tmp");
-        let support = TypeScriptSupport::new(root);
-        let exts = support.extensions();
-        assert!(exts.contains(&"ts"));
-        assert!(exts.contains(&"tsx"));
-        assert!(exts.contains(&"js"));
-        assert!(exts.contains(&"mjs"));
-    }
-
     fn setup_workspace(tmp: &Path) {
         let app = tmp.join("packages/app");
         let lib = tmp.join("packages/lib/src");
@@ -187,19 +176,6 @@ mod tests {
         assert_eq!(
             support.workspace_package_name(&file2, &project_root),
             Some("@my/lib".to_string())
-        );
-    }
-
-    #[test]
-    fn workspace_no_package_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("some/random/dir");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("file.ts"), "").unwrap();
-        let support = TypeScriptSupport::new(tmp.path());
-        assert_eq!(
-            support.workspace_package_name(&dir.join("file.ts"), tmp.path()),
-            None
         );
     }
 

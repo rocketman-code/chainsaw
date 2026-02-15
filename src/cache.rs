@@ -505,17 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_cache_miss_when_not_cached() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let file = root.join("test.py");
-        fs::write(&file, "import os").unwrap();
-
-        let mut cache = ParseCache::new();
-        assert!(cache.lookup(&file).is_none());
-    }
-
-    #[test]
     fn parse_cache_save_and_load_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();

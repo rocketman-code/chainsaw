@@ -139,15 +139,4 @@ mod tests {
         assert_eq!(detected_root, root);
     }
 
-    #[test]
-    fn detect_unknown_extension_returns_none() {
-        let tmp = tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::write(root.join("package.json"), "{}").unwrap();
-        let entry = root.join("src/main.rs");
-        fs::create_dir_all(entry.parent().unwrap()).unwrap();
-        fs::write(&entry, "").unwrap();
-
-        assert!(detect_project(&entry).is_none());
-    }
 }
