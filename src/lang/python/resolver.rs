@@ -45,17 +45,20 @@ impl PythonResolver {
             base = base.parent()?.to_path_buf();
         }
 
-        try_resolve_module(&base, module)
+        try_resolve_module(&base, module, false)
     }
 
     fn resolve_absolute(&self, specifier: &str) -> Option<PathBuf> {
-        for root in &self.source_roots {
-            if let Some(path) = try_resolve_module(root, specifier) {
+        let all_roots = self.source_roots.iter().chain(&self.site_packages_dirs);
+        // Pass 1: regular packages and modules only (no namespace)
+        for root in all_roots.clone() {
+            if let Some(path) = try_resolve_module(root, specifier, false) {
                 return Some(path);
             }
         }
-        for sp in &self.site_packages_dirs {
-            if let Some(path) = try_resolve_module(sp, specifier) {
+        // Pass 2: namespace packages (directories without __init__.py)
+        for root in all_roots {
+            if let Some(path) = try_resolve_module(root, specifier, true) {
                 return Some(path);
             }
         }
@@ -63,22 +66,36 @@ impl PythonResolver {
     }
 }
 
-fn try_resolve_module(base: &Path, dotted_name: &str) -> Option<PathBuf> {
+fn try_resolve_module(base: &Path, dotted_name: &str, allow_namespace: bool) -> Option<PathBuf> {
     if dotted_name.is_empty() {
         let init = base.join("__init__.py");
-        return if init.exists() { Some(init) } else { None };
+        if init.exists() {
+            return Some(init);
+        }
+        if allow_namespace && base.is_dir() {
+            return Some(base.to_path_buf());
+        }
+        return None;
     }
 
     let rel_path = dotted_name.replace('.', "/");
 
-    let pkg_init = base.join(&rel_path).join("__init__.py");
+    // Regular package: directory with __init__.py
+    let pkg_dir = base.join(&rel_path);
+    let pkg_init = pkg_dir.join("__init__.py");
     if pkg_init.exists() {
         return Some(pkg_init);
     }
 
+    // Module file
     let module_file = base.join(format!("{rel_path}.py"));
     if module_file.exists() {
         return Some(module_file);
+    }
+
+    // Namespace package: directory exists without __init__.py
+    if allow_namespace && pkg_dir.is_dir() {
+        return Some(pkg_dir);
     }
 
     None
@@ -349,6 +366,64 @@ mod tests {
         let path = sp.join("requests-2.31.0.dist-info/METADATA");
         let result = package_name_from_path(&path, &[sp]);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_namespace_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let ns_pkg = root.join("mynamespace");
+        fs::create_dir_all(&ns_pkg).unwrap();
+        fs::write(ns_pkg.join("core.py"), "x = 1").unwrap();
+
+        let resolver = make_resolver(&root);
+        let result = resolver.resolve(&root, "mynamespace");
+        assert_eq!(result, Some(ns_pkg.clone()));
+    }
+
+    #[test]
+    fn resolve_namespace_package_submodule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let ns_pkg = root.join("mynamespace");
+        fs::create_dir_all(&ns_pkg).unwrap();
+        fs::write(ns_pkg.join("core.py"), "x = 1").unwrap();
+
+        let resolver = make_resolver(&root);
+        let result = resolver.resolve(&root, "mynamespace.core");
+        assert_eq!(result, Some(ns_pkg.join("core.py")));
+    }
+
+    #[test]
+    fn resolve_regular_package_preferred_over_namespace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let pkg = root.join("mypkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+
+        let resolver = make_resolver(&root);
+        let result = resolver.resolve(&root, "mypkg");
+        assert_eq!(result, Some(pkg.join("__init__.py")));
+    }
+
+    #[test]
+    fn namespace_in_source_root_does_not_shadow_site_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let ns_dir = root.join("packaging");
+        fs::create_dir_all(&ns_dir).unwrap();
+        let sp = root.join("site-packages");
+        let real_pkg = sp.join("packaging");
+        fs::create_dir_all(&real_pkg).unwrap();
+        fs::write(real_pkg.join("__init__.py"), "").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs: vec![sp],
+        };
+        let result = resolver.resolve(&root, "packaging");
+        assert_eq!(result, Some(real_pkg.join("__init__.py")));
     }
 
     #[test]
