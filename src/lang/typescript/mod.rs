@@ -1,9 +1,9 @@
 mod parser;
 mod resolver;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+
+use dashmap::DashMap;
 
 use crate::lang::{LanguageSupport, ParseError, ParseResult};
 
@@ -13,14 +13,14 @@ const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "ct
 #[derive(Debug)]
 pub struct TypeScriptSupport {
     resolver: ImportResolver,
-    workspace_cache: Mutex<HashMap<PathBuf, Option<String>>>,
+    workspace_cache: DashMap<PathBuf, Option<String>>,
 }
 
 impl TypeScriptSupport {
     pub fn new(root: &Path) -> Self {
         Self {
             resolver: ImportResolver::new(root),
-            workspace_cache: Mutex::new(HashMap::new()),
+            workspace_cache: DashMap::new(),
         }
     }
 }
@@ -43,11 +43,22 @@ impl LanguageSupport for TypeScriptSupport {
     }
 
     fn workspace_package_name(&self, file_path: &Path, project_root: &Path) -> Option<String> {
-        let mut cache = self.workspace_cache.lock().unwrap();
         let mut dir = file_path.parent()?;
-        loop {
-            if let Some(cached) = cache.get(dir) {
-                return cached.clone();
+
+        // Fast path: starting directory already cached.
+        // Clone and drop the Ref immediately to avoid holding a read lock
+        // across insert() calls (DashMap shard deadlock).
+        if let Some(result) = self.workspace_cache.get(dir).map(|e| e.value().clone()) {
+            return result;
+        }
+
+        // Walk up from the file's directory, collecting uncached directories
+        let mut uncached: Vec<PathBuf> = Vec::new();
+
+        let result = loop {
+            // Check cache (clone + drop Ref before any insert)
+            if let Some(result) = self.workspace_cache.get(dir).map(|e| e.value().clone()) {
+                break result;
             }
 
             let pkg_json = dir.join("package.json");
@@ -57,16 +68,23 @@ impl LanguageSupport for TypeScriptSupport {
                 } else {
                     resolver::read_package_name(&pkg_json)
                 };
-                cache.insert(dir.to_path_buf(), result.clone());
-                return result;
+                uncached.push(dir.to_path_buf());
+                break result;
             }
+
+            uncached.push(dir.to_path_buf());
 
             match dir.parent() {
                 Some(parent) if parent != dir => dir = parent,
-                _ => break,
+                _ => break None,
             }
+        };
+
+        // Cache all visited directories with the result
+        for d in uncached {
+            self.workspace_cache.insert(d, result.clone());
         }
-        None
+        result
     }
 }
 
@@ -181,6 +199,84 @@ mod tests {
         let support = TypeScriptSupport::new(tmp.path());
         assert_eq!(
             support.workspace_package_name(&dir.join("file.ts"), tmp.path()),
+            None
+        );
+    }
+
+    #[test]
+    fn workspace_deep_tree_caches_negatives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        // Root package.json exists but should be skipped (project root)
+        fs::write(root.join("package.json"), r#"{"name": "root"}"#).unwrap();
+        // Deep directories with no intermediate package.json
+        let deep = root.join("src/features/auth/components/forms");
+        fs::create_dir_all(&deep).unwrap();
+
+        let support = TypeScriptSupport::new(&root);
+
+        // Multiple files at different depths should all return None
+        let file1 = deep.join("LoginForm.ts");
+        let file2 = deep.join("SignupForm.ts");
+        let file3 = root.join("src/features/auth/index.ts");
+        let file4 = root.join("src/features/auth/components/Button.ts");
+
+        assert_eq!(support.workspace_package_name(&file1, &root), None);
+        assert_eq!(support.workspace_package_name(&file2, &root), None);
+        assert_eq!(support.workspace_package_name(&file3, &root), None);
+        assert_eq!(support.workspace_package_name(&file4, &root), None);
+    }
+
+    #[test]
+    fn workspace_mixed_depths_correct_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::write(root.join("package.json"), r#"{"name": "root"}"#).unwrap();
+
+        // Two sibling packages at different depths
+        let lib_a = root.join("packages/lib-a");
+        let lib_b = root.join("packages/lib-b/src/deep/nested");
+        fs::create_dir_all(&lib_a).unwrap();
+        fs::create_dir_all(&lib_b).unwrap();
+        fs::write(
+            root.join("packages/lib-a/package.json"),
+            r#"{"name": "@org/lib-a"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("packages/lib-b/package.json"),
+            r#"{"name": "@org/lib-b"}"#,
+        )
+        .unwrap();
+
+        let support = TypeScriptSupport::new(&root);
+
+        // Files in lib-a
+        assert_eq!(
+            support.workspace_package_name(&lib_a.join("index.ts"), &root),
+            Some("@org/lib-a".to_string())
+        );
+        // Files deep in lib-b (tests intermediate directory caching)
+        assert_eq!(
+            support.workspace_package_name(&lib_b.join("file.ts"), &root),
+            Some("@org/lib-b".to_string())
+        );
+        // Another file in same deep dir (should hit cache)
+        assert_eq!(
+            support.workspace_package_name(&lib_b.join("other.ts"), &root),
+            Some("@org/lib-b".to_string())
+        );
+        // File at intermediate depth in lib-b (should also hit cache)
+        assert_eq!(
+            support.workspace_package_name(
+                &root.join("packages/lib-b/src/shallow.ts"),
+                &root
+            ),
+            Some("@org/lib-b".to_string())
+        );
+        // First-party file at root level — should be None
+        assert_eq!(
+            support.workspace_package_name(&root.join("src/app.ts"), &root),
             None
         );
     }
