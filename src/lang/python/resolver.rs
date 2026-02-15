@@ -106,7 +106,46 @@ fn find_python(root: &Path) -> PathBuf {
     PathBuf::from("python3")
 }
 
+fn discover_site_packages_from_cfg(root: &Path) -> Option<Vec<PathBuf>> {
+    const VENV_NAMES: &[&str] = &[".venv", "venv", ".env", "env"];
+    for name in VENV_NAMES {
+        let venv_dir = root.join(name);
+        let cfg_path = venv_dir.join("pyvenv.cfg");
+        if let Ok(contents) = std::fs::read_to_string(&cfg_path) {
+            if let Some(version) = parse_python_version(&contents) {
+                let sp = venv_dir.join(format!("lib/python{version}/site-packages"));
+                if sp.is_dir() {
+                    return Some(vec![sp]);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_python_version(cfg: &str) -> Option<String> {
+    for line in cfg.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key != "version" && key != "version_info" {
+            continue;
+        }
+        let mut parts = value.trim().splitn(3, '.');
+        let major = parts.next()?;
+        let minor = parts.next()?;
+        return Some(format!("{major}.{minor}"));
+    }
+    None
+}
+
 fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
+    // Fast path: parse pyvenv.cfg directly (no subprocess)
+    if let Some(dirs) = discover_site_packages_from_cfg(root) {
+        return dirs;
+    }
+    // Fallback: shell out to python
     let python = find_python(root);
     let output = Command::new(&python)
         .args(["-c", "import site; print('\\n'.join(site.getsitepackages()))"])
@@ -309,6 +348,65 @@ mod tests {
         let sp = PathBuf::from("/fake/site-packages");
         let path = sp.join("requests-2.31.0.dist-info/METADATA");
         let result = package_name_from_path(&path, &[sp]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn discover_from_pyvenv_cfg_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let venv = root.join(".venv");
+        let sp = venv.join("lib/python3.12/site-packages");
+        fs::create_dir_all(&sp).unwrap();
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "home = /usr/bin\nversion = 3.12.8\n",
+        )
+        .unwrap();
+
+        let result = discover_site_packages_from_cfg(&root);
+        assert_eq!(result, Some(vec![sp]));
+    }
+
+    #[test]
+    fn discover_from_pyvenv_cfg_version_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let venv = root.join(".venv");
+        let sp = venv.join("lib/python3.11/site-packages");
+        fs::create_dir_all(&sp).unwrap();
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "home = /usr/bin\nversion_info = 3.11.5\n",
+        )
+        .unwrap();
+
+        let result = discover_site_packages_from_cfg(&root);
+        assert_eq!(result, Some(vec![sp]));
+    }
+
+    #[test]
+    fn discover_from_pyvenv_cfg_venv_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let venv = root.join("venv");
+        let sp = venv.join("lib/python3.10/site-packages");
+        fs::create_dir_all(&sp).unwrap();
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "home = /usr/bin\nversion = 3.10.0\n",
+        )
+        .unwrap();
+
+        let result = discover_site_packages_from_cfg(&root);
+        assert_eq!(result, Some(vec![sp]));
+    }
+
+    #[test]
+    fn discover_from_pyvenv_cfg_no_venv_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let result = discover_site_packages_from_cfg(&root);
         assert_eq!(result, None);
     }
 }
