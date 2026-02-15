@@ -375,21 +375,17 @@ impl ParseCache {
     pub fn insert(
         &mut self,
         path: PathBuf,
+        size: u64,
+        mtime_nanos: u128,
         result: ParseResult,
         resolved_paths: Vec<Option<PathBuf>>,
     ) {
         self.ensure_entries();
-        let Ok(meta) = fs::metadata(&path) else {
-            return;
-        };
-        let Some(mtime) = mtime_of(&meta) else {
-            return;
-        };
         self.entries.insert(
             path,
             CachedParse {
-                mtime_nanos: mtime,
-                size: meta.len(),
+                mtime_nanos,
+                size,
                 result,
                 resolved_paths,
             },
@@ -451,6 +447,18 @@ mod tests {
     use crate::graph::EdgeKind;
     use crate::lang::RawImport;
 
+    /// Helper: insert into parse cache by stat-ing the file for mtime/size.
+    fn insert_with_stat(
+        cache: &mut ParseCache,
+        path: PathBuf,
+        result: ParseResult,
+        resolved: Vec<Option<PathBuf>>,
+    ) {
+        let meta = fs::metadata(&path).unwrap();
+        let mtime = mtime_of(&meta).unwrap();
+        cache.insert(path, meta.len(), mtime, result, resolved);
+    }
+
     #[test]
     fn parse_cache_hit_when_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
@@ -467,7 +475,7 @@ mod tests {
             unresolvable_dynamic: 0,
         };
         let resolved = vec![None];
-        cache.insert(file.clone(), result, resolved);
+        insert_with_stat(&mut cache, file.clone(), result, resolved);
 
         let cached = cache.lookup(&file);
         assert!(cached.is_some());
@@ -489,7 +497,7 @@ mod tests {
             imports: vec![],
             unresolvable_dynamic: 0,
         };
-        cache.insert(file.clone(), result, vec![]);
+        insert_with_stat(&mut cache, file.clone(), result, vec![]);
 
         fs::write(&file, "import os\nimport sys").unwrap();
 
@@ -525,7 +533,7 @@ mod tests {
             unresolvable_dynamic: 1,
         };
         let resolved = vec![Some(target.clone())];
-        cache.insert(file.clone(), result, resolved);
+        insert_with_stat(&mut cache, file.clone(), result, resolved);
 
         let graph = ModuleGraph::new();
         drop(cache.save(&root, &file, &graph, vec![], 0));

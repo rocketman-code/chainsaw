@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use crossbeam_queue::SegQueue;
 use dashmap::DashSet;
@@ -21,6 +22,8 @@ fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
 struct FileResult {
     path: PathBuf,
     size: u64,
+    /// File modification time captured during read (avoids re-stat in cache insert).
+    mtime_nanos: Option<u128>,
     package: Option<String>,
     imports: Vec<(RawImport, Option<PathBuf>)>,
     unresolvable_dynamic: usize,
@@ -49,7 +52,19 @@ fn concurrent_discover(
                 loop {
                     if let Some(path) = queue.pop() {
                         spin_count = 0;
-                        // Read file once — parse and get size from the same read
+                        // Stat + read file in one pass to capture mtime for cache
+                        let meta = match fs::metadata(&path) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!("warning: {}: {e}", path.display());
+                                active.fetch_sub(1, Ordering::AcqRel);
+                                continue;
+                            }
+                        };
+                        let mtime_nanos = meta.modified().ok()
+                            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos());
+                        let size = meta.len();
                         let source = match fs::read_to_string(&path) {
                             Ok(s) => s,
                             Err(e) => {
@@ -58,7 +73,6 @@ fn concurrent_discover(
                                 continue;
                             }
                         };
-                        let size = source.len() as u64;
 
                         let result = match lang.parse(&path, &source) {
                             Ok(r) => r,
@@ -96,6 +110,7 @@ fn concurrent_discover(
                         let file_result = FileResult {
                             path,
                             size,
+                            mtime_nanos,
                             package,
                             imports,
                             unresolvable_dynamic: result.unresolvable_dynamic,
@@ -208,7 +223,9 @@ pub fn build_graph(
             imports: raw_imports,
             unresolvable_dynamic: fr.unresolvable_dynamic,
         };
-        cache.insert(fr.path, result, resolved_paths);
+        if let Some(mtime) = fr.mtime_nanos {
+            cache.insert(fr.path, fr.size, mtime, result, resolved_paths);
+        }
     }
 
     graph.compute_package_info();

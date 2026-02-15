@@ -1,4 +1,6 @@
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::cache::{self, CacheWriteHandle, ParseCache};
 use crate::error::Error;
@@ -241,7 +243,14 @@ fn try_incremental_update(
             .iter()
             .map(|imp| lang.resolve(dir, &imp.specifier))
             .collect();
-        cache.insert(path.clone(), new_result, resolved_paths);
+        if let Ok(meta) = fs::metadata(path) {
+            let mtime = meta.modified().ok()
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d: std::time::Duration| d.as_nanos());
+            if let Some(mtime) = mtime {
+                cache.insert(path.clone(), new_size, mtime, new_result, resolved_paths);
+            }
+        }
     }
 
     let new_total = (old_unresolvable_total as isize + unresolvable_delta).max(0) as usize;
