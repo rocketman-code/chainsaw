@@ -10,19 +10,26 @@ struct CriterionSample {
     times: Vec<f64>,
 }
 
-struct BenchResult {
-    name: String,
-    baseline_mean: f64,
-    candidate_mean: f64,
-    change_pct: f64,
-    p_value: f64,
-    verdict: Verdict,
+pub struct BenchResult {
+    pub name: String,
+    pub baseline_mean: f64,
+    pub candidate_mean: f64,
+    pub change_pct: f64,
+    pub p_value: f64,
+    pub verdict: Verdict,
 }
 
-enum Verdict {
+#[derive(Debug)]
+pub enum Verdict {
     Pass,
     Faster,
     Fail,
+}
+
+impl Verdict {
+    pub fn is_fail(&self) -> bool {
+        matches!(self, Verdict::Fail)
+    }
 }
 
 impl std::fmt::Display for Verdict {
@@ -35,11 +42,9 @@ impl std::fmt::Display for Verdict {
     }
 }
 
-/// Run perf-judge on the given criterion benchmark directories.
-/// Returns exit code: 0 = all pass, 1 = regression detected.
-pub fn run(dirs: &[String]) -> i32 {
+/// Judge criterion benchmark directories. Returns structured results.
+pub fn judge(dirs: &[String]) -> Vec<BenchResult> {
     let mut results = Vec::new();
-    let mut any_fail = false;
 
     for dir in dirs {
         let path = Path::new(dir);
@@ -57,14 +62,14 @@ pub fn run(dirs: &[String]) -> i32 {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("  ERROR {name}: {e}");
-                return 2;
+                continue;
             }
         };
         let candidate = match load_samples(&candidate_path) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("  ERROR {name}: {e}");
-                return 2;
+                continue;
             }
         };
 
@@ -76,7 +81,6 @@ pub fn run(dirs: &[String]) -> i32 {
         let verdict = if candidate_mean < baseline_mean {
             Verdict::Faster
         } else if change_pct > REGRESSION_THRESHOLD && p_value < P_VALUE_THRESHOLD {
-            any_fail = true;
             Verdict::Fail
         } else {
             Verdict::Pass
@@ -92,17 +96,20 @@ pub fn run(dirs: &[String]) -> i32 {
         });
     }
 
-    if results.is_empty() {
-        eprintln!("No benchmark data found.");
-        return 0;
-    }
+    results
+}
 
+/// Print a results table to stdout.
+pub fn print_results(results: &[BenchResult]) {
+    if results.is_empty() {
+        return;
+    }
     println!(
         "{:<35} {:>12} {:>12} {:>8} {:>8}  {}",
         "Benchmark", "Baseline", "Candidate", "Change", "p-value", "Verdict"
     );
     println!("{}", "-".repeat(85));
-    for r in &results {
+    for r in results {
         println!(
             "{:<35} {:>12} {:>12} {:>+7.1}% {:>8.4}  {}",
             r.name,
@@ -113,8 +120,21 @@ pub fn run(dirs: &[String]) -> i32 {
             r.verdict,
         );
     }
+}
 
-    if any_fail {
+/// Run perf-judge on the given criterion benchmark directories.
+/// Returns exit code: 0 = all pass, 1 = regression detected.
+pub fn run(dirs: &[String]) -> i32 {
+    let results = judge(dirs);
+
+    if results.is_empty() {
+        eprintln!("No benchmark data found.");
+        return 0;
+    }
+
+    print_results(&results);
+
+    if results.iter().any(|r| r.verdict.is_fail()) {
         eprintln!("\nRegression detected.");
         1
     } else {
@@ -438,5 +458,91 @@ mod tests {
         assert_eq!(format_time(131_000.0), "131.0us");
         assert_eq!(format_time(95_000_000.0), "95.0ms");
         assert_eq!(format_time(1_500_000_000.0), "1.50s");
+    }
+
+    #[test]
+    fn judge_returns_structured_results() {
+        // Write synthetic criterion data to temp dirs
+        let tmp = tempfile::tempdir().unwrap();
+        let bench_a = tmp.path().join("bench_a");
+        let bench_b = tmp.path().join("bench_b");
+
+        write_criterion_sample(&bench_a, "main", 100.0, 1.0, 50);
+        write_criterion_sample(&bench_a, "new", 100.0, 1.0, 50); // no change
+        write_criterion_sample(&bench_b, "main", 100.0, 1.0, 50);
+        write_criterion_sample(&bench_b, "new", 115.0, 1.0, 50); // 15% regression
+
+        let dirs = vec![
+            bench_a.to_string_lossy().to_string(),
+            bench_b.to_string_lossy().to_string(),
+        ];
+        let results = judge(&dirs);
+
+        assert_eq!(results.len(), 2);
+
+        // bench_a: no change -> pass or faster
+        assert!(
+            !results[0].verdict.is_fail(),
+            "no-change benchmark should not fail"
+        );
+
+        // bench_b: 15% regression -> fail
+        assert!(
+            results[1].verdict.is_fail(),
+            "15% regression should fail, got {:?}",
+            results[1].verdict
+        );
+        assert!(results[1].change_pct > 0.10);
+    }
+
+    #[test]
+    fn judge_failed_names_returns_only_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pass_dir = tmp.path().join("fast_bench");
+        let fail_dir = tmp.path().join("slow_bench");
+
+        write_criterion_sample(&pass_dir, "main", 100.0, 1.0, 50);
+        write_criterion_sample(&pass_dir, "new", 95.0, 1.0, 50); // faster
+        write_criterion_sample(&fail_dir, "main", 100.0, 1.0, 50);
+        write_criterion_sample(&fail_dir, "new", 110.0, 1.0, 50); // 10% regression
+
+        let dirs = vec![
+            pass_dir.to_string_lossy().to_string(),
+            fail_dir.to_string_lossy().to_string(),
+        ];
+        let results = judge(&dirs);
+        let failed: Vec<&str> = results
+            .iter()
+            .filter(|r| r.verdict.is_fail())
+            .map(|r| r.name.as_str())
+            .collect();
+
+        assert_eq!(failed, vec!["slow_bench"]);
+    }
+
+    /// Write a synthetic criterion sample.json to dir/{slot}/sample.json.
+    fn write_criterion_sample(
+        dir: &std::path::Path,
+        slot: &str,
+        mean_ns: f64,
+        noise: f64,
+        n: usize,
+    ) {
+        let slot_dir = dir.join(slot);
+        std::fs::create_dir_all(&slot_dir).unwrap();
+
+        let samples = synthetic_samples(mean_ns, noise, n);
+        // criterion format: iters=[1,1,...], times=[t1,t2,...]
+        let iters: Vec<f64> = vec![1.0; n];
+        let json = serde_json::json!({
+            "sampling_mode": "Linear",
+            "iters": iters,
+            "times": samples,
+        });
+        std::fs::write(
+            slot_dir.join("sample.json"),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
     }
 }

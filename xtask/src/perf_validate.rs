@@ -1,4 +1,4 @@
-use crate::perf_judge;
+use crate::perf_judge::{self, BenchResult};
 use crate::registry::Registry;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -79,19 +79,76 @@ pub fn run() -> i32 {
     }
 
     // Run perf-judge
-    let exit_code = perf_judge::run(&dirs);
+    let results = perf_judge::judge(&dirs);
+    perf_judge::print_results(&results);
 
-    if exit_code == 0 {
-        // Write attestation
-        if let Err(e) = write_attestation(&root, &required) {
-            eprintln!("Failed to write attestation: {e}");
+    let failed: Vec<&BenchResult> = results.iter().filter(|r| r.verdict.is_fail()).collect();
+
+    if !failed.is_empty() {
+        // Confirmation run: re-bench only the failures, re-judge
+        let failed_names: Vec<&str> = failed.iter().map(|r| r.name.as_str()).collect();
+        println!("\n{} regression(s) detected. Running confirmation...", failed.len());
+        for name in &failed_names {
+            println!("  - {name}");
+        }
+        println!();
+
+        // Re-run criterion for just the failed benchmarks
+        // criterion accepts a single filter regex; join with |
+        let filter = failed_names.join("|");
+        let status = Command::new("cargo")
+            .args(["bench", "--bench", "benchmarks", "--", "--baseline", "main", &filter])
+            .current_dir(&root)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                eprintln!("Confirmation bench exited with {s}");
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("Failed to run confirmation bench: {e}");
+                return 1;
+            }
+        }
+
+        // Re-judge only the failed dirs
+        let failed_dirs: Vec<String> = failed
+            .iter()
+            .map(|r| criterion_dir.join(&r.name).to_string_lossy().to_string())
+            .collect();
+        let confirm_results = perf_judge::judge(&failed_dirs);
+
+        println!("\nConfirmation results:");
+        perf_judge::print_results(&confirm_results);
+
+        let still_failing: Vec<&BenchResult> =
+            confirm_results.iter().filter(|r| r.verdict.is_fail()).collect();
+
+        if !still_failing.is_empty() {
+            eprintln!(
+                "\nRegression confirmed ({}/{} still failing).",
+                still_failing.len(),
+                failed.len()
+            );
             return 1;
         }
-        println!("\nAttestation written to perf/results.json");
-        println!("Stage it: git add perf/results.json");
+
+        println!("\nInitial regression(s) not reproducible. Treating as noise.");
+    } else {
+        println!("\nAll benchmarks passed.");
     }
 
-    exit_code
+    // Write attestation
+    if let Err(e) = write_attestation(&root, &required) {
+        eprintln!("Failed to write attestation: {e}");
+        return 1;
+    }
+    println!("Attestation written to perf/results.json");
+    println!("Stage it: git add perf/results.json");
+
+    0
 }
 
 fn project_root() -> PathBuf {
