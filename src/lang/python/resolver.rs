@@ -104,11 +104,41 @@ fn try_resolve_module(base: &Path, dotted_name: &str, allow_namespace: bool) -> 
         return Some(module_file);
     }
 
+    // C extension module (.so, .pyd, .cpython-*.so)
+    if let Some(ext) = find_c_extension(base, &rel_path) {
+        return Some(ext);
+    }
+
     // Namespace package: directory exists without __init__.py
     if allow_namespace && pkg_dir.is_dir() {
         return Some(pkg_dir);
     }
 
+    None
+}
+
+fn find_c_extension(base: &Path, rel_path: &str) -> Option<PathBuf> {
+    let (parent, leaf) = match rel_path.rfind('/') {
+        Some(i) => (base.join(&rel_path[..i]), &rel_path[i + 1..]),
+        None => (base.to_path_buf(), rel_path),
+    };
+    let prefix = format!("{leaf}.");
+    for entry in std::fs::read_dir(&parent).ok()?.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let path = entry.path();
+        let is_c_ext = path
+            .extension()
+            .is_some_and(|ext| ext == "so" || ext == "pyd");
+        if is_c_ext {
+            return Some(path);
+        }
+    }
     None
 }
 
@@ -898,6 +928,73 @@ mod tests {
         };
         let result = resolver.resolve(&root, "mypkg");
         assert_eq!(result, Some(ext_pkg.join("__init__.py")));
+    }
+
+    #[test]
+    fn resolve_c_extension_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Create a package with a C extension submodule
+        let yaml_dir = root.join("site-packages/yaml");
+        fs::create_dir_all(&yaml_dir).unwrap();
+        fs::write(yaml_dir.join("__init__.py"), "").unwrap();
+        // Simulate a C extension file
+        fs::write(yaml_dir.join("_yaml.cpython-312-darwin.so"), "").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs: vec![root.join("site-packages")],
+        };
+
+        let result = resolver.resolve(&root, "yaml._yaml");
+        assert!(result.is_some(), "should resolve C extension module");
+        let resolved = result.unwrap();
+        assert!(
+            resolved.to_string_lossy().contains("_yaml.cpython-312-darwin.so"),
+            "should resolve to the .so file, got: {}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn resolve_c_extension_simple_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let pkg_dir = root.join("site-packages/pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("__init__.py"), "").unwrap();
+        fs::write(pkg_dir.join("_fast.so"), "").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs: vec![root.join("site-packages")],
+        };
+
+        let result = resolver.resolve(&root, "pkg._fast");
+        assert!(result.is_some(), "should resolve simple .so extension");
+    }
+
+    #[test]
+    fn resolve_py_preferred_over_c_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let pkg_dir = root.join("site-packages/pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("__init__.py"), "").unwrap();
+        // Both .py and .so exist — .py should win
+        fs::write(pkg_dir.join("mod.py"), "x = 1").unwrap();
+        fs::write(pkg_dir.join("mod.cpython-312-darwin.so"), "").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs: vec![root.join("site-packages")],
+        };
+
+        let result = resolver.resolve(&root, "pkg.mod");
+        assert_eq!(result, Some(pkg_dir.join("mod.py")));
     }
 
     #[test]
