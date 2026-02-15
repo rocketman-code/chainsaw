@@ -1,6 +1,7 @@
 # Perf registry: maps source files to criterion benchmarks.
+# Every .rs file under src/ MUST appear here — the integration test enforces this.
+# Files with benchmarks = [] are explicitly exempt (not perf-sensitive).
 # When a listed file changes, the corresponding benchmarks must show no regression.
-# Files not listed here are not perf-gated (help text, formatting, CLI flags, etc.).
 #
 # Benchmark names must match criterion output dirs under target/criterion/.
 # For grouped benchmarks, use "group/name" format (e.g. "build_graph/ts_cold").
@@ -36,3 +37,17 @@ benchmarks = ["cache_load_validate_ts"]
 [[entry]]
 files = ["src/graph.rs"]
 benchmarks = ["build_graph/ts_cold", "build_graph/py_cold", "query_trace_ts", "query_trace_py"]
+
+# Exempt: not perf-sensitive (CLI, formatting, re-exports, error types, test-only)
+[[entry]]
+files = [
+    "src/main.rs",
+    "src/lib.rs",
+    "src/report.rs",
+    "src/error.rs",
+    "src/loader.rs",
+    "src/lang/typescript/mod.rs",
+    "src/lang/python/mod.rs",
+    "src/lang/python/conformance.rs",
+]
+benchmarks = []
