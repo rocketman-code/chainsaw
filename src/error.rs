@@ -5,6 +5,7 @@ use std::path::PathBuf;
 /// The four variants represent the distinct failure modes of entry
 /// validation and graph loading.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Entry point file not found on disk.
     EntryNotFound(PathBuf, std::io::Error),

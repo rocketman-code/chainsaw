@@ -50,6 +50,7 @@ pub trait LanguageSupport: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProjectKind {
     TypeScript,
     Python,

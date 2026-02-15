@@ -80,6 +80,7 @@ fn find_dep_sentinels(root: &Path) -> Vec<(PathBuf, u128)> {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum GraphCacheResult {
     /// All files unchanged — graph is valid.
     Hit {
