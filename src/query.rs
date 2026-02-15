@@ -662,7 +662,7 @@ pub fn find_cut_modules(
 }
 
 /// Minimal snapshot of a trace result for before/after comparison.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraceSnapshot {
     pub entry: String,
     pub static_weight: u64,

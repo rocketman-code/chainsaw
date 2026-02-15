@@ -10,7 +10,7 @@ pub struct ModuleId(pub u32);
 #[repr(transparent)]
 pub struct EdgeId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     Static,
     Dynamic,
