@@ -43,14 +43,14 @@ impl std::fmt::Display for Verdict {
 }
 
 /// Judge criterion benchmark directories. Returns structured results.
-pub fn judge(dirs: &[String]) -> Vec<BenchResult> {
+pub fn judge(dirs: &[String], baseline_name: &str) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     for dir in dirs {
         let path = Path::new(dir);
         let name = extract_bench_name(path);
 
-        let baseline_path = path.join("main/sample.json");
+        let baseline_path = path.join(format!("{baseline_name}/sample.json"));
         let candidate_path = path.join("new/sample.json");
 
         if !baseline_path.exists() || !candidate_path.exists() {
@@ -119,27 +119,6 @@ pub fn print_results(results: &[BenchResult]) {
             r.p_value,
             r.verdict,
         );
-    }
-}
-
-/// Run perf-judge on the given criterion benchmark directories.
-/// Returns exit code: 0 = all pass, 1 = regression detected.
-pub fn run(dirs: &[String]) -> i32 {
-    let results = judge(dirs);
-
-    if results.is_empty() {
-        eprintln!("No benchmark data found.");
-        return 0;
-    }
-
-    print_results(&results);
-
-    if results.iter().any(|r| r.verdict.is_fail()) {
-        eprintln!("\nRegression detected.");
-        1
-    } else {
-        println!("\nAll benchmarks passed.");
-        0
     }
 }
 
@@ -476,7 +455,7 @@ mod tests {
             bench_a.to_string_lossy().to_string(),
             bench_b.to_string_lossy().to_string(),
         ];
-        let results = judge(&dirs);
+        let results = judge(&dirs, "main");
 
         assert_eq!(results.len(), 2);
 
@@ -510,7 +489,7 @@ mod tests {
             pass_dir.to_string_lossy().to_string(),
             fail_dir.to_string_lossy().to_string(),
         ];
-        let results = judge(&dirs);
+        let results = judge(&dirs, "main");
         let failed: Vec<&str> = results
             .iter()
             .filter(|r| r.verdict.is_fail())

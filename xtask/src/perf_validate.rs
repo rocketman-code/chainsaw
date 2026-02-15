@@ -1,6 +1,7 @@
 use crate::perf_judge::{self, BenchResult};
 use crate::registry::Registry;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,9 +13,16 @@ struct Attestation {
     overall: String,
 }
 
-/// Run perf-validate: check that criterion benchmarks pass for changed files.
-/// Returns exit code.
-pub fn run() -> i32 {
+/// Run perf-validate.
+///
+/// Two modes:
+/// - Gate mode (no --baseline): check files changed since origin/main,
+///   validate affected benchmarks, write attestation on pass.
+/// - Ad-hoc mode (--baseline NAME): compare all benchmarks (or specified ones)
+///   against the named baseline. No attestation written.
+///
+/// Both modes use confirmation runs to eliminate false positives.
+pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
     let root = project_root();
 
     let registry = match Registry::load(&root) {
@@ -25,19 +33,32 @@ pub fn run() -> i32 {
         }
     };
 
-    let changed = changed_files(&root);
-    if changed.is_empty() {
-        println!("No files changed. Nothing to validate.");
-        return 0;
-    }
+    let baseline_name = baseline.unwrap_or("main");
 
-    let required = registry.required_benchmarks(&changed);
-    if required.is_empty() {
-        println!("No perf-sensitive files changed. Nothing to validate.");
-        return 0;
-    }
+    // Determine which benchmarks to check
+    let required: BTreeSet<String> = if baseline.is_some() {
+        // Ad-hoc mode: use specified benchmarks or all from registry
+        if benchmark_args.is_empty() {
+            registry.all_benchmarks()
+        } else {
+            benchmark_args.iter().cloned().collect()
+        }
+    } else {
+        // Gate mode: only benchmarks affected by changed files
+        let changed = changed_files(&root);
+        if changed.is_empty() {
+            println!("No files changed since origin/main. Nothing to validate.");
+            return 0;
+        }
+        let required = registry.required_benchmarks(&changed);
+        if required.is_empty() {
+            println!("No perf-sensitive files changed. Nothing to validate.");
+            return 0;
+        }
+        required
+    };
 
-    println!("Perf-sensitive files changed. Required benchmarks:");
+    println!("Benchmarks to validate (baseline: {baseline_name}):");
     for bench in &required {
         println!("  - {bench}");
     }
@@ -50,7 +71,7 @@ pub fn run() -> i32 {
 
     for bench in &required {
         let bench_dir = criterion_dir.join(bench);
-        let has_baseline = bench_dir.join("main/sample.json").exists();
+        let has_baseline = bench_dir.join(format!("{baseline_name}/sample.json")).exists();
         let has_candidate = bench_dir.join("new/sample.json").exists();
 
         if !has_baseline || !has_candidate {
@@ -64,90 +85,124 @@ pub fn run() -> i32 {
         eprintln!("Missing criterion data:");
         for (bench, has_baseline, has_candidate) in &missing {
             let what = match (has_baseline, has_candidate) {
-                (false, false) => "no baseline or candidate",
-                (false, true) => "no baseline (run --save-baseline main)",
-                (true, false) => "no candidate (run cargo bench)",
+                (false, false) => format!("no baseline or candidate"),
+                (false, true) => format!("no baseline (run --save-baseline {baseline_name})"),
+                (true, false) => format!("no candidate (run cargo bench)"),
                 _ => unreachable!(),
             };
             eprintln!("  - {bench}: {what}");
         }
         eprintln!();
-        eprintln!("Run: cargo bench -- --save-baseline main  (to set baseline)");
-        eprintln!("Run: cargo bench -- --baseline main       (to test candidate)");
+        eprintln!(
+            "Run: cargo bench --bench benchmarks -- --save-baseline {baseline_name}  (to set baseline)"
+        );
+        eprintln!(
+            "Run: cargo bench --bench benchmarks -- --baseline {baseline_name}       (to test candidate)"
+        );
         return 1;
     }
 
-    // Run perf-judge
-    let results = perf_judge::judge(&dirs);
+    // Judge
+    let results = perf_judge::judge(&dirs, baseline_name);
     perf_judge::print_results(&results);
 
-    let failed: Vec<&BenchResult> = results.iter().filter(|r| r.verdict.is_fail()).collect();
+    // Confirmation runs for any failures
+    if let Some(exit) = confirm_failures(&results, &criterion_dir, &root, baseline_name) {
+        return exit;
+    }
 
-    if !failed.is_empty() {
-        // Confirmation run: re-bench only the failures, re-judge
-        let failed_names: Vec<&str> = failed.iter().map(|r| r.name.as_str()).collect();
-        println!("\n{} regression(s) detected. Running confirmation...", failed.len());
-        for name in &failed_names {
-            println!("  - {name}");
-        }
-        println!();
+    println!("\nAll benchmarks passed.");
 
-        // Re-run criterion for just the failed benchmarks
-        // criterion accepts a single filter regex; join with |
-        let filter = failed_names.join("|");
-        let status = Command::new("cargo")
-            .args(["bench", "--bench", "benchmarks", "--", "--baseline", "main", &filter])
-            .current_dir(&root)
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!("Confirmation bench exited with {s}");
-                return 1;
-            }
-            Err(e) => {
-                eprintln!("Failed to run confirmation bench: {e}");
-                return 1;
-            }
-        }
-
-        // Re-judge only the failed dirs
-        let failed_dirs: Vec<String> = failed
-            .iter()
-            .map(|r| criterion_dir.join(&r.name).to_string_lossy().to_string())
-            .collect();
-        let confirm_results = perf_judge::judge(&failed_dirs);
-
-        println!("\nConfirmation results:");
-        perf_judge::print_results(&confirm_results);
-
-        let still_failing: Vec<&BenchResult> =
-            confirm_results.iter().filter(|r| r.verdict.is_fail()).collect();
-
-        if !still_failing.is_empty() {
-            eprintln!(
-                "\nRegression confirmed ({}/{} still failing).",
-                still_failing.len(),
-                failed.len()
-            );
+    // Only write attestation in gate mode
+    if baseline.is_none() {
+        if let Err(e) = write_attestation(&root, &required) {
+            eprintln!("Failed to write attestation: {e}");
             return 1;
         }
-
-        println!("\nInitial regression(s) not reproducible. Treating as noise.");
-    } else {
-        println!("\nAll benchmarks passed.");
+        println!("Attestation written to .git/perf-attestation.json");
+        println!("You can now push.");
     }
-
-    // Write attestation
-    if let Err(e) = write_attestation(&root, &required) {
-        eprintln!("Failed to write attestation: {e}");
-        return 1;
-    }
-    println!("Attestation written to .git/perf-attestation.json");
-    println!("You can now push.");
 
     0
+}
+
+/// If there are failures, re-bench and re-judge to confirm.
+/// Returns Some(exit_code) if regression confirmed or bench failed,
+/// None if all clear (either no failures or noise dismissed).
+fn confirm_failures(
+    results: &[BenchResult],
+    criterion_dir: &Path,
+    root: &Path,
+    baseline_name: &str,
+) -> Option<i32> {
+    let failed: Vec<&BenchResult> = results.iter().filter(|r| r.verdict.is_fail()).collect();
+    if failed.is_empty() {
+        return None;
+    }
+
+    let failed_names: Vec<&str> = failed.iter().map(|r| r.name.as_str()).collect();
+    println!(
+        "\n{} regression(s) detected. Running confirmation...",
+        failed.len()
+    );
+    for name in &failed_names {
+        println!("  - {name}");
+    }
+    println!();
+
+    // Re-run criterion for just the failed benchmarks
+    let filter = failed_names.join("|");
+    let status = Command::new("cargo")
+        .args([
+            "bench",
+            "--bench",
+            "benchmarks",
+            "--",
+            "--baseline",
+            baseline_name,
+            &filter,
+        ])
+        .current_dir(root)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("Confirmation bench exited with {s}");
+            return Some(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to run confirmation bench: {e}");
+            return Some(1);
+        }
+    }
+
+    // Re-judge only the failed dirs
+    let failed_dirs: Vec<String> = failed
+        .iter()
+        .map(|r| criterion_dir.join(&r.name).to_string_lossy().to_string())
+        .collect();
+    let confirm_results = perf_judge::judge(&failed_dirs, baseline_name);
+
+    println!("\nConfirmation results:");
+    perf_judge::print_results(&confirm_results);
+
+    let still_failing: Vec<&BenchResult> = confirm_results
+        .iter()
+        .filter(|r| r.verdict.is_fail())
+        .collect();
+
+    if !still_failing.is_empty() {
+        eprintln!(
+            "\nRegression confirmed ({}/{} still failing).",
+            still_failing.len(),
+            failed.len()
+        );
+        return Some(1);
+    }
+
+    println!("\nInitial regression(s) not reproducible. Treating as noise.");
+    None
 }
 
 fn project_root() -> PathBuf {
@@ -159,7 +214,6 @@ fn project_root() -> PathBuf {
 }
 
 fn changed_files(root: &Path) -> Vec<String> {
-    // Check what changed since origin/main (same view as pre-push hook)
     let output = Command::new("git")
         .args(["diff", "--name-only", "origin/main...HEAD"])
         .current_dir(root)
@@ -183,7 +237,7 @@ fn commit_sha(root: &Path) -> String {
 
 fn write_attestation(
     root: &Path,
-    required_benchmarks: &std::collections::BTreeSet<String>,
+    required_benchmarks: &BTreeSet<String>,
 ) -> Result<(), String> {
     let attestation = Attestation {
         commit_sha: commit_sha(root),

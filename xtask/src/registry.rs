@@ -35,6 +35,15 @@ impl Registry {
         })
     }
 
+    /// Return all benchmarks in the registry (excluding empty entries).
+    pub fn all_benchmarks(&self) -> BTreeSet<String> {
+        self.entries
+            .iter()
+            .flat_map(|(_, benches)| benches.iter().cloned())
+            .filter(|b| !b.is_empty())
+            .collect()
+    }
+
     /// Given a list of changed file paths, return the set of benchmarks
     /// that need to be validated. Returns empty set if no perf-sensitive
     /// files were changed.
@@ -84,6 +93,22 @@ mod tests {
             "src/report.rs".to_string(),
         ]);
         assert!(benchmarks.is_empty());
+    }
+
+    #[test]
+    fn all_benchmarks_returns_all_non_empty() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let registry = Registry::load(root).unwrap();
+
+        let all = registry.all_benchmarks();
+        // Should contain benchmarks from different entries
+        assert!(all.contains("ts_parse_file"));
+        assert!(all.contains("py_parse_file"));
+        assert!(all.contains("build_graph/ts_cold"));
+        assert!(all.contains("query_trace_ts"));
+        // Should NOT contain empty strings (from benchmarks = [] entries)
+        assert!(!all.is_empty());
+        assert!(all.iter().all(|b| !b.is_empty()));
     }
 
     #[test]

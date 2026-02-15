@@ -14,14 +14,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Validate criterion benchmark results with Welch's t-test
-    PerfJudge {
-        /// Criterion benchmark directories to validate
-        #[arg(required = true)]
-        dirs: Vec<String>,
+    /// Validate benchmark performance (gate for pre-push, or ad-hoc comparison)
+    PerfValidate {
+        /// Compare against a named criterion baseline instead of checking changed files.
+        /// Runs all benchmarks (or those specified) with confirmation runs.
+        #[arg(long)]
+        baseline: Option<String>,
+
+        /// Specific benchmark names to check (only with --baseline)
+        benchmarks: Vec<String>,
     },
-    /// Check perf-sensitive changes have passing benchmarks
-    PerfValidate,
     /// Pre-commit hook: block commits to main without perf attestation
     PreCommit,
     /// Pre-push hook: block pushes without perf attestation
@@ -40,11 +42,11 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::PerfJudge { dirs } => {
-            std::process::exit(perf_judge::run(&dirs));
-        }
-        Command::PerfValidate => {
-            std::process::exit(perf_validate::run());
+        Command::PerfValidate {
+            baseline,
+            benchmarks,
+        } => {
+            std::process::exit(perf_validate::run(baseline.as_deref(), &benchmarks));
         }
         Command::PreCommit => {
             std::process::exit(hooks::pre_commit());
