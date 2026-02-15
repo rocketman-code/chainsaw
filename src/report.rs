@@ -36,25 +36,24 @@ struct C {
     color: bool,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
 impl C {
     fn new(no_color: bool) -> Self {
         Self { color: should_use_color(std::io::stdout().is_terminal(), no_color) }
     }
 
-    fn bold_green(&self, s: &str) -> String {
+    fn bold_green(self, s: &str) -> String {
         if self.color { format!("\x1b[1;92m{s}\x1b[0m") } else { s.to_string() }
     }
 
-    fn red(&self, s: &str) -> String {
+    fn red(self, s: &str) -> String {
         if self.color { format!("\x1b[31m{s}\x1b[0m") } else { s.to_string() }
     }
 
-    fn green(&self, s: &str) -> String {
+    fn green(self, s: &str) -> String {
         if self.color { format!("\x1b[32m{s}\x1b[0m") } else { s.to_string() }
     }
 
-    fn dim(&self, s: &str) -> String {
+    fn dim(self, s: &str) -> String {
         if self.color { format!("\x1b[2m{s}\x1b[0m") } else { s.to_string() }
     }
 }
