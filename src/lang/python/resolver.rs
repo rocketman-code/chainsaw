@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -213,6 +214,209 @@ fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+fn extract_sys_path_additions(file_path: &Path, source: &str) -> Vec<PathBuf> {
+    if !source.contains("sys.path") || !source.contains("__file__") {
+        return Vec::new();
+    }
+
+    let mut parser = tree_sitter::Parser::new();
+    let Ok(()) = parser.set_language(&tree_sitter_python::LANGUAGE.into()) else {
+        return Vec::new();
+    };
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+
+    let src = source.as_bytes();
+    let root = tree.root_node();
+    let assignments = collect_assignments(root, src);
+
+    let mut paths = Vec::new();
+    find_sys_path_calls(root, src, file_path, &assignments, &mut paths);
+
+    paths
+        .into_iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
+fn collect_assignments<'a>(
+    node: tree_sitter::Node<'a>,
+    src: &[u8],
+) -> HashMap<String, tree_sitter::Node<'a>> {
+    let mut map = HashMap::new();
+    collect_assignments_recursive(node, src, &mut map);
+    map
+}
+
+fn collect_assignments_recursive<'a>(
+    node: tree_sitter::Node<'a>,
+    src: &[u8],
+    map: &mut HashMap<String, tree_sitter::Node<'a>>,
+) {
+    let is_assignment = node.kind() == "expression_statement"
+        && node.named_child(0).is_some_and(|n| n.kind() == "assignment");
+    if is_assignment {
+        let expr = node.named_child(0).unwrap();
+        let left = expr.child_by_field_name("left");
+        let right = expr.child_by_field_name("right");
+        if let (Some(l), Some(r)) = (left, right) {
+            if l.kind() == "identifier" {
+                map.insert(node_text(l, src).to_string(), r);
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_assignments_recursive(child, src, map);
+    }
+}
+
+fn find_sys_path_calls(
+    node: tree_sitter::Node,
+    src: &[u8],
+    file_path: &Path,
+    assignments: &HashMap<String, tree_sitter::Node>,
+    paths: &mut Vec<PathBuf>,
+) {
+    if node.kind() == "call" {
+        if let Some(path) = try_extract_sys_path_arg(node, src, file_path, assignments) {
+            paths.push(path);
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        find_sys_path_calls(child, src, file_path, assignments, paths);
+    }
+}
+
+fn try_extract_sys_path_arg(
+    node: tree_sitter::Node,
+    src: &[u8],
+    file_path: &Path,
+    assignments: &HashMap<String, tree_sitter::Node>,
+) -> Option<PathBuf> {
+    let func = node.child_by_field_name("function")?;
+    let func_text = node_text(func, src);
+    let arg_idx = match func_text {
+        "sys.path.insert" => 1,
+        "sys.path.append" => 0,
+        _ => return None,
+    };
+    let args = node.child_by_field_name("arguments")?;
+    let arg = args.named_child(arg_idx)?;
+    eval_path_expr(arg, src, file_path, assignments)
+}
+
+fn eval_path_expr(
+    node: tree_sitter::Node,
+    src: &[u8],
+    file_path: &Path,
+    assignments: &HashMap<String, tree_sitter::Node>,
+) -> Option<PathBuf> {
+    match node.kind() {
+        "identifier" => {
+            let name = node_text(node, src);
+            if name == "__file__" {
+                Some(file_path.to_path_buf())
+            } else {
+                let expr = assignments.get(name)?;
+                eval_path_expr(*expr, src, file_path, assignments)
+            }
+        }
+        "string" => extract_string_content(node, src).map(PathBuf::from),
+        "call" => {
+            let func = node.child_by_field_name("function")?;
+            let args = node.child_by_field_name("arguments")?;
+            let func_text = node_text(func, src);
+
+            match func_text {
+                "os.path.dirname" => {
+                    let arg = args.named_child(0)?;
+                    let inner = eval_path_expr(arg, src, file_path, assignments)?;
+                    inner.parent().map(Path::to_path_buf)
+                }
+                "os.path.join" => {
+                    let count = args.named_child_count();
+                    let first = args.named_child(0)?;
+                    let mut result = eval_path_expr(first, src, file_path, assignments)?;
+                    for i in 1..count {
+                        let arg = args.named_child(i)?;
+                        let segment = eval_path_expr(arg, src, file_path, assignments)?;
+                        result = result.join(segment);
+                    }
+                    Some(result)
+                }
+                "Path" | "str" => {
+                    let arg = args.named_child(0)?;
+                    eval_path_expr(arg, src, file_path, assignments)
+                }
+                _ if func.kind() == "attribute" => {
+                    let attr = func.child_by_field_name("attribute")?;
+                    match node_text(attr, src) {
+                        "as_posix" | "resolve" => {
+                            let obj = func.child_by_field_name("object")?;
+                            eval_path_expr(obj, src, file_path, assignments)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        "attribute" => {
+            let attr = node.child_by_field_name("attribute")?;
+            if node_text(attr, src) == "parent" {
+                let obj = node.child_by_field_name("object")?;
+                let inner = eval_path_expr(obj, src, file_path, assignments)?;
+                inner.parent().map(Path::to_path_buf)
+            } else {
+                None
+            }
+        }
+        "binary_operator" => {
+            let op = node.child_by_field_name("operator")?;
+            if node_text(op, src) != "/" {
+                return None;
+            }
+            let left = node.child_by_field_name("left")?;
+            let right = node.child_by_field_name("right")?;
+            let base = eval_path_expr(left, src, file_path, assignments)?;
+            let segment = eval_path_expr(right, src, file_path, assignments)?;
+            Some(base.join(segment))
+        }
+        "parenthesized_expression" => {
+            let inner = node.named_child(0)?;
+            eval_path_expr(inner, src, file_path, assignments)
+        }
+        _ => None,
+    }
+}
+
+fn node_text<'a>(node: tree_sitter::Node, src: &'a [u8]) -> &'a str {
+    std::str::from_utf8(&src[node.byte_range()]).unwrap_or("")
+}
+
+fn extract_string_content(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    if let Some(child) = node.children(&mut cursor).find(|c| c.kind() == "string_content") {
+        return Some(node_text(child, src).to_string());
+    }
+    let text = node_text(node, src);
+    let s = text
+        .trim_start_matches("\"\"\"")
+        .trim_end_matches("\"\"\"")
+        .trim_start_matches("'''")
+        .trim_end_matches("'''")
+        .trim_start_matches('"')
+        .trim_end_matches('"')
+        .trim_start_matches('\'')
+        .trim_end_matches('\'');
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 #[cfg(test)]
@@ -612,5 +816,96 @@ mod tests {
         };
         let result = resolver.resolve(&root, "mypkg");
         assert_eq!(result, Some(ext_pkg.join("__init__.py")));
+    }
+
+    #[test]
+    fn sys_path_pathlib_vendor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let pkg_dir = root.join("site-packages/mypkg/core");
+        let vendor = pkg_dir.join("_vendor");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("somelib.py"), "x = 1").unwrap();
+        fs::write(
+            pkg_dir.join("__init__.py"),
+            r#"
+import sys
+from pathlib import Path
+__vendor_site__ = (Path(__file__).parent / "_vendor").as_posix()
+if __vendor_site__ not in sys.path:
+    sys.path.insert(0, __vendor_site__)
+"#,
+        )
+        .unwrap();
+
+        let init_path = pkg_dir.join("__init__.py");
+        let source = fs::read_to_string(&init_path).unwrap();
+        let result = extract_sys_path_additions(&init_path, &source);
+        assert_eq!(result, vec![vendor]);
+    }
+
+    #[test]
+    fn sys_path_os_dirname_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Simulate: conftest.py 3 levels deep, adds root/test/lib
+        let conftest_dir = root.join("test/units/mytest");
+        fs::create_dir_all(&conftest_dir).unwrap();
+        let test_lib = root.join("test/lib");
+        let test_pkg = test_lib.join("mytest_pkg");
+        fs::create_dir_all(&test_pkg).unwrap();
+        fs::write(test_pkg.join("__init__.py"), "").unwrap();
+
+        let conftest = conftest_dir.join("conftest.py");
+        fs::write(
+            &conftest,
+            r#"
+import os
+import sys
+test_lib = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'lib')
+sys.path.insert(0, test_lib)
+"#,
+        )
+        .unwrap();
+
+        let source = fs::read_to_string(&conftest).unwrap();
+        let result = extract_sys_path_additions(&conftest, &source);
+        assert_eq!(result, vec![test_lib]);
+    }
+
+    #[test]
+    fn sys_path_no_modification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let init = root.join("__init__.py");
+        fs::write(&init, "x = 1\n").unwrap();
+
+        let source = fs::read_to_string(&init).unwrap();
+        let result = extract_sys_path_additions(&init, &source);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sys_path_nonexistent_dir_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let init = root.join("__init__.py");
+        fs::write(
+            &init,
+            r#"
+import sys
+from pathlib import Path
+sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
+"#,
+        )
+        .unwrap();
+
+        let source = fs::read_to_string(&init).unwrap();
+        let result = extract_sys_path_additions(&init, &source);
+        assert!(result.is_empty());
     }
 }
