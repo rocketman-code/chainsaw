@@ -31,6 +31,7 @@ pub struct LoadedGraph {
 ///
 /// The returned [`CacheWriteHandle`] must be kept alive until you are done
 /// with the graph — it joins a background cache-write thread on drop.
+#[must_use = "the CacheWriteHandle joins a background thread on drop"]
 pub fn load_graph(entry: &Path, no_cache: bool) -> Result<(LoadedGraph, CacheWriteHandle), Error> {
     let entry = entry
         .canonicalize()

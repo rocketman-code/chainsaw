@@ -310,6 +310,7 @@ fn reconstruct_chain(parent: &[u32], entry: ModuleId, target: ModuleId) -> Vec<M
     chain
 }
 
+#[must_use]
 #[allow(clippy::cast_sign_loss)]
 pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> TraceResult {
     let bfs = bfs_reachable(graph, entry);
@@ -428,6 +429,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
 /// Returns up to `max_chains` distinct shortest paths (all same hop count),
 /// deduplicated at the package-name level so chains that differ only by
 /// internal file paths are collapsed into one.
+#[must_use]
 pub fn find_all_chains(
     graph: &ModuleGraph,
     entry: ModuleId,
@@ -598,6 +600,7 @@ pub struct CutModule {
 /// Removing any one of these severs every import path to the target.
 /// Sorted by exclusive weight descending (highest-impact first),
 /// truncated to `top_n`.
+#[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn find_cut_modules(
     graph: &ModuleGraph,
@@ -709,6 +712,7 @@ pub struct DiffResult {
     pub dynamic_only_in_b: Vec<DiffPackage>,
 }
 
+#[must_use]
 #[allow(clippy::cast_possible_wrap)]
 pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
     let keys_a: HashSet<&str> = a.packages.keys().map(String::as_str).collect();
