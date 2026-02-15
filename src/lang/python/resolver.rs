@@ -257,23 +257,25 @@ fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
     paths
 }
 
-const CONFTEST_SKIP_DIRS: &[&str] = &[
-    "__pycache__",
-    ".git",
-    ".venv",
-    "venv",
-    ".env",
-    "env",
-    "node_modules",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".tox",
-    ".eggs",
-];
+const CONFTEST_SEARCH_DIRS: &[&str] = &["test", "tests", "testing", "spec", "specs"];
 
 fn scan_conftest_paths(root: &Path) -> Vec<PathBuf> {
+    // Check root-level conftest.py and common test directories only.
+    // Walking the entire project tree is too expensive for large codebases.
     let mut files = Vec::new();
-    walk_for_file(root, "conftest.py", CONFTEST_SKIP_DIRS, &mut files);
+
+    let root_conftest = root.join("conftest.py");
+    if root_conftest.exists() {
+        files.push(root_conftest);
+    }
+
+    for dir in CONFTEST_SEARCH_DIRS {
+        let test_dir = root.join(dir);
+        if test_dir.is_dir() {
+            walk_for_conftest(&test_dir, &mut files);
+        }
+    }
+
     let mut paths = Vec::new();
     for file in &files {
         let Ok(source) = std::fs::read_to_string(file) else {
@@ -299,7 +301,21 @@ fn scan_site_packages_paths(site_packages: &[PathBuf]) -> Vec<PathBuf> {
     paths
 }
 
-fn walk_for_file(dir: &Path, target: &str, skip: &[&str], results: &mut Vec<PathBuf>) {
+const CONFTEST_SKIP_DIRS: &[&str] = &[
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    ".env",
+    "env",
+    "node_modules",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    ".eggs",
+];
+
+fn walk_for_conftest(dir: &Path, results: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -307,10 +323,10 @@ fn walk_for_file(dir: &Path, target: &str, skip: &[&str], results: &mut Vec<Path
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
-            if !skip.contains(&name) {
-                walk_for_file(&path, target, skip, results);
+            if !CONFTEST_SKIP_DIRS.contains(&name) {
+                walk_for_conftest(&path, results);
             }
-        } else if name == target {
+        } else if name == "conftest.py" {
             results.push(path);
         }
     }
