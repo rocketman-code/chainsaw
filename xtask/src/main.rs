@@ -1,3 +1,4 @@
+mod hooks;
 mod perf_judge;
 mod perf_validate;
 mod registry;
@@ -21,6 +22,12 @@ enum Command {
     },
     /// Check perf-sensitive changes have passing benchmarks
     PerfValidate,
+    /// Pre-commit hook: block commits to main without perf attestation
+    PreCommit,
+    /// Pre-push hook: block pushes without perf attestation
+    PrePush,
+    /// Install git hooks
+    InstallHooks,
 }
 
 fn main() {
@@ -31,6 +38,15 @@ fn main() {
         }
         Command::PerfValidate => {
             std::process::exit(perf_validate::run());
+        }
+        Command::PreCommit => {
+            std::process::exit(hooks::pre_commit());
+        }
+        Command::PrePush => {
+            std::process::exit(hooks::pre_push());
+        }
+        Command::InstallHooks => {
+            std::process::exit(hooks::install_hooks());
         }
     }
 }
