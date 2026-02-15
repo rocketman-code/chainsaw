@@ -1,9 +1,6 @@
 use std::path::PathBuf;
 
-/// Errors that can occur when loading a dependency graph.
-///
-/// The four variants represent the distinct failure modes of entry
-/// validation and graph loading.
+/// Errors from entry validation, graph loading, and snapshot I/O.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -15,6 +12,12 @@ pub enum Error {
     UnsupportedFileType(String),
     /// Entry point exists but was not found in the dependency graph.
     EntryNotInGraph(PathBuf),
+    /// Cannot read a snapshot file from disk.
+    SnapshotRead(PathBuf, std::io::Error),
+    /// Snapshot file contains invalid JSON.
+    SnapshotParse(PathBuf, String),
+    /// Cannot write a snapshot file to disk.
+    SnapshotWrite(PathBuf, std::io::Error),
 }
 
 impl Error {
@@ -47,6 +50,15 @@ impl std::fmt::Display for Error {
             Self::EntryNotInGraph(path) => {
                 write!(f, "entry file '{}' not found in graph", path.display())
             }
+            Self::SnapshotRead(path, source) => {
+                write!(f, "cannot read snapshot '{}': {source}", path.display())
+            }
+            Self::SnapshotParse(path, msg) => {
+                write!(f, "invalid snapshot '{}': {msg}", path.display())
+            }
+            Self::SnapshotWrite(path, source) => {
+                write!(f, "cannot write snapshot '{}': {source}", path.display())
+            }
         }
     }
 }
@@ -55,7 +67,9 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::EntryNotFound(_, e) => Some(e),
+            Self::EntryNotFound(_, e)
+            | Self::SnapshotRead(_, e)
+            | Self::SnapshotWrite(_, e) => Some(e),
             _ => None,
         }
     }
