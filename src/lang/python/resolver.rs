@@ -73,6 +73,18 @@ impl PythonResolver {
                 return Some(path);
             }
         }
+        // Pass 3: C extension modules (site-packages only, dotted imports only).
+        // C extensions are always sub-modules of packages (e.g., yaml._yaml),
+        // never top-level. Skipping non-dotted imports avoids expensive
+        // read_dir(site-packages) for every unresolved stdlib import.
+        if specifier.contains('.') {
+            let rel_path = specifier.replace('.', "/");
+            for sp in &self.site_packages_dirs {
+                if let Some(ext) = find_c_extension(sp, &rel_path) {
+                    return Some(ext);
+                }
+            }
+        }
         None
     }
 }
@@ -102,11 +114,6 @@ fn try_resolve_module(base: &Path, dotted_name: &str, allow_namespace: bool) -> 
     let module_file = base.join(format!("{rel_path}.py"));
     if module_file.exists() {
         return Some(module_file);
-    }
-
-    // C extension module (.so, .pyd, .cpython-*.so)
-    if let Some(ext) = find_c_extension(base, &rel_path) {
-        return Some(ext);
     }
 
     // Namespace package: directory exists without __init__.py
