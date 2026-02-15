@@ -324,6 +324,37 @@ fn register_benchmarks() -> Vec<Benchmark> {
         eprintln!("Skipping py_resolve: {} not found", py.display());
     }
 
+    // cache_load_validate_ts — must run before build_graph benchmarks to avoid
+    // OS page cache contamination: build_graph reads full file contents for 3200+
+    // files, which warms the kernel page cache. cache_load does parallel stat()
+    // calls that run ~10% faster on warm pages. Since save-baseline takes 50
+    // build_graph iterations (21s of I/O) but comparison early-stops at 5, the
+    // cache warming differs between modes, producing false positive regressions.
+    let entry = ts.join("packages/wrangler/src/index.ts");
+    if entry.exists() {
+        let lang = TypeScriptSupport::new(&ts);
+        let root = ts.clone();
+        let mut cache = ParseCache::new();
+        let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+        let unresolvable_count: usize =
+            result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
+        cache.save(
+            &root,
+            &entry,
+            &result.graph,
+            result.unresolved_specifiers,
+            unresolvable_count,
+        );
+        benches.push(Benchmark {
+            name: "cache_load_validate_ts",
+            run: Box::new(move || {
+                let mut loaded = ParseCache::load(black_box(&root));
+                let resolve_fn = |_: &str| false;
+                loaded.try_load_graph(black_box(&entry), &resolve_fn);
+            }),
+        });
+    }
+
     // build_graph/ts_cold
     let entry = ts.join("packages/wrangler/src/index.ts");
     if entry.exists() {
@@ -360,32 +391,6 @@ fn register_benchmarks() -> Vec<Benchmark> {
                     &lang,
                     &mut cache,
                 );
-            }),
-        });
-    }
-
-    // cache_load_validate_ts
-    let entry = ts.join("packages/wrangler/src/index.ts");
-    if entry.exists() {
-        let lang = TypeScriptSupport::new(&ts);
-        let root = ts.clone();
-        let mut cache = ParseCache::new();
-        let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
-        let unresolvable_count: usize =
-            result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
-        cache.save(
-            &root,
-            &entry,
-            &result.graph,
-            result.unresolved_specifiers,
-            unresolvable_count,
-        );
-        benches.push(Benchmark {
-            name: "cache_load_validate_ts",
-            run: Box::new(move || {
-                let mut loaded = ParseCache::load(black_box(&root));
-                let resolve_fn = |_: &str| false;
-                loaded.try_load_graph(black_box(&entry), &resolve_fn);
             }),
         });
     }
