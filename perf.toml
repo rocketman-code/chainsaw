@@ -1,0 +1,38 @@
+# Perf registry: maps source files to criterion benchmarks.
+# When a listed file changes, the corresponding benchmarks must show no regression.
+# Files not listed here are not perf-gated (help text, formatting, CLI flags, etc.).
+#
+# Benchmark names must match criterion output dirs under target/criterion/.
+# For grouped benchmarks, use "group/name" format (e.g. "build_graph/ts_cold").
+
+[[entry]]
+files = ["src/lang/typescript/parser.rs"]
+benchmarks = ["ts_parse_file"]
+
+[[entry]]
+files = ["src/lang/typescript/resolver.rs"]
+benchmarks = ["ts_resolve"]
+
+[[entry]]
+files = ["src/lang/python/parser.rs"]
+benchmarks = ["py_parse_file"]
+
+[[entry]]
+files = ["src/lang/python/resolver.rs"]
+benchmarks = ["py_resolve"]
+
+[[entry]]
+files = ["src/walker.rs", "src/lang/mod.rs"]
+benchmarks = ["build_graph/ts_cold", "build_graph/py_cold"]
+
+[[entry]]
+files = ["src/query.rs"]
+benchmarks = ["query_trace_ts", "query_trace_py"]
+
+[[entry]]
+files = ["src/cache.rs"]
+benchmarks = ["cache_load_validate_ts"]
+
+[[entry]]
+files = ["src/graph.rs"]
+benchmarks = ["build_graph/ts_cold", "build_graph/py_cold", "query_trace_ts", "query_trace_py"]
