@@ -1,4 +1,5 @@
 mod perf_judge;
+mod registry;
 
 use clap::{Parser, Subcommand};
 
