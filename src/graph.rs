@@ -90,7 +90,7 @@ impl ModuleGraph {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub fn add_edge(&mut self, from: ModuleId, to: ModuleId, kind: EdgeKind, specifier: String) -> EdgeId {
+    pub fn add_edge(&mut self, from: ModuleId, to: ModuleId, kind: EdgeKind, specifier: &str) -> EdgeId {
         // Deduplicate by (from, to, kind) — scan outgoing edges (typically <30)
         if let Some(&existing) = self.forward_adj[from.0 as usize]
             .iter()
@@ -107,7 +107,7 @@ impl ModuleGraph {
             from,
             to,
             kind,
-            specifier,
+            specifier: specifier.to_owned(),
         });
         self.forward_adj[from.0 as usize].push(id);
         id
@@ -194,9 +194,9 @@ mod tests {
         let b = g.add_module("b.ts".into(), 200, None);
 
         // Add same edge three times (simulating symlink-resolved duplicates)
-        g.add_edge(a, b, EdgeKind::Static, "./b".into());
-        g.add_edge(a, b, EdgeKind::Static, "./link-to-b".into());
-        g.add_edge(a, b, EdgeKind::Static, "./double-link".into());
+        g.add_edge(a, b, EdgeKind::Static, "./b");
+        g.add_edge(a, b, EdgeKind::Static, "./link-to-b");
+        g.add_edge(a, b, EdgeKind::Static, "./double-link");
 
         // Should have only one edge (deduped by from+to+kind)
         assert_eq!(g.edges.len(), 1, "duplicate edges should be deduped");
@@ -210,8 +210,8 @@ mod tests {
         let b = g.add_module("b.ts".into(), 200, None);
 
         // Static and Dynamic edges between same nodes should both exist
-        g.add_edge(a, b, EdgeKind::Static, "./b".into());
-        g.add_edge(a, b, EdgeKind::Dynamic, "./b".into());
+        g.add_edge(a, b, EdgeKind::Static, "./b");
+        g.add_edge(a, b, EdgeKind::Dynamic, "./b");
 
         assert_eq!(g.edges.len(), 2, "different edge kinds should not be deduped");
     }

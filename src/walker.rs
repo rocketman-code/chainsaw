@@ -157,15 +157,21 @@ pub fn build_graph(
         graph.add_module(fr.path.clone(), fr.size, fr.package.clone());
     }
 
-    // Second pass: add edges and collect diagnostics
-    for fr in &file_results {
+    // Second pass: add edges, collect diagnostics, and populate parse cache.
+    // Consumes file_results by value to avoid redundant clones.
+    for fr in file_results {
         let source_id = graph.path_to_id[&fr.path];
 
         if fr.unresolvable_dynamic > 0 {
             unresolvable_files.push((fr.path.clone(), fr.unresolvable_dynamic));
         }
 
-        for (raw_import, resolved_path) in &fr.imports {
+        // Separate imports into raw imports and resolved paths.
+        // Edge processing borrows from these; cache takes ownership.
+        let (raw_imports, resolved_paths): (Vec<RawImport>, Vec<Option<PathBuf>>) =
+            fr.imports.into_iter().unzip();
+
+        for (raw_import, resolved_path) in raw_imports.iter().zip(resolved_paths.iter()) {
             match resolved_path {
                 Some(p) => {
                     if let Some(&target_id) = graph.path_to_id.get(p) {
@@ -173,7 +179,7 @@ pub fn build_graph(
                             source_id,
                             target_id,
                             raw_import.kind,
-                            raw_import.specifier.clone(),
+                            &raw_import.specifier,
                         );
                     }
                     // Target not in graph = unparseable leaf (e.g. .json, .css)
@@ -188,7 +194,7 @@ pub fn build_graph(
                             source_id,
                             target_id,
                             raw_import.kind,
-                            raw_import.specifier.clone(),
+                            &raw_import.specifier,
                         );
                     }
                 }
@@ -197,17 +203,12 @@ pub fn build_graph(
                 }
             }
         }
-    }
 
-    // Populate parse cache from discovery results
-    for fr in &file_results {
         let result = crate::lang::ParseResult {
-            imports: fr.imports.iter().map(|(imp, _)| imp.clone()).collect(),
+            imports: raw_imports,
             unresolvable_dynamic: fr.unresolvable_dynamic,
         };
-        let resolved_paths: Vec<Option<PathBuf>> =
-            fr.imports.iter().map(|(_, p)| p.clone()).collect();
-        cache.insert(fr.path.clone(), result, resolved_paths);
+        cache.insert(fr.path, result, resolved_paths);
     }
 
     graph.compute_package_info();
