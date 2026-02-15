@@ -36,6 +36,18 @@ fn perf_registry_matches_benchmarks() {
             file
         );
     }
+
+    // Check 4: every .rs file under src/ appears in perf.toml
+    // (either with benchmarks or with an empty list as explicit exemption)
+    let src_files = collect_src_files(Path::new("src"));
+    for file in &src_files {
+        assert!(
+            registry_files.contains(file),
+            "Source file '{}' exists in src/ but is not registered in perf.toml. \
+             Add it with benchmarks if perf-sensitive, or with benchmarks = [] if exempt.",
+            file
+        );
+    }
 }
 
 fn extract_benchmark_names() -> HashSet<String> {
@@ -130,6 +142,22 @@ fn parse_perf_toml() -> (HashSet<String>, HashSet<String>) {
     }
 
     (benchmarks, files)
+}
+
+fn collect_src_files(dir: &Path) -> HashSet<String> {
+    let mut files = HashSet::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_src_files(&path));
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            // Normalize to forward-slash relative path matching perf.toml format
+            let rel = path.to_string_lossy().replace('\\', "/");
+            files.insert(rel);
+        }
+    }
+    files
 }
 
 fn extract_array_values(line: &str, set: &mut HashSet<String>) {
