@@ -1,7 +1,6 @@
 use crate::perf_judge::{self, BenchResult};
 use crate::registry::Registry;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -160,35 +159,17 @@ fn project_root() -> PathBuf {
 }
 
 fn changed_files(root: &Path) -> Vec<String> {
-    let mut files = BTreeMap::new();
-
-    // Staged changes
-    if let Ok(output) = Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
+    // Check what changed since origin/main (same view as pre-push hook)
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "origin/main...HEAD"])
         .current_dir(root)
         .output()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if !line.is_empty() {
-                files.insert(line.to_string(), ());
-            }
-        }
-    }
-
-    // Unstaged changes
-    if let Ok(output) = Command::new("git")
-        .args(["diff", "--name-only"])
-        .current_dir(root)
-        .output()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if !line.is_empty() {
-                files.insert(line.to_string(), ());
-            }
-        }
-    }
-
-    files.into_keys().collect()
+        .unwrap_or_else(|e| panic!("failed to run git: {e}"));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 fn commit_sha(root: &Path) -> String {
