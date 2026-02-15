@@ -8,7 +8,7 @@ use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
 use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
-use stats::{cv, mean, welch_t_test};
+use stats::{cv, mean, trim, trimmed_mean, welch_t_test};
 
 // --- Constants ---
 
@@ -21,6 +21,7 @@ const TARGET_MEASUREMENT_NS: u64 = 1_000_000; // 1ms
 const EARLY_STOP_P_REGRESSION: f64 = 0.001;
 const EARLY_STOP_P_CLEAN: f64 = 0.10;
 const REGRESSION_THRESHOLD: f64 = 0.02;
+const TRIM_FRACTION: f64 = 0.10;
 
 // --- Benchmark definition ---
 
@@ -95,10 +96,11 @@ fn sample(
             if samples.len() >= MIN_SAMPLES {
                 let per_iter: Vec<f64> =
                     samples.iter().map(|(b, t)| t / *b as f64).collect();
-                let p = welch_t_test(base, &per_iter);
-                let sample_mean = mean(&per_iter);
-                let baseline_mean = mean(base);
-                let change_pct = (sample_mean - baseline_mean) / baseline_mean;
+                let base_trimmed = trim(base, TRIM_FRACTION);
+                let sample_trimmed = trim(&per_iter, TRIM_FRACTION);
+                let p = welch_t_test(&base_trimmed, &sample_trimmed);
+                let change_pct =
+                    (mean(&sample_trimmed) - mean(&base_trimmed)) / mean(&base_trimmed);
 
                 if p < EARLY_STOP_P_REGRESSION && change_pct > REGRESSION_THRESHOLD {
                     return (samples, StopReason::Regression(change_pct, p));
@@ -116,10 +118,11 @@ fn sample(
             if let Some(base) = baseline {
                 let per_iter: Vec<f64> =
                     samples.iter().map(|(b, t)| t / *b as f64).collect();
-                let p = welch_t_test(base, &per_iter);
-                let sample_mean = mean(&per_iter);
-                let baseline_mean = mean(base);
-                let change_pct = (sample_mean - baseline_mean) / baseline_mean;
+                let base_trimmed = trim(base, TRIM_FRACTION);
+                let sample_trimmed = trim(&per_iter, TRIM_FRACTION);
+                let p = welch_t_test(&base_trimmed, &sample_trimmed);
+                let change_pct =
+                    (mean(&sample_trimmed) - mean(&base_trimmed)) / mean(&base_trimmed);
                 return (samples, StopReason::MaxSamples(change_pct, p));
             }
             return (samples, StopReason::NoBaseline);
@@ -492,7 +495,7 @@ fn main() {
 
         // Report
         let per_iter: Vec<f64> = samples.iter().map(|(b, t)| t / *b as f64).collect();
-        let avg = mean(&per_iter);
+        let avg = trimmed_mean(&per_iter, TRIM_FRACTION);
         let total = bench_start.elapsed();
 
         let reason_str = match stop_reason {
