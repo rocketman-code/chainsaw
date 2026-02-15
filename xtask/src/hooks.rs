@@ -27,31 +27,15 @@ pub fn pre_commit() -> i32 {
         return 0; // No perf-sensitive files staged
     }
 
-    let results_path = root.join("perf/results.json");
-    if !results_path.exists() {
-        blocked("Perf-sensitive files changed but no perf/results.json found.", &root);
+    // Pre-commit can't verify commit SHA (commit doesn't exist yet).
+    // Just check that an attestation exists — pre-push does the full verification.
+    let attestation_path = root.join(".git/perf-attestation.json");
+    if !attestation_path.exists() {
+        blocked("Perf-sensitive files staged but no attestation found.", &root);
         return 1;
     }
 
-    let json = match std::fs::read_to_string(&results_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("BLOCKED: failed to read perf/results.json: {e}");
-            return 1;
-        }
-    };
-
-    let staged_tree = staged_tree_sha(&root);
-    match verify_attestation(&json, &staged_tree, &required) {
-        Ok(()) => 0,
-        Err(reason) => {
-            eprintln!();
-            eprintln!("BLOCKED: {reason}");
-            eprintln!();
-            eprintln!("Re-run: cargo bench -- --baseline main && cargo xtask perf-validate");
-            1
-        }
-    }
+    0
 }
 
 /// Pre-push hook logic: blocks pushes without perf attestation.
@@ -74,30 +58,28 @@ pub fn pre_push() -> i32 {
         return 0;
     }
 
-    let results_path = root.join("perf/results.json");
-    if !results_path.exists() {
-        blocked("Perf-sensitive files changed but no perf/results.json found.", &root);
+    let attestation_path = root.join(".git/perf-attestation.json");
+    if !attestation_path.exists() {
+        blocked("Perf-sensitive files changed but no attestation found.", &root);
         return 1;
     }
 
-    let json = match std::fs::read_to_string(&results_path) {
+    let json = match std::fs::read_to_string(&attestation_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("BLOCKED: failed to read perf/results.json: {e}");
+            eprintln!("BLOCKED: failed to read .git/perf-attestation.json: {e}");
             return 1;
         }
     };
 
-    let head_tree = head_tree_sha(&root);
-    match verify_attestation(&json, &head_tree, &required) {
+    let head_commit = head_commit_sha(&root);
+    match verify_attestation(&json, &head_commit, &required) {
         Ok(()) => 0,
         Err(reason) => {
             eprintln!();
             eprintln!("BLOCKED: {reason}");
             eprintln!();
-            eprintln!("Re-run: cargo bench --bench benchmarks -- --baseline main");
-            eprintln!("  then: cargo xtask perf-validate");
-            eprintln!("  then: git add perf/results.json && git commit --amend --no-edit");
+            eprintln!("Re-run: cargo xtask perf-validate");
             1
         }
     }
@@ -153,16 +135,13 @@ fn is_our_hook(path: &Path) -> bool {
 }
 
 fn blocked(reason: &str, root: &Path) {
-    let _ = root; // available for future use
+    let _ = root;
     eprintln!();
     eprintln!("BLOCKED: {reason}");
     eprintln!();
-    eprintln!("Run:");
-    eprintln!("  cargo bench -- --baseline main");
-    eprintln!("  cargo xtask perf-validate");
-    eprintln!("  git add perf/results.json");
+    eprintln!("Run: cargo xtask perf-validate");
     eprintln!();
-    eprintln!("Or bypass with: git commit --no-verify");
+    eprintln!("Or bypass with: git push --no-verify");
 }
 
 fn project_root() -> PathBuf {
@@ -198,15 +177,6 @@ fn staged_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn staged_tree_sha(root: &Path) -> String {
-    let output = Command::new("git")
-        .args(["write-tree"])
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run git: {e}"));
-    String::from_utf8(output.stdout).unwrap().trim().to_string()
-}
-
 fn files_since_main(root: &Path) -> Vec<String> {
     let output = Command::new("git")
         .args(["diff", "--name-only", "origin/main...HEAD"])
@@ -220,9 +190,9 @@ fn files_since_main(root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn head_tree_sha(root: &Path) -> String {
+fn head_commit_sha(root: &Path) -> String {
     let output = Command::new("git")
-        .args(["rev-parse", "HEAD^{tree}"])
+        .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
         .unwrap_or_else(|e| panic!("failed to run git: {e}"));
@@ -233,11 +203,11 @@ fn head_tree_sha(root: &Path) -> String {
 }
 
 
-/// Verify that an attestation file is valid for the given tree SHA and required benchmarks.
+/// Verify that an attestation file is valid for the given commit SHA and required benchmarks.
 /// Returns Ok(()) if valid, Err(reason) if not.
 fn verify_attestation(
     json: &str,
-    expected_tree_sha: &str,
+    expected_commit_sha: &str,
     required_benchmarks: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     let parsed: serde_json::Value =
@@ -250,12 +220,12 @@ fn verify_attestation(
         return Err(format!("attestation verdict: {overall}"));
     }
 
-    let tree_sha = parsed["tree_sha"]
+    let commit_sha = parsed["commit_sha"]
         .as_str()
-        .ok_or("attestation missing 'tree_sha' field")?;
-    if tree_sha != expected_tree_sha {
+        .ok_or("attestation missing 'commit_sha' field")?;
+    if commit_sha != expected_commit_sha {
         return Err(format!(
-            "attestation tree SHA mismatch (attested: {tree_sha}, expected: {expected_tree_sha})"
+            "attestation commit SHA mismatch (attested: {commit_sha}, expected: {expected_commit_sha})"
         ));
     }
 
@@ -287,11 +257,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    fn make_attestation(tree_sha: &str, overall: &str, benchmarks: &[&str]) -> String {
+    fn make_attestation(commit_sha: &str, overall: &str, benchmarks: &[&str]) -> String {
         let bench_json: Vec<String> = benchmarks.iter().map(|b| format!("\"{}\"", b)).collect();
         format!(
-            r#"{{"tree_sha":"{}","timestamp":"2026-01-01T00:00:00Z","required_benchmarks":[{}],"overall":"{}"}}"#,
-            tree_sha,
+            r#"{{"commit_sha":"{}","timestamp":"2026-01-01T00:00:00Z","required_benchmarks":[{}],"overall":"{}"}}"#,
+            commit_sha,
             bench_json.join(","),
             overall,
         )
@@ -307,20 +277,19 @@ mod tests {
     }
 
     #[test]
-    fn verify_attestation_wrong_tree_sha() {
+    fn verify_attestation_wrong_commit_sha() {
         let required: BTreeSet<String> =
             ["ts_parse_file"].into_iter().map(String::from).collect();
         let json = make_attestation("abc123", "pass", &["ts_parse_file"]);
 
         let err = verify_attestation(&json, "def456", &required).unwrap_err();
-        assert!(err.contains("tree"), "expected tree SHA error, got: {err}");
+        assert!(err.contains("commit"), "expected commit SHA error, got: {err}");
     }
 
     #[test]
     fn verify_attestation_missing_benchmark() {
         let required: BTreeSet<String> =
             ["ts_parse_file", "build_graph/ts_cold"].into_iter().map(String::from).collect();
-        // Attestation only covers ts_parse_file, missing build_graph/ts_cold
         let json = make_attestation("abc123", "pass", &["ts_parse_file"]);
 
         let err = verify_attestation(&json, "abc123", &required).unwrap_err();
@@ -339,7 +308,6 @@ mod tests {
 
     #[test]
     fn verify_attestation_superset_is_ok() {
-        // Attestation covers MORE benchmarks than required — that's fine
         let required: BTreeSet<String> =
             ["ts_parse_file"].into_iter().map(String::from).collect();
         let json = make_attestation("abc123", "pass", &["ts_parse_file", "build_graph/ts_cold"]);

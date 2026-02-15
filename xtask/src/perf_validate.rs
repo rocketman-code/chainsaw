@@ -7,7 +7,7 @@ use std::process::Command;
 
 #[derive(Serialize)]
 struct Attestation {
-    tree_sha: String,
+    commit_sha: String,
     timestamp: String,
     required_benchmarks: Vec<String>,
     overall: String,
@@ -145,8 +145,8 @@ pub fn run() -> i32 {
         eprintln!("Failed to write attestation: {e}");
         return 1;
     }
-    println!("Attestation written to perf/results.json");
-    println!("Stage it: git add perf/results.json");
+    println!("Attestation written to .git/perf-attestation.json");
+    println!("You can now push.");
 
     0
 }
@@ -191,43 +191,28 @@ fn changed_files(root: &Path) -> Vec<String> {
     files.into_keys().collect()
 }
 
-fn tree_sha(root: &Path) -> String {
+fn commit_sha(root: &Path) -> String {
     let output = Command::new("git")
-        .args(["write-tree"])
+        .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
-        .expect("failed to run git write-tree");
-
-    let sha = String::from_utf8(output.stdout).unwrap().trim().to_string();
-    if sha.is_empty() {
-        // Fallback to HEAD
-        let output = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(root)
-            .output()
-            .expect("failed to run git rev-parse");
-        String::from_utf8(output.stdout).unwrap().trim().to_string()
-    } else {
-        sha
-    }
+        .expect("failed to run git rev-parse");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 fn write_attestation(
     root: &Path,
     required_benchmarks: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
-    let perf_dir = root.join("perf");
-    std::fs::create_dir_all(&perf_dir).map_err(|e| format!("mkdir perf/: {e}"))?;
-
     let attestation = Attestation {
-        tree_sha: tree_sha(root),
+        commit_sha: commit_sha(root),
         timestamp: now_utc(),
         required_benchmarks: required_benchmarks.iter().cloned().collect(),
         overall: "pass".to_string(),
     };
 
     let json = serde_json::to_string_pretty(&attestation).map_err(|e| format!("json: {e}"))?;
-    let path = perf_dir.join("results.json");
+    let path = root.join(".git/perf-attestation.json");
     std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))?;
 
     Ok(())
