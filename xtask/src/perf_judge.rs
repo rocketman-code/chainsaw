@@ -1,9 +1,10 @@
 use serde::Deserialize;
-use stats::{mean, welch_t_test};
+use stats::{mean, trim, welch_t_test};
 use std::path::Path;
 
 const REGRESSION_THRESHOLD: f64 = 0.02; // 2%
 const P_VALUE_THRESHOLD: f64 = 0.01;
+const TRIM_FRACTION: f64 = 0.10;
 
 #[derive(Deserialize)]
 struct CriterionSample {
@@ -74,10 +75,12 @@ pub fn judge(dirs: &[String], baseline_name: &str) -> Vec<BenchResult> {
             }
         };
 
-        let baseline_mean = mean(&baseline);
-        let candidate_mean = mean(&candidate);
+        let baseline_trimmed = trim(&baseline, TRIM_FRACTION);
+        let candidate_trimmed = trim(&candidate, TRIM_FRACTION);
+        let baseline_mean = mean(&baseline_trimmed);
+        let candidate_mean = mean(&candidate_trimmed);
         let change_pct = (candidate_mean - baseline_mean) / baseline_mean;
-        let p_value = welch_t_test(&baseline, &candidate);
+        let p_value = welch_t_test(&baseline_trimmed, &candidate_trimmed);
 
         let verdict = if candidate_mean < baseline_mean {
             Verdict::Faster
@@ -253,6 +256,53 @@ mod tests {
             .collect();
 
         assert_eq!(failed, vec!["slow_bench"]);
+    }
+
+    #[test]
+    fn outlier_skewed_baseline_does_not_false_positive() {
+        // Reproduce the ts_resolve bug: 50-sample baseline with fast outliers
+        // pulls raw mean from ~134ns to ~133ns, making normal 136ns candidate
+        // look like a 2.3% regression. With trimmed mean, both are ~134ns → clean.
+        let tmp = tempfile::tempdir().unwrap();
+        let bench = tmp.path().join("ts_resolve");
+
+        // Baseline: 45 normal + 5 fast outliers
+        let mut baseline = vec![134.0; 45];
+        baseline.extend_from_slice(&[123.0, 124.0, 125.0, 126.0, 127.0]);
+        write_raw_sample(&bench, "main", &baseline);
+
+        // Candidate: 5 normal samples
+        let candidate = vec![136.0; 5];
+        write_raw_sample(&bench, "new", &candidate);
+
+        let dirs = vec![bench.to_string_lossy().to_string()];
+        let results = judge(&dirs, "main");
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            !results[0].verdict.is_fail(),
+            "outlier-skewed baseline should not cause false positive, \
+             got change={:.1}%, p={:.4}",
+            results[0].change_pct * 100.0,
+            results[0].p_value,
+        );
+    }
+
+    /// Write raw per-iteration times directly (iters=1 for each).
+    fn write_raw_sample(dir: &std::path::Path, slot: &str, per_iter_ns: &[f64]) {
+        let slot_dir = dir.join(slot);
+        std::fs::create_dir_all(&slot_dir).unwrap();
+        let iters: Vec<f64> = vec![1.0; per_iter_ns.len()];
+        let json = serde_json::json!({
+            "sampling_mode": "Linear",
+            "iters": iters,
+            "times": per_iter_ns,
+        });
+        std::fs::write(
+            slot_dir.join("sample.json"),
+            serde_json::to_string(&json).unwrap(),
+        )
+        .unwrap();
     }
 
     /// Write a synthetic criterion sample.json to dir/{slot}/sample.json.
