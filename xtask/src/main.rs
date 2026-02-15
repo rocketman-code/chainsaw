@@ -1,4 +1,5 @@
 mod perf_judge;
+mod perf_validate;
 mod registry;
 
 use clap::{Parser, Subcommand};
@@ -18,6 +19,8 @@ enum Command {
         #[arg(required = true)]
         dirs: Vec<String>,
     },
+    /// Check perf-sensitive changes have passing benchmarks
+    PerfValidate,
 }
 
 fn main() {
@@ -25,6 +28,9 @@ fn main() {
     match cli.command {
         Command::PerfJudge { dirs } => {
             std::process::exit(perf_judge::run(&dirs));
+        }
+        Command::PerfValidate => {
+            std::process::exit(perf_validate::run());
         }
     }
 }
