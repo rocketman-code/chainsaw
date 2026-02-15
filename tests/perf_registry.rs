@@ -50,6 +50,52 @@ fn perf_registry_matches_benchmarks() {
     }
 }
 
+/// Benchmarks that do parallel stat() must run before benchmarks that read full
+/// file contents on the same tree. build_graph reads 3200+ files, warming the OS
+/// page cache. In save-baseline mode (50 iterations) this warming is heavy; in
+/// comparison mode (early-stop at 5) it's light. cache_load_validate_ts does
+/// stat() calls that are ~10% faster on warm pages, producing false positive
+/// regressions when comparing across modes.
+#[test]
+fn io_sensitive_benchmarks_run_before_io_heavy() {
+    let names = extract_benchmark_names_ordered();
+    let cache_pos = names
+        .iter()
+        .position(|n| n == "cache_load_validate_ts")
+        .expect("cache_load_validate_ts not found in benchmarks");
+    let build_graph_pos = names
+        .iter()
+        .position(|n| n.starts_with("build_graph/"))
+        .expect("no build_graph benchmark found");
+    assert!(
+        cache_pos < build_graph_pos,
+        "cache_load_validate_ts (position {}) must run before build_graph benchmarks \
+         (position {}) to avoid OS page cache contamination between modes",
+        cache_pos,
+        build_graph_pos,
+    );
+}
+
+fn extract_benchmark_names_ordered() -> Vec<String> {
+    let content = fs::read_to_string("benches/benchmarks.rs")
+        .expect("Failed to read benches/benchmarks.rs");
+
+    let mut names = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(start) = trimmed.find("name: \"") {
+            let start_idx = start + "name: \"".len();
+            if let Some(end_idx) = trimmed[start_idx..].find('"') {
+                let name = &trimmed[start_idx..start_idx + end_idx];
+                names.push(name.to_string());
+            }
+        }
+    }
+
+    names
+}
+
 fn extract_benchmark_names() -> HashSet<String> {
     let content = fs::read_to_string("benches/benchmarks.rs")
         .expect("Failed to read benches/benchmarks.rs");
