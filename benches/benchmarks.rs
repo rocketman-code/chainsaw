@@ -27,8 +27,9 @@ fn bench_ts_parse_file(c: &mut Criterion) {
         return;
     }
     let lang = TypeScriptSupport::new(&root);
+    let source = std::fs::read_to_string(&entry).unwrap();
     c.bench_function("ts_parse_file", |b| {
-        b.iter(|| lang.parse(black_box(&entry)))
+        b.iter(|| lang.parse(black_box(&entry), black_box(&source)))
     });
 }
 
@@ -40,8 +41,9 @@ fn bench_py_parse_file(c: &mut Criterion) {
         return;
     }
     let lang = PythonSupport::new(&root);
+    let source = std::fs::read_to_string(&entry).unwrap();
     c.bench_function("py_parse_file", |b| {
-        b.iter(|| lang.parse(black_box(&entry)))
+        b.iter(|| lang.parse(black_box(&entry), black_box(&source)))
     });
 }
 
@@ -123,7 +125,7 @@ fn bench_cache_load_validate(c: &mut Criterion) {
 
     c.bench_function("cache_load_validate_ts", |b| {
         b.iter(|| {
-            let loaded = ParseCache::load(black_box(&root));
+            let mut loaded = ParseCache::load(black_box(&root));
             let resolve_fn = |_: &str| false;
             loaded.try_load_graph(black_box(&entry), &resolve_fn)
         })
