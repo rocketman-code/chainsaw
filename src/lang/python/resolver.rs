@@ -289,13 +289,29 @@ fn scan_conftest_paths(root: &Path) -> Vec<PathBuf> {
 fn scan_site_packages_paths(site_packages: &[PathBuf]) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for sp in site_packages {
-        let mut init_files = Vec::new();
-        walk_init_files(sp, &mut init_files);
-        for file in &init_files {
-            let Ok(source) = std::fs::read_to_string(file) else {
+        // Only scan top-level package __init__.py files. Vendor dirs are
+        // set up in the top-level package's __init__.py, not in sub-packages.
+        // Recursing all of site-packages is too expensive.
+        let Ok(entries) = std::fs::read_dir(sp) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "__pycache__"
+                || name.ends_with(".dist-info")
+                || name.ends_with(".egg-info")
+            {
+                continue;
+            }
+            let init = path.join("__init__.py");
+            let Ok(source) = std::fs::read_to_string(&init) else {
                 continue;
             };
-            paths.extend(extract_sys_path_additions(file, &source));
+            paths.extend(extract_sys_path_additions(&init, &source));
         }
     }
     paths
@@ -327,25 +343,6 @@ fn walk_for_conftest(dir: &Path, results: &mut Vec<PathBuf>) {
                 walk_for_conftest(&path, results);
             }
         } else if name == "conftest.py" {
-            results.push(path);
-        }
-    }
-}
-
-fn walk_init_files(dir: &Path, results: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if path.is_dir() {
-            if name == "__pycache__" || name.ends_with(".dist-info") || name.ends_with(".egg-info")
-            {
-                continue;
-            }
-            walk_init_files(&path, results);
-        } else if name == "__init__.py" {
             results.push(path);
         }
     }
