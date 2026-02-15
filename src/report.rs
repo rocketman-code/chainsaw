@@ -68,15 +68,15 @@ impl StderrColor {
         Self { color: should_use_color(std::io::stderr().is_terminal(), no_color) }
     }
 
-    pub fn error(&self, s: &str) -> String {
+    pub fn error(self, s: &str) -> String {
         if self.color { format!("\x1b[1;91m{s}\x1b[0m") } else { s.to_string() }
     }
 
-    pub fn warning(&self, s: &str) -> String {
+    pub fn warning(self, s: &str) -> String {
         if self.color { format!("\x1b[1;93m{s}\x1b[0m") } else { s.to_string() }
     }
 
-    pub fn status(&self, s: &str) -> String {
+    pub fn status(self, s: &str) -> String {
         if self.color { format!("\x1b[1;92m{s}\x1b[0m") } else { s.to_string() }
     }
 }

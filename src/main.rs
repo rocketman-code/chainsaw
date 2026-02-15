@@ -177,27 +177,8 @@ fn run(command: Commands, no_color: bool, sc: &report::StderrColor) -> Result<()
         Commands::Trace(args) => run_trace(args, no_color, sc),
 
         Commands::Diff { a, b, limit } => {
-            let load_snapshot = |path: &Path| -> query::TraceSnapshot {
-                let data = std::fs::read_to_string(path).unwrap_or_else(|e| {
-                    eprintln!(
-                        "{} cannot read snapshot '{}': {e}",
-                        sc.error("error:"),
-                        path.display()
-                    );
-                    std::process::exit(1);
-                });
-                serde_json::from_str(&data).unwrap_or_else(|e| {
-                    eprintln!(
-                        "{} invalid snapshot '{}': {e}",
-                        sc.error("error:"),
-                        path.display()
-                    );
-                    std::process::exit(1);
-                })
-            };
-
-            let snap_a = load_snapshot(&a);
-            let snap_b = load_snapshot(&b);
+            let snap_a = load_snapshot(&a)?;
+            let snap_b = load_snapshot(&b)?;
             let diff_output = query::diff_snapshots(&snap_a, &snap_b);
             report::print_diff(
                 &diff_output,
@@ -271,7 +252,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
 
     // Save snapshot if requested (works with any mode)
     if let Some(ref save_path) = args.save {
-        save_snapshot(save_path, &result, &entry_rel, args.quiet, sc);
+        save_snapshot(save_path, &result, &entry_rel, args.quiet, sc)?;
     }
 
     // Handle --chain/--cut/--diff-from/--diff modes
@@ -284,7 +265,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
         return Ok(());
     }
     if let Some(ref snapshot_path) = args.diff_from {
-        handle_diff_from(snapshot_path, &result, &entry_rel, args.limit, no_color, sc);
+        handle_diff_from(snapshot_path, &result, &entry_rel, args.limit, no_color)?;
         return Ok(());
     }
     if let Some(ref diff_path) = args.diff {
@@ -371,17 +352,11 @@ fn save_snapshot(
     entry_rel: &str,
     quiet: bool,
     sc: &report::StderrColor,
-) {
+) -> Result<(), Error> {
     let snapshot = result.to_snapshot(entry_rel);
     let data = serde_json::to_string_pretty(&snapshot).unwrap();
-    std::fs::write(path, data).unwrap_or_else(|e| {
-        eprintln!(
-            "{} cannot write snapshot '{}': {e}",
-            sc.error("error:"),
-            path.display()
-        );
-        std::process::exit(1);
-    });
+    std::fs::write(path, &data)
+        .map_err(|e| Error::SnapshotWrite(path.to_path_buf(), e))?;
     if !quiet {
         eprintln!(
             "{} to {}",
@@ -389,6 +364,14 @@ fn save_snapshot(
             path.display()
         );
     }
+    Ok(())
+}
+
+fn load_snapshot(path: &Path) -> Result<query::TraceSnapshot, Error> {
+    let data = std::fs::read_to_string(path)
+        .map_err(|e| Error::SnapshotRead(path.to_path_buf(), e))?;
+    serde_json::from_str(&data)
+        .map_err(|e| Error::SnapshotParse(path.to_path_buf(), e.to_string()))
 }
 
 fn resolve_target(
@@ -548,25 +531,8 @@ fn handle_diff_from(
     entry_rel: &str,
     limit: i32,
     no_color: bool,
-    sc: &report::StderrColor,
-) {
-    let data = std::fs::read_to_string(snapshot_path).unwrap_or_else(|e| {
-        eprintln!(
-            "{} cannot read snapshot '{}': {e}",
-            sc.error("error:"),
-            snapshot_path.display()
-        );
-        std::process::exit(1);
-    });
-    let saved: query::TraceSnapshot =
-        serde_json::from_str(&data).unwrap_or_else(|e| {
-            eprintln!(
-                "{} invalid snapshot '{}': {e}",
-                sc.error("error:"),
-                snapshot_path.display()
-            );
-            std::process::exit(1);
-        });
+) -> Result<(), Error> {
+    let saved = load_snapshot(snapshot_path)?;
     let diff_output =
         query::diff_snapshots(&saved, &result.to_snapshot(entry_rel));
     report::print_diff(
@@ -576,6 +542,7 @@ fn handle_diff_from(
         limit,
         no_color,
     );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // private dispatch, called from one site
