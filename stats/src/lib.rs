@@ -12,6 +12,21 @@ pub fn cv(data: &[f64]) -> f64 {
     variance(data).sqrt() / mean(data)
 }
 
+/// Trim the bottom and top `fraction` of values from a sorted copy of data.
+/// Returns the middle portion. Used for robust statistics (Yuen's test).
+pub fn trim(data: &[f64], fraction: f64) -> Vec<f64> {
+    let mut sorted = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let k = (sorted.len() as f64 * fraction).floor() as usize;
+    sorted[k..sorted.len() - k].to_vec()
+}
+
+/// Trimmed mean: sort data, discard the bottom and top `fraction` of values,
+/// return the mean of the remaining middle portion. Robust to outliers.
+pub fn trimmed_mean(data: &[f64], fraction: f64) -> f64 {
+    mean(&trim(data, fraction))
+}
+
 /// Welch's t-test for two independent samples with unequal variance.
 /// Returns two-tailed p-value.
 pub fn welch_t_test(baseline: &[f64], candidate: &[f64]) -> f64 {
@@ -253,6 +268,43 @@ mod tests {
         assert!((ln_gamma(2.0)).abs() < 1e-10);
         assert!((ln_gamma(5.0) - 24.0_f64.ln()).abs() < 1e-10);
         assert!((ln_gamma(0.5) - 0.5 * std::f64::consts::PI.ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn outliers_do_not_skew_comparison() {
+        // Baseline: 50 samples, mostly ~134ns but with fast outliers pulling mean to ~132.
+        // Comparison: 5 samples at ~136ns (normal for this benchmark).
+        // Without trimming, change_pct = (136-132)/132 = 3.0% → false positive.
+        // With trimming, both means are ~134ns → change_pct ~1.5% → clean.
+        let mut baseline = vec![134.0; 45];
+        baseline.extend_from_slice(&[123.0, 124.0, 125.0, 126.0, 127.0]); // fast outliers
+        let comparison = vec![136.0; 5];
+
+        let base_mean = trimmed_mean(&baseline, 0.10);
+        let comp_mean = trimmed_mean(&comparison, 0.10);
+        let change_pct = (comp_mean - base_mean) / base_mean;
+
+        assert!(
+            change_pct < 0.02,
+            "trimmed comparison should be below 2% threshold, got {:.1}%",
+            change_pct * 100.0,
+        );
+    }
+
+    #[test]
+    fn trimmed_mean_removes_extremes() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 100.0];
+        // 10% trim: remove 1 from each end → [2,3,4,5,6,7,8,9] → mean = 5.5
+        let tm = trimmed_mean(&data, 0.10);
+        assert!((tm - 5.5).abs() < 1e-10, "expected 5.5, got {tm}");
+    }
+
+    #[test]
+    fn trimmed_mean_no_trim_on_small_samples() {
+        // 5 samples with 10% trim: floor(5*0.10) = 0, no trimming
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let tm = trimmed_mean(&data, 0.10);
+        assert!((tm - 3.0).abs() < 1e-10, "expected 3.0, got {tm}");
     }
 
     #[test]
