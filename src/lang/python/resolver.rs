@@ -17,9 +17,15 @@ impl PythonResolver {
             }
         }
 
+        let mut site_packages_dirs = discover_site_packages(root);
+        let pth_dirs: Vec<PathBuf> = site_packages_dirs
+            .iter()
+            .flat_map(|sp| parse_pth_files(sp))
+            .collect();
+        site_packages_dirs.extend(pth_dirs);
         Self {
             source_roots,
-            site_packages_dirs: discover_site_packages(root),
+            site_packages_dirs,
         }
     }
 
@@ -176,6 +182,37 @@ fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(site_packages) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("pth") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with("import ") {
+                continue;
+            }
+            let dir = if Path::new(line).is_absolute() {
+                PathBuf::from(line)
+            } else {
+                site_packages.join(line)
+            };
+            if dir.is_dir() {
+                paths.push(dir);
+            }
+        }
+    }
+    paths
 }
 
 #[cfg(test)]
@@ -483,5 +520,97 @@ mod tests {
         let root = tmp.path().canonicalize().unwrap();
         let result = discover_site_packages_from_cfg(&root);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pth_file_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sp = root.join("site-packages");
+        fs::create_dir_all(&sp).unwrap();
+
+        let extra = root.join("extra-src");
+        fs::create_dir_all(&extra).unwrap();
+
+        fs::write(sp.join("myproject.pth"), extra.to_string_lossy().as_ref()).unwrap();
+
+        let result = parse_pth_files(&sp);
+        assert_eq!(result, vec![extra]);
+    }
+
+    #[test]
+    fn pth_file_relative_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sp = root.join("site-packages");
+        let rel_dir = sp.join("my-subdir");
+        fs::create_dir_all(&rel_dir).unwrap();
+
+        fs::write(sp.join("thing.pth"), "my-subdir\n").unwrap();
+
+        let result = parse_pth_files(&sp);
+        assert_eq!(result, vec![rel_dir]);
+    }
+
+    #[test]
+    fn pth_file_skips_import_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sp = root.join("site-packages");
+        fs::create_dir_all(&sp).unwrap();
+
+        let extra = root.join("real-dir");
+        fs::create_dir_all(&extra).unwrap();
+
+        fs::write(
+            sp.join("mixed.pth"),
+            format!("import _virtualenv\n# comment\n{}\n", extra.display()),
+        )
+        .unwrap();
+
+        let result = parse_pth_files(&sp);
+        assert_eq!(result, vec![extra]);
+    }
+
+    #[test]
+    fn pth_file_skips_nonexistent_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sp = root.join("site-packages");
+        fs::create_dir_all(&sp).unwrap();
+
+        fs::write(sp.join("gone.pth"), "/nonexistent/path/here\n").unwrap();
+
+        let result = parse_pth_files(&sp);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn resolve_through_pth_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let sp = root.join("site-packages");
+        fs::create_dir_all(&sp).unwrap();
+
+        let ext_src = root.join("external-src");
+        let ext_pkg = ext_src.join("mypkg");
+        fs::create_dir_all(&ext_pkg).unwrap();
+        fs::write(ext_pkg.join("__init__.py"), "").unwrap();
+
+        // .pth file points to external-src
+        fs::write(sp.join("editable.pth"), ext_src.to_string_lossy().as_ref()).unwrap();
+
+        // Construct resolver WITH .pth scanning via helper
+        let mut site_packages_dirs = vec![sp.clone()];
+        let pth_dirs = parse_pth_files(&sp);
+        site_packages_dirs.extend(pth_dirs);
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs,
+        };
+        let result = resolver.resolve(&root, "mypkg");
+        assert_eq!(result, Some(ext_pkg.join("__init__.py")));
     }
 }
