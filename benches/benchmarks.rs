@@ -134,7 +134,10 @@ fn sample(
 
 fn save_samples(name: &str, slot: &str, samples: &[(u64, f64)]) {
     let dir = PathBuf::from("target/criterion").join(name).join(slot);
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("error: failed to create {}: {e}", dir.display());
+        std::process::exit(1);
+    }
 
     let iters: Vec<f64> = samples.iter().map(|(b, _)| *b as f64).collect();
     let times: Vec<f64> = samples.iter().map(|(_, t)| *t).collect();
@@ -144,7 +147,10 @@ fn save_samples(name: &str, slot: &str, samples: &[(u64, f64)]) {
         format_array(&iters),
         format_array(&times),
     );
-    std::fs::write(dir.join("sample.json"), json).unwrap();
+    if let Err(e) = std::fs::write(dir.join("sample.json"), json) {
+        eprintln!("error: failed to write {}/sample.json: {e}", dir.display());
+        std::process::exit(1);
+    }
 }
 
 fn format_array(data: &[f64]) -> String {
@@ -215,11 +221,17 @@ fn parse_args() -> Args {
         match args[i].as_str() {
             "--save-baseline" => {
                 i += 1;
-                save_baseline = Some(args[i].clone());
+                save_baseline = Some(args.get(i).unwrap_or_else(|| {
+                    eprintln!("error: --save-baseline requires a value");
+                    std::process::exit(1);
+                }).clone());
             }
             "--baseline" => {
                 i += 1;
-                baseline = Some(args[i].clone());
+                baseline = Some(args.get(i).unwrap_or_else(|| {
+                    eprintln!("error: --baseline requires a value");
+                    std::process::exit(1);
+                }).clone());
             }
             "--list" => list = true,
             "--bench" => {} // ignored (cargo passes this)
@@ -269,34 +281,34 @@ fn register_benchmarks() -> Vec<Benchmark> {
 
     // ts_parse_file
     let entry = ts.join("packages/wrangler/src/index.ts");
-    if entry.exists() {
-        let lang = TypeScriptSupport::new(&ts);
-        let source = std::fs::read_to_string(&entry).unwrap();
-        let entry = entry.clone();
-        benches.push(Benchmark {
-            name: "ts_parse_file",
-            run: Box::new(move || {
-                let _ = black_box(lang.parse(black_box(&entry), black_box(&source)));
-            }),
-        });
-    } else {
-        eprintln!("Skipping ts_parse_file: {} not found", ts.display());
+    match std::fs::read_to_string(&entry) {
+        Ok(source) => {
+            let lang = TypeScriptSupport::new(&ts);
+            let entry = entry.clone();
+            benches.push(Benchmark {
+                name: "ts_parse_file",
+                run: Box::new(move || {
+                    let _ = black_box(lang.parse(black_box(&entry), black_box(&source)));
+                }),
+            });
+        }
+        Err(_) => eprintln!("Skipping ts_parse_file: {} not found", entry.display()),
     }
 
     // py_parse_file
     let entry = py.join("awscli/__init__.py");
-    if entry.exists() {
-        let lang = PythonSupport::new(&py);
-        let source = std::fs::read_to_string(&entry).unwrap();
-        let entry = entry.clone();
-        benches.push(Benchmark {
-            name: "py_parse_file",
-            run: Box::new(move || {
-                let _ = black_box(lang.parse(black_box(&entry), black_box(&source)));
-            }),
-        });
-    } else {
-        eprintln!("Skipping py_parse_file: {} not found", py.display());
+    match std::fs::read_to_string(&entry) {
+        Ok(source) => {
+            let lang = PythonSupport::new(&py);
+            let entry = entry.clone();
+            benches.push(Benchmark {
+                name: "py_parse_file",
+                run: Box::new(move || {
+                    let _ = black_box(lang.parse(black_box(&entry), black_box(&source)));
+                }),
+            });
+        }
+        Err(_) => eprintln!("Skipping py_parse_file: {} not found", entry.display()),
     }
 
     // ts_resolve
