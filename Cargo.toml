@@ -17,7 +17,6 @@ oxc_ast = "0.113"
 oxc_syntax = "0.113"
 oxc_resolver = "11"
 rayon = "1"
-ignore = "0.4"
 bitcode = { version = "0.6", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
@@ -39,6 +38,7 @@ path = "src/main.rs"
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
+ignore = "0.4"
 
 [[bench]]
 name = "benchmarks"
