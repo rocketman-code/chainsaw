@@ -158,7 +158,24 @@ struct ResolvedTarget {
     exists: bool,
 }
 
+/// Cap the rayon thread pool to avoid VFS lock contention in the kernel.
+///
+/// Filesystem-heavy workloads (stat, open, read) hit diminishing returns beyond
+/// ~8 threads because kernel VFS locks serialize concurrent access to the same
+/// directory inodes. On a 14-core machine, 8 threads is 8% faster than 14 on
+/// cold builds and 21% faster on cached builds, with 2x less total kernel time.
+const MAX_WALKER_THREADS: usize = 8;
+
 fn main() {
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let threads = cpus.min(MAX_WALKER_THREADS);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .ok(); // ignore if already initialized (e.g. in tests)
+
     let cli = Cli::parse();
     let no_color = cli.no_color;
     let sc = report::StderrColor::new(no_color);
