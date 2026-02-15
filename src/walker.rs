@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -52,8 +53,16 @@ fn concurrent_discover(
                 loop {
                     if let Some(path) = queue.pop() {
                         spin_count = 0;
-                        // Stat + read file in one pass to capture mtime for cache
-                        let meta = match fs::metadata(&path) {
+                        // Open + fstat + read in one pass (3 syscalls, not 4)
+                        let mut file = match File::open(&path) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                eprintln!("warning: {}: {e}", path.display());
+                                active.fetch_sub(1, Ordering::AcqRel);
+                                continue;
+                            }
+                        };
+                        let meta = match file.metadata() {
                             Ok(m) => m,
                             Err(e) => {
                                 eprintln!("warning: {}: {e}", path.display());
@@ -65,14 +74,12 @@ fn concurrent_discover(
                             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                             .map(|d| d.as_nanos());
                         let size = meta.len();
-                        let source = match fs::read_to_string(&path) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                eprintln!("warning: {}: {e}", path.display());
-                                active.fetch_sub(1, Ordering::AcqRel);
-                                continue;
-                            }
-                        };
+                        let mut source = String::with_capacity(size as usize + 1);
+                        if let Err(e) = file.read_to_string(&mut source) {
+                            eprintln!("warning: {}: {e}", path.display());
+                            active.fetch_sub(1, Ordering::AcqRel);
+                            continue;
+                        }
 
                         let result = match lang.parse(&path, &source) {
                             Ok(r) => r,
