@@ -1,11 +1,250 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::collections::VecDeque;
+use std::hint::black_box;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use chainsaw::cache::ParseCache;
 use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
 use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
+use stats::{cv, mean, welch_t_test};
+
+// --- Constants ---
+
+const MIN_SAMPLES: usize = 5;
+const MAX_SAMPLES: usize = 50;
+const WARMUP_WINDOW: usize = 5;
+const WARMUP_CV_THRESHOLD: f64 = 0.02;
+const MAX_WARMUP_ITERATIONS: usize = 100;
+const TARGET_MEASUREMENT_NS: u64 = 1_000_000; // 1ms
+const EARLY_STOP_P_REGRESSION: f64 = 0.001;
+const EARLY_STOP_P_CLEAN: f64 = 0.10;
+const REGRESSION_THRESHOLD: f64 = 0.02;
+
+// --- Benchmark definition ---
+
+struct Benchmark {
+    name: &'static str,
+    run: Box<dyn Fn()>,
+}
+
+// --- Harness core ---
+
+fn calibrate(f: &dyn Fn()) -> u64 {
+    let mut batch = 1u64;
+    loop {
+        let start = Instant::now();
+        for _ in 0..batch {
+            black_box(f());
+        }
+        if start.elapsed() >= Duration::from_nanos(TARGET_MEASUREMENT_NS) {
+            return batch;
+        }
+        batch *= 2;
+    }
+}
+
+fn warmup(f: &dyn Fn(), batch: u64) -> usize {
+    let mut window: VecDeque<f64> = VecDeque::with_capacity(WARMUP_WINDOW + 1);
+    let mut count = 0;
+    loop {
+        let (_, elapsed) = measure(f, batch);
+        let per_iter = elapsed / batch as f64;
+        window.push_back(per_iter);
+        if window.len() > WARMUP_WINDOW {
+            window.pop_front();
+        }
+        count += 1;
+        if window.len() == WARMUP_WINDOW && cv(&Vec::from(window.clone())) < WARMUP_CV_THRESHOLD {
+            return count;
+        }
+        if count >= MAX_WARMUP_ITERATIONS {
+            return count;
+        }
+    }
+}
+
+fn measure(f: &dyn Fn(), batch: u64) -> (u64, f64) {
+    let start = Instant::now();
+    for _ in 0..batch {
+        black_box(f());
+    }
+    (batch, start.elapsed().as_nanos() as f64)
+}
+
+enum StopReason {
+    Regression(f64, f64), // (change_pct, p_value)
+    Faster(f64, f64),     // (change_pct, p_value)
+    Clean(f64, f64),      // (change_pct, p_value)
+    MaxSamples(f64, f64), // (change_pct, p_value)
+    NoBaseline,
+}
+
+fn sample(
+    f: &dyn Fn(),
+    batch: u64,
+    baseline: Option<&[f64]>,
+) -> (Vec<(u64, f64)>, StopReason) {
+    let mut samples: Vec<(u64, f64)> = Vec::new();
+
+    loop {
+        samples.push(measure(f, batch));
+
+        if let Some(base) = baseline {
+            if samples.len() >= MIN_SAMPLES {
+                let per_iter: Vec<f64> =
+                    samples.iter().map(|(b, t)| t / *b as f64).collect();
+                let p = welch_t_test(base, &per_iter);
+                let sample_mean = mean(&per_iter);
+                let baseline_mean = mean(base);
+                let change_pct = (sample_mean - baseline_mean) / baseline_mean;
+
+                if p < EARLY_STOP_P_REGRESSION && change_pct > REGRESSION_THRESHOLD {
+                    return (samples, StopReason::Regression(change_pct, p));
+                }
+                if p < EARLY_STOP_P_REGRESSION && change_pct < -REGRESSION_THRESHOLD {
+                    return (samples, StopReason::Faster(change_pct, p));
+                }
+                if p > EARLY_STOP_P_CLEAN {
+                    return (samples, StopReason::Clean(change_pct, p));
+                }
+            }
+        }
+
+        if samples.len() >= MAX_SAMPLES {
+            if let Some(base) = baseline {
+                let per_iter: Vec<f64> =
+                    samples.iter().map(|(b, t)| t / *b as f64).collect();
+                let p = welch_t_test(base, &per_iter);
+                let sample_mean = mean(&per_iter);
+                let baseline_mean = mean(base);
+                let change_pct = (sample_mean - baseline_mean) / baseline_mean;
+                return (samples, StopReason::MaxSamples(change_pct, p));
+            }
+            return (samples, StopReason::NoBaseline);
+        }
+    }
+}
+
+// --- I/O ---
+
+fn save_samples(name: &str, slot: &str, samples: &[(u64, f64)]) {
+    let dir = PathBuf::from("target/criterion").join(name).join(slot);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let iters: Vec<f64> = samples.iter().map(|(b, _)| *b as f64).collect();
+    let times: Vec<f64> = samples.iter().map(|(_, t)| *t).collect();
+
+    let json = format!(
+        "{{\"sampling_mode\":\"Linear\",\"iters\":{},\"times\":{}}}",
+        format_array(&iters),
+        format_array(&times),
+    );
+    std::fs::write(dir.join("sample.json"), json).unwrap();
+}
+
+fn format_array(data: &[f64]) -> String {
+    let mut s = String::from("[");
+    for (i, v) in data.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!("{v}"));
+    }
+    s.push(']');
+    s
+}
+
+fn load_baseline(name: &str, baseline_name: &str) -> Option<Vec<f64>> {
+    let path = PathBuf::from("target/criterion")
+        .join(name)
+        .join(baseline_name)
+        .join("sample.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+
+    #[derive(serde::Deserialize)]
+    struct Sample {
+        iters: Vec<f64>,
+        times: Vec<f64>,
+    }
+    let sample: Sample = serde_json::from_str(&content).ok()?;
+    Some(
+        sample
+            .iters
+            .iter()
+            .zip(sample.times.iter())
+            .map(|(i, t)| t / i)
+            .collect(),
+    )
+}
+
+fn format_time(nanos: f64) -> String {
+    if nanos < 1_000.0 {
+        format!("{nanos:.0}ns")
+    } else if nanos < 1_000_000.0 {
+        format!("{:.1}us", nanos / 1_000.0)
+    } else if nanos < 1_000_000_000.0 {
+        format!("{:.1}ms", nanos / 1_000_000.0)
+    } else {
+        format!("{:.2}s", nanos / 1_000_000_000.0)
+    }
+}
+
+// --- CLI ---
+
+struct Args {
+    save_baseline: Option<String>,
+    baseline: Option<String>,
+    list: bool,
+    filter: Option<String>,
+}
+
+fn parse_args() -> Args {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut save_baseline = None;
+    let mut baseline = None;
+    let mut list = false;
+    let mut filter_parts: Vec<String> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--save-baseline" => {
+                i += 1;
+                save_baseline = Some(args[i].clone());
+            }
+            "--baseline" => {
+                i += 1;
+                baseline = Some(args[i].clone());
+            }
+            "--list" => list = true,
+            "--bench" => {} // ignored (cargo passes this)
+            other if !other.starts_with('-') => filter_parts.push(other.to_string()),
+            _ => {} // ignore unknown flags (cargo bench passes extras)
+        }
+        i += 1;
+    }
+
+    let filter = if filter_parts.is_empty() {
+        None
+    } else {
+        Some(filter_parts.join("|"))
+    };
+
+    Args {
+        save_baseline,
+        baseline,
+        list,
+        filter,
+    }
+}
+
+fn matches_filter(name: &str, filter: &str) -> bool {
+    filter.split('|').any(|part| name.contains(part))
+}
+
+// --- Benchmark registration ---
 
 fn ts_root() -> PathBuf {
     std::env::var("TS_BENCH_ROOT")
@@ -19,167 +258,286 @@ fn py_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/Users/hlal/dev/aws/aws-cli"))
 }
 
-fn bench_ts_parse_file(c: &mut Criterion) {
-    let root = ts_root();
-    let entry = root.join("packages/wrangler/src/index.ts");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
+fn register_benchmarks() -> Vec<Benchmark> {
+    let mut benches = Vec::new();
+
+    let ts = ts_root();
+    let py = py_root();
+
+    // ts_parse_file
+    let entry = ts.join("packages/wrangler/src/index.ts");
+    if entry.exists() {
+        let lang = TypeScriptSupport::new(&ts);
+        let source = std::fs::read_to_string(&entry).unwrap();
+        let entry = entry.clone();
+        benches.push(Benchmark {
+            name: "ts_parse_file",
+            run: Box::new(move || {
+                let _ = black_box(lang.parse(black_box(&entry), black_box(&source)));
+            }),
+        });
+    } else {
+        eprintln!("Skipping ts_parse_file: {} not found", ts.display());
     }
-    let lang = TypeScriptSupport::new(&root);
-    let source = std::fs::read_to_string(&entry).unwrap();
-    c.bench_function("ts_parse_file", |b| {
-        b.iter(|| lang.parse(black_box(&entry), black_box(&source)))
-    });
+
+    // py_parse_file
+    let entry = py.join("awscli/__init__.py");
+    if entry.exists() {
+        let lang = PythonSupport::new(&py);
+        let source = std::fs::read_to_string(&entry).unwrap();
+        let entry = entry.clone();
+        benches.push(Benchmark {
+            name: "py_parse_file",
+            run: Box::new(move || {
+                let _ = black_box(lang.parse(black_box(&entry), black_box(&source)));
+            }),
+        });
+    } else {
+        eprintln!("Skipping py_parse_file: {} not found", py.display());
+    }
+
+    // ts_resolve
+    if ts.join("package.json").exists() {
+        let lang = TypeScriptSupport::new(&ts);
+        let from_dir = ts.join("packages/wrangler/src");
+        benches.push(Benchmark {
+            name: "ts_resolve",
+            run: Box::new(move || {
+                lang.resolve(black_box(&from_dir), black_box("./index"));
+            }),
+        });
+    } else {
+        eprintln!("Skipping ts_resolve: {} not found", ts.display());
+    }
+
+    // py_resolve
+    if py.join("pyproject.toml").exists() || py.join("setup.py").exists() {
+        let lang = PythonSupport::new(&py);
+        let root = py.clone();
+        benches.push(Benchmark {
+            name: "py_resolve",
+            run: Box::new(move || {
+                lang.resolve(black_box(&root), black_box("awscli"));
+            }),
+        });
+    } else {
+        eprintln!("Skipping py_resolve: {} not found", py.display());
+    }
+
+    // build_graph/ts_cold
+    let entry = ts.join("packages/wrangler/src/index.ts");
+    if entry.exists() {
+        let lang = TypeScriptSupport::new(&ts);
+        let root = ts.clone();
+        let entry = entry.clone();
+        benches.push(Benchmark {
+            name: "build_graph/ts_cold",
+            run: Box::new(move || {
+                let mut cache = ParseCache::new();
+                chainsaw::walker::build_graph(
+                    black_box(&entry),
+                    black_box(&root),
+                    &lang,
+                    &mut cache,
+                );
+            }),
+        });
+    }
+
+    // build_graph/py_cold
+    let entry = py.join("awscli/__init__.py");
+    if entry.exists() {
+        let lang = PythonSupport::new(&py);
+        let root = py.clone();
+        let entry = entry.clone();
+        benches.push(Benchmark {
+            name: "build_graph/py_cold",
+            run: Box::new(move || {
+                let mut cache = ParseCache::new();
+                chainsaw::walker::build_graph(
+                    black_box(&entry),
+                    black_box(&root),
+                    &lang,
+                    &mut cache,
+                );
+            }),
+        });
+    }
+
+    // cache_load_validate_ts
+    let entry = ts.join("packages/wrangler/src/index.ts");
+    if entry.exists() {
+        let lang = TypeScriptSupport::new(&ts);
+        let root = ts.clone();
+        let mut cache = ParseCache::new();
+        let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+        let unresolvable_count: usize =
+            result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
+        cache.save(
+            &root,
+            &entry,
+            &result.graph,
+            result.unresolved_specifiers,
+            unresolvable_count,
+        );
+        benches.push(Benchmark {
+            name: "cache_load_validate_ts",
+            run: Box::new(move || {
+                let mut loaded = ParseCache::load(black_box(&root));
+                let resolve_fn = |_: &str| false;
+                loaded.try_load_graph(black_box(&entry), &resolve_fn);
+            }),
+        });
+    }
+
+    // query_trace_ts
+    let entry = ts.join("packages/wrangler/src/index.ts");
+    if entry.exists() {
+        let lang = TypeScriptSupport::new(&ts);
+        let mut cache = ParseCache::new();
+        let result = chainsaw::walker::build_graph(&entry, &ts, &lang, &mut cache);
+        let graph = result.graph;
+        let entry_id = graph.path_to_id[&entry];
+        let opts = query::TraceOptions::default();
+        benches.push(Benchmark {
+            name: "query_trace_ts",
+            run: Box::new(move || {
+                black_box(query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)));
+            }),
+        });
+    }
+
+    // query_trace_py
+    let entry = py.join("awscli/__init__.py");
+    if entry.exists() {
+        let lang = PythonSupport::new(&py);
+        let mut cache = ParseCache::new();
+        let result = chainsaw::walker::build_graph(&entry, &py, &lang, &mut cache);
+        let graph = result.graph;
+        let entry_id = graph.path_to_id[&entry];
+        let opts = query::TraceOptions::default();
+        benches.push(Benchmark {
+            name: "query_trace_py",
+            run: Box::new(move || {
+                black_box(query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)));
+            }),
+        });
+    }
+
+    benches
 }
 
-fn bench_py_parse_file(c: &mut Criterion) {
-    let root = py_root();
-    let entry = root.join("awscli/__init__.py");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
+// --- Main ---
+
+fn main() {
+    let args = parse_args();
+    let benchmarks = register_benchmarks();
+
+    if args.list {
+        for bench in &benchmarks {
+            println!("{}: benchmark", bench.name);
+        }
         return;
     }
-    let lang = PythonSupport::new(&root);
-    let source = std::fs::read_to_string(&entry).unwrap();
-    c.bench_function("py_parse_file", |b| {
-        b.iter(|| lang.parse(black_box(&entry), black_box(&source)))
-    });
-}
 
-fn bench_ts_resolve(c: &mut Criterion) {
-    let root = ts_root();
-    if !root.join("package.json").exists() {
-        eprintln!("Skipping: {} not found", root.display());
+    let filtered: Vec<&Benchmark> = if let Some(ref filter) = args.filter {
+        benchmarks
+            .iter()
+            .filter(|b| matches_filter(b.name, filter))
+            .collect()
+    } else {
+        benchmarks.iter().collect()
+    };
+
+    if filtered.is_empty() {
+        eprintln!("No benchmarks matched the filter");
         return;
     }
-    let lang = TypeScriptSupport::new(&root);
-    let from_dir = root.join("packages/wrangler/src");
-    c.bench_function("ts_resolve", |b| {
-        b.iter(|| lang.resolve(black_box(&from_dir), black_box("./index")))
-    });
-}
 
-fn bench_py_resolve(c: &mut Criterion) {
-    let root = py_root();
-    if !root.join("pyproject.toml").exists() && !root.join("setup.py").exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
+    let slot = args.save_baseline.as_deref().unwrap_or("new");
+
+    let suite_start = Instant::now();
+
+    for bench in &filtered {
+        let bench_start = Instant::now();
+
+        // Calibrate
+        let cal_start = Instant::now();
+        let batch = calibrate(&bench.run);
+        let cal_time = cal_start.elapsed();
+
+        // Warmup
+        let warm_start = Instant::now();
+        let warm_iters = warmup(&bench.run, batch);
+        let warm_time = warm_start.elapsed();
+
+        // Load baseline if comparing
+        let baseline = args
+            .baseline
+            .as_ref()
+            .and_then(|name| load_baseline(bench.name, name));
+
+        // Sample
+        let sample_start = Instant::now();
+        let (samples, stop_reason) = sample(&bench.run, batch, baseline.as_deref());
+        let sample_time = sample_start.elapsed();
+
+        // Save
+        save_samples(bench.name, slot, &samples);
+
+        // Report
+        let per_iter: Vec<f64> = samples.iter().map(|(b, t)| t / *b as f64).collect();
+        let avg = mean(&per_iter);
+        let total = bench_start.elapsed();
+
+        let reason_str = match stop_reason {
+            StopReason::Regression(pct, p) => {
+                format!("REGRESSION +{:.1}%, p={:.4}", pct * 100.0, p)
+            }
+            StopReason::Faster(pct, p) => {
+                format!("faster {:.1}%, p={:.4}", pct * 100.0, p)
+            }
+            StopReason::Clean(pct, p) => {
+                format!("clean {:+.1}%, p={:.2}", pct * 100.0, p)
+            }
+            StopReason::MaxSamples(pct, p) => {
+                format!("max samples {:+.1}%, p={:.4}", pct * 100.0, p)
+            }
+            StopReason::NoBaseline => "baseline saved".to_string(),
+        };
+
+        eprintln!(
+            "{}: {} | calibrate {}ms, warmup {}ms ({} iters), {} samples in {}ms [{}]",
+            bench.name,
+            format_time(avg),
+            cal_time.as_millis(),
+            warm_time.as_millis(),
+            warm_iters,
+            samples.len(),
+            sample_time.as_millis(),
+            reason_str,
+        );
+
+        // Also report overhead ratio
+        let overhead_ms = cal_time.as_millis() + warm_time.as_millis();
+        let useful_ms = sample_time.as_millis();
+        if useful_ms > 0 {
+            eprintln!(
+                "  overhead: {}ms / {}ms useful = {:.0}%",
+                overhead_ms,
+                useful_ms,
+                overhead_ms as f64 / useful_ms as f64 * 100.0,
+            );
+        }
+        eprintln!(
+            "  total: {}ms",
+            total.as_millis(),
+        );
     }
-    let lang = PythonSupport::new(&root);
-    c.bench_function("py_resolve", |b| {
-        b.iter(|| lang.resolve(black_box(&root), black_box("awscli")))
-    });
+
+    eprintln!(
+        "\nSuite complete: {} benchmarks in {:.1}s",
+        filtered.len(),
+        suite_start.elapsed().as_secs_f64(),
+    );
 }
-
-fn bench_build_graph_ts(c: &mut Criterion) {
-    let root = ts_root();
-    let entry = root.join("packages/wrangler/src/index.ts");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
-    }
-    let lang = TypeScriptSupport::new(&root);
-    let mut group = c.benchmark_group("build_graph");
-    group.sample_size(10);
-    group.bench_function("ts_cold", |b| {
-        b.iter(|| {
-            let mut cache = ParseCache::new();
-            chainsaw::walker::build_graph(black_box(&entry), black_box(&root), &lang, &mut cache)
-        })
-    });
-    group.finish();
-}
-
-fn bench_build_graph_py(c: &mut Criterion) {
-    let root = py_root();
-    let entry = root.join("awscli/__init__.py");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
-    }
-    let lang = PythonSupport::new(&root);
-    let mut group = c.benchmark_group("build_graph");
-    group.sample_size(10);
-    group.bench_function("py_cold", |b| {
-        b.iter(|| {
-            let mut cache = ParseCache::new();
-            chainsaw::walker::build_graph(black_box(&entry), black_box(&root), &lang, &mut cache)
-        })
-    });
-    group.finish();
-}
-
-fn bench_cache_load_validate(c: &mut Criterion) {
-    let root = ts_root();
-    let entry = root.join("packages/wrangler/src/index.ts");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
-    }
-    let lang = TypeScriptSupport::new(&root);
-    let mut cache = ParseCache::new();
-    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
-    let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
-    cache.save(&root, &entry, &result.graph, result.unresolved_specifiers, unresolvable_count);
-
-    c.bench_function("cache_load_validate_ts", |b| {
-        b.iter(|| {
-            let mut loaded = ParseCache::load(black_box(&root));
-            let resolve_fn = |_: &str| false;
-            loaded.try_load_graph(black_box(&entry), &resolve_fn)
-        })
-    });
-}
-
-fn bench_query_trace_ts(c: &mut Criterion) {
-    let root = ts_root();
-    let entry = root.join("packages/wrangler/src/index.ts");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
-    }
-    let lang = TypeScriptSupport::new(&root);
-    let mut cache = ParseCache::new();
-    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
-    let graph = result.graph;
-    let entry_id = graph.path_to_id[&entry];
-    let opts = query::TraceOptions::default();
-
-    c.bench_function("query_trace_ts", |b| {
-        b.iter(|| query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)))
-    });
-}
-
-fn bench_query_trace_py(c: &mut Criterion) {
-    let root = py_root();
-    let entry = root.join("awscli/__init__.py");
-    if !entry.exists() {
-        eprintln!("Skipping: {} not found", root.display());
-        return;
-    }
-    let lang = PythonSupport::new(&root);
-    let mut cache = ParseCache::new();
-    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
-    let graph = result.graph;
-    let entry_id = graph.path_to_id[&entry];
-    let opts = query::TraceOptions::default();
-
-    c.bench_function("query_trace_py", |b| {
-        b.iter(|| query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)))
-    });
-}
-
-criterion_group!(
-    benches,
-    bench_ts_parse_file,
-    bench_py_parse_file,
-    bench_ts_resolve,
-    bench_py_resolve,
-    bench_build_graph_ts,
-    bench_build_graph_py,
-    bench_cache_load_validate,
-    bench_query_trace_ts,
-    bench_query_trace_py,
-);
-criterion_main!(benches);

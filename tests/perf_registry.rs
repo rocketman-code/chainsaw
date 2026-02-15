@@ -55,36 +55,16 @@ fn extract_benchmark_names() -> HashSet<String> {
         .expect("Failed to read benches/benchmarks.rs");
 
     let mut names = HashSet::new();
-    let mut current_group: Option<String> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Check for benchmark_group("group_name")
-        if let Some(group_start) = trimmed.find("benchmark_group(\"") {
-            let start_idx = group_start + "benchmark_group(\"".len();
+        // Match: name: "bench_name",
+        if let Some(start) = trimmed.find("name: \"") {
+            let start_idx = start + "name: \"".len();
             if let Some(end_idx) = trimmed[start_idx..].find('"') {
-                let group_name = &trimmed[start_idx..start_idx + end_idx];
-                current_group = Some(group_name.to_string());
-            }
-        }
-
-        // Check for group.finish() to end the group
-        if trimmed.contains("group.finish()") {
-            current_group = None;
-        }
-
-        // Check for bench_function("bench_name")
-        if let Some(func_start) = trimmed.find("bench_function(\"") {
-            let start_idx = func_start + "bench_function(\"".len();
-            if let Some(end_idx) = trimmed[start_idx..].find('"') {
-                let bench_name = &trimmed[start_idx..start_idx + end_idx];
-                let full_name = if let Some(ref group) = current_group {
-                    format!("{}/{}", group, bench_name)
-                } else {
-                    bench_name.to_string()
-                };
-                names.insert(full_name);
+                let name = &trimmed[start_idx..start_idx + end_idx];
+                names.insert(name.to_string());
             }
         }
     }
