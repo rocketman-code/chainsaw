@@ -18,12 +18,16 @@ impl PythonResolver {
             }
         }
 
+        source_roots.extend(scan_conftest_paths(root));
+
         let mut site_packages_dirs = discover_site_packages(root);
         let pth_dirs: Vec<PathBuf> = site_packages_dirs
             .iter()
             .flat_map(|sp| parse_pth_files(sp))
             .collect();
         site_packages_dirs.extend(pth_dirs);
+        let vendor_dirs = scan_site_packages_paths(&site_packages_dirs);
+        site_packages_dirs.extend(vendor_dirs);
         Self {
             source_roots,
             site_packages_dirs,
@@ -214,6 +218,84 @@ fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+const CONFTEST_SKIP_DIRS: &[&str] = &[
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    ".env",
+    "env",
+    "node_modules",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    ".eggs",
+];
+
+fn scan_conftest_paths(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    walk_for_file(root, "conftest.py", CONFTEST_SKIP_DIRS, &mut files);
+    let mut paths = Vec::new();
+    for file in &files {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        paths.extend(extract_sys_path_additions(file, &source));
+    }
+    paths
+}
+
+fn scan_site_packages_paths(site_packages: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for sp in site_packages {
+        let mut init_files = Vec::new();
+        walk_init_files(sp, &mut init_files);
+        for file in &init_files {
+            let Ok(source) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            paths.extend(extract_sys_path_additions(file, &source));
+        }
+    }
+    paths
+}
+
+fn walk_for_file(dir: &Path, target: &str, skip: &[&str], results: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if !skip.contains(&name) {
+                walk_for_file(&path, target, skip, results);
+            }
+        } else if name == target {
+            results.push(path);
+        }
+    }
+}
+
+fn walk_init_files(dir: &Path, results: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if name == "__pycache__" || name.ends_with(".dist-info") || name.ends_with(".egg-info")
+            {
+                continue;
+            }
+            walk_init_files(&path, results);
+        } else if name == "__init__.py" {
+            results.push(path);
+        }
+    }
 }
 
 fn extract_sys_path_additions(file_path: &Path, source: &str) -> Vec<PathBuf> {
@@ -886,6 +968,108 @@ sys.path.insert(0, test_lib)
         let source = fs::read_to_string(&init).unwrap();
         let result = extract_sys_path_additions(&init, &source);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sys_path_conftest_discovers_source_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Create test/lib with a package
+        let test_lib = root.join("test/lib");
+        let test_pkg = test_lib.join("testpkg");
+        fs::create_dir_all(&test_pkg).unwrap();
+        fs::write(test_pkg.join("__init__.py"), "").unwrap();
+
+        // Create conftest.py that adds test/lib
+        let conftest_dir = root.join("test/units");
+        fs::create_dir_all(&conftest_dir).unwrap();
+        fs::write(
+            conftest_dir.join("conftest.py"),
+            r#"
+import os, sys
+test_lib = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib')
+sys.path.insert(0, test_lib)
+"#,
+        )
+        .unwrap();
+
+        let paths = scan_conftest_paths(&root);
+        assert_eq!(paths, vec![test_lib]);
+    }
+
+    #[test]
+    fn sys_path_init_vendor_discovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let sp = root.join("site-packages");
+        let pkg = sp.join("mypkg");
+        let vendor = pkg.join("_vendor");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("somelib.py"), "x = 1").unwrap();
+        fs::write(
+            pkg.join("__init__.py"),
+            r#"
+import sys
+from pathlib import Path
+__vendor_site__ = (Path(__file__).parent / "_vendor").as_posix()
+sys.path.insert(0, __vendor_site__)
+"#,
+        )
+        .unwrap();
+
+        let paths = scan_site_packages_paths(&[sp]);
+        assert_eq!(paths, vec![vendor]);
+    }
+
+    #[test]
+    fn sys_path_vendor_fallback_for_missing_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let sp = root.join("site-packages");
+        let pkg = sp.join("mypkg");
+        let vendor = pkg.join("_vendor");
+        fs::create_dir_all(&vendor).unwrap();
+
+        // A package only in vendor (not in regular site-packages)
+        let vendor_only = vendor.join("vendoronly");
+        fs::create_dir_all(&vendor_only).unwrap();
+        fs::write(vendor_only.join("__init__.py"), "").unwrap();
+
+        // A real package in regular site-packages
+        let real_pkg = sp.join("realpkg");
+        fs::create_dir_all(&real_pkg).unwrap();
+        fs::write(real_pkg.join("__init__.py"), "").unwrap();
+
+        fs::write(
+            pkg.join("__init__.py"),
+            r#"
+import sys
+from pathlib import Path
+sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
+"#,
+        )
+        .unwrap();
+
+        // Build resolver: vendor dirs are appended after site-packages
+        let mut site_packages_dirs = vec![sp.clone()];
+        let vendor_dirs = scan_site_packages_paths(&site_packages_dirs);
+        site_packages_dirs.extend(vendor_dirs);
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs,
+        };
+
+        // Vendor-only package is found via fallback
+        let result = resolver.resolve(&root, "vendoronly");
+        assert_eq!(result, Some(vendor_only.join("__init__.py")));
+
+        // Real package resolves to regular site-packages, not vendor
+        let result = resolver.resolve(&root, "realpkg");
+        assert_eq!(result, Some(real_pkg.join("__init__.py")));
     }
 
     #[test]
