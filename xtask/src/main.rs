@@ -25,7 +25,14 @@ enum Command {
     /// Pre-commit hook: block commits to main without perf attestation
     PreCommit,
     /// Pre-push hook: block pushes without perf attestation
-    PrePush,
+    PrePush {
+        /// Remote name (passed by git, ignored)
+        #[arg(hide = true)]
+        remote: Option<String>,
+        /// Remote URL (passed by git, ignored)
+        #[arg(hide = true)]
+        url: Option<String>,
+    },
     /// Install git hooks
     InstallHooks,
 }
@@ -42,7 +49,7 @@ fn main() {
         Command::PreCommit => {
             std::process::exit(hooks::pre_commit());
         }
-        Command::PrePush => {
+        Command::PrePush { .. } => {
             std::process::exit(hooks::pre_push());
         }
         Command::InstallHooks => {
