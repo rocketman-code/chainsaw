@@ -210,7 +210,8 @@ fn resolver_conformance() {
 
     // Compare and categorize
     let mut matches = 0u32;
-    let mut both_none = 0u32;
+    let mut stdlib = 0u32;
+    let mut both_unresolved = 0u32;
     let mut oracle_errors = 0u32;
     let mut local_misses: Vec<(String, String, String)> = Vec::new();
     let mut third_party_misses: Vec<(String, String, String)> = Vec::new();
@@ -247,11 +248,11 @@ fn resolver_conformance() {
 
             // Both failed to resolve
             (None, None, _) | (None, _, "not_found" | "namespace") => {
-                both_none += 1;
+                both_unresolved += 1;
             }
 
             // Stdlib/builtin — we intentionally don't resolve these
-            (None, _, "stdlib" | "builtin") => both_none += 1,
+            (None, _, "stdlib" | "builtin") => stdlib += 1,
 
             // We missed, Python found locally — real bug
             (None, Some(path), "local") => {
@@ -286,7 +287,8 @@ fn resolver_conformance() {
     eprintln!("\n=== Conformance Report ===");
     eprintln!("Total imports:              {}", imports.len());
     eprintln!("Matches:                    {matches}");
-    eprintln!("Skipped (stdlib/unresolved): {both_none}");
+    eprintln!("Stdlib/builtin:             {stdlib}");
+    eprintln!("Both unresolved:            {both_unresolved}");
     eprintln!("Oracle crashes:             {oracle_crashes}");
     eprintln!("Oracle errors:              {oracle_errors}");
 
