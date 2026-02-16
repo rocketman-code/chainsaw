@@ -49,6 +49,16 @@ def get_package(file_path, source_roots):
             return '.'.join(package_parts)
     return None
 
+def classify_path(origin, project_root):
+    """Classify a resolved file path."""
+    origin = os.path.realpath(origin)
+    pr = os.path.realpath(project_root)
+    if origin.startswith(pr + os.sep):
+        return "local", origin
+    if "/site-packages/" in origin or "\\site-packages\\" in origin:
+        return "third_party", origin
+    return "stdlib", origin
+
 def classify(spec, project_root):
     if spec is None:
         return "not_found", None
@@ -59,13 +69,26 @@ def classify(spec, project_root):
     origin = spec.origin
     if origin in ("built-in", "frozen"):
         return "builtin", None
-    origin = os.path.realpath(origin)
-    pr = os.path.realpath(project_root)
-    if origin.startswith(pr + os.sep):
-        return "local", origin
-    if "/site-packages/" in origin or "\\site-packages\\" in origin:
-        return "third_party", origin
-    return "stdlib", origin
+    return classify_path(origin, project_root)
+
+def find_on_filesystem(full_name):
+    """Fallback when find_spec crashes: walk sys.path to find the module file.
+
+    find_spec imports parent packages, which can crash if they have missing
+    C extensions (e.g. cryptography._openssl). This bypasses the import
+    machinery entirely and just checks if the file exists.
+    """
+    rel = full_name.replace('.', os.sep)
+    for base in sys.path:
+        # Package: directory with __init__.py
+        init = os.path.join(base, rel, '__init__.py')
+        if os.path.isfile(init):
+            return init
+        # Module file
+        mod = os.path.join(base, rel + '.py')
+        if os.path.isfile(mod):
+            return mod
+    return None
 
 def main():
     data = json.load(sys.stdin)
@@ -109,7 +132,14 @@ def main():
             typ, resolved = classify(spec, project_root)
             results.append({"type": typ, "resolved": resolved})
         except Exception:
-            results.append({"type": "error", "resolved": None})
+            # find_spec crashed (e.g. missing C extension in parent package).
+            # Fall back to filesystem lookup so we can still compare results.
+            path = find_on_filesystem(full_name)
+            if path:
+                typ, resolved = classify_path(path, project_root)
+                results.append({"type": typ, "resolved": resolved})
+            else:
+                results.append({"type": "not_found", "resolved": None})
         finally:
             sys.path[:] = saved_path
     json.dump(results, sys.stdout)
@@ -236,11 +266,8 @@ fn resolver_conformance() {
                 ));
             }
 
-            // Oracle crashed (find_spec threw), we had an answer — not our fault
-            (Some(_), _, "error") => oracle_crashes += 1,
-
-            // Oracle crashed, we also had nothing
-            (None, _, "error") => oracle_crashes += 1,
+            // Oracle crashed (find_spec threw) — not our fault
+            (_, _, "error") => oracle_crashes += 1,
 
             // Unexpected category from oracle
             _ => {
