@@ -13,6 +13,21 @@ Trace transitive import weight in TypeScript/JavaScript and Python codebases. Gi
 - Color output in terminals, auto-disabled when piped
 - Three-tier disk cache — returns instantly on cache hit, re-parses only changed files on miss
 
+## Install
+
+Build from source (requires Rust 1.85+):
+
+```
+cargo install --path .
+```
+
+Or:
+
+```
+cargo build --release
+# binary at target/release/chainsaw
+```
+
 ## Usage
 
 ### Trace an entry point
@@ -187,21 +202,6 @@ Pipe to `jq`, feed to a dashboard, or use in CI. Combine with `--quiet` to suppr
 
 ```
 chainsaw trace src/index.ts --json --quiet | jq .static_weight_bytes
-```
-
-## Install
-
-Build from source (requires Rust 1.85+):
-
-```
-cargo install --path .
-```
-
-Or:
-
-```
-cargo build --release
-# binary at target/release/chainsaw
 ```
 
 ## Flags
