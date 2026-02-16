@@ -45,7 +45,7 @@ def get_package(file_path, source_roots):
                 package_parts.append(part)
             else:
                 break
-        if package_parts:
+        if package_parts and len(package_parts) == len(parts):
             return '.'.join(package_parts)
     return None
 
@@ -179,7 +179,13 @@ fn resolver_conformance() {
             Err(_) => continue,
         };
         if let Ok(parsed) = support.parse(file, &source) {
+            let in_package = has_package_chain(file, &source_roots);
             for imp in parsed.imports {
+                // Skip relative imports from files not in a valid package
+                // chain — Python can't resolve them and neither can the oracle.
+                if imp.specifier.starts_with('.') && !in_package {
+                    continue;
+                }
                 imports.push((file.clone(), imp.specifier));
             }
         }
@@ -334,7 +340,7 @@ fn resolver_conformance() {
 }
 
 fn find_python_files(root: &Path) -> Vec<PathBuf> {
-    let skip: Vec<String> = [
+    let skip = [
         "__pycache__",
         ".git",
         ".venv",
@@ -343,11 +349,9 @@ fn find_python_files(root: &Path) -> Vec<PathBuf> {
         ".pytest_cache",
         ".tox",
         ".eggs",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+    ];
 
+    let root_owned = root.to_path_buf();
     let mut files = Vec::new();
     let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
@@ -355,10 +359,14 @@ fn find_python_files(root: &Path) -> Vec<PathBuf> {
         .filter_entry(move |entry| {
             let path = entry.path();
             if path.is_dir() {
-                return !path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| skip.iter().any(|s| s == n));
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if skip.contains(&name) {
+                    return false;
+                }
+                // Skip nested git repos (embedded subprojects like pydantic-core/)
+                if path != root_owned && path.join(".git").exists() {
+                    return false;
+                }
             }
             true
         })
@@ -371,6 +379,30 @@ fn find_python_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+/// Check if a file sits inside a valid package chain from any source root.
+/// A valid chain means every directory between the source root and the file's
+/// parent has an `__init__.py`. Without this, Python can't derive a package
+/// name for relative imports, so they're untestable by the oracle.
+fn has_package_chain(file: &Path, source_roots: &[&Path]) -> bool {
+    let Some(parent) = file.parent() else {
+        return false;
+    };
+    'roots: for &root in source_roots {
+        let Ok(rel) = parent.strip_prefix(root) else {
+            continue;
+        };
+        let mut current = root.to_path_buf();
+        for component in rel.components() {
+            current.push(component);
+            if !current.join("__init__.py").exists() {
+                continue 'roots;
+            }
+        }
+        return true;
+    }
+    false
 }
 
 fn find_python(root: &Path) -> PathBuf {
