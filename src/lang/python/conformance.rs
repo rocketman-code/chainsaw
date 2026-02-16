@@ -12,6 +12,16 @@ import json
 import sys
 import os
 
+def resolve_relative(spec_name, package):
+    """Resolve a relative import to its absolute module name."""
+    dots = len(spec_name) - len(spec_name.lstrip('.'))
+    tail = spec_name[dots:]
+    parts = package.split('.')
+    if dots > len(parts):
+        return spec_name
+    base = '.'.join(parts[:len(parts) - dots + 1])
+    return base + '.' + tail if tail else base
+
 def get_package(file_path, source_roots):
     """Derive the dotted package name for a file from its path.
 
@@ -78,9 +88,24 @@ def main():
                 if package is None:
                     results.append({"type": "not_found", "resolved": None})
                     continue
-                spec = importlib.util.find_spec(spec_name, package=package)
+                full_name = resolve_relative(spec_name, package)
             else:
-                spec = importlib.util.find_spec(spec_name)
+                full_name = spec_name
+            # Detect sys.modules contamination: some __init__.py files
+            # replace themselves via sys.modules[name] = other_module
+            # (e.g. ansible.module_utils.distro). find_spec checks
+            # sys.modules first, so it would return the wrong spec.
+            # Only evict when we detect replacement (__name__ mismatch).
+            cached = sys.modules.get(full_name)
+            evicted = False
+            if cached is not None and getattr(cached, '__name__', full_name) != full_name:
+                del sys.modules[full_name]
+                evicted = True
+            try:
+                spec = importlib.util.find_spec(spec_name, package=package if spec_name.startswith('.') else None)
+            finally:
+                if evicted and cached is not None:
+                    sys.modules[full_name] = cached
             typ, resolved = classify(spec, project_root)
             results.append({"type": typ, "resolved": resolved})
         except Exception:
