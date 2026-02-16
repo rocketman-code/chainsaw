@@ -4,14 +4,14 @@ Trace transitive import weight in TypeScript/JavaScript and Python codebases. Gi
 
 ## Features
 
-- Traces static imports through source code and `node_modules` / `site-packages`
+- TypeScript/JavaScript: oxc parser, resolves through `node_modules` with pnpm/yarn/npm workspace support
+- Python: tree-sitter parser, resolves through source roots, virtualenv `site-packages`, `.pth` files, `sys.path` modifications, and C extensions
 - Classifies imports as static, dynamic, or type-only — only static imports count toward startup weight
 - Shows the shortest import chain to any dependency (`--chain`) and where to cut it (`--cut`)
-- Compares two entry points or before/after snapshots (`--diff`)
-- Works across monorepo package boundaries (pnpm, yarn, npm workspaces)
+- Compares two entry points or before/after snapshots (`--diff`, `diff` subcommand)
 - CI gating with `--max-weight` — fail builds when import weight exceeds a threshold
 - Color output in terminals, auto-disabled when piped
-- Two-tier disk cache — returns instantly on cache hit, re-parses only changed files on miss
+- Three-tier disk cache — returns instantly on cache hit, re-parses only changed files on miss
 
 ## Usage
 
@@ -40,6 +40,21 @@ Modules (sorted by exclusive weight):
 ```
 
 The "static transitive weight" is the total size of every file that gets loaded when this entry point is imported. The "shortest chain" under each heavy dependency shows exactly how it gets pulled in.
+
+### Trace a Python entry point
+
+```
+$ chainsaw trace manage.py
+
+manage.py
+Static transitive weight: 2.1 MB (608 modules)
+
+Heavy dependencies (static):
+  botocore                            1.2 MB  340 files
+    -> manage.py -> ... -> boto3 -> botocore
+```
+
+Python resolution follows the same rules as `importlib`: source roots, virtualenv site-packages, `.pth` files for editable installs, `sys.path` modifications in `conftest.py`, and C extension modules (`.so`/`.pyd`).
 
 ### Find all import chains to a package
 
@@ -121,6 +136,17 @@ Only in src/cli/main.ts (before):
 Shared: 2 packages
 ```
 
+### Compare two saved snapshots
+
+The `diff` subcommand compares two previously saved snapshots:
+
+```
+$ chainsaw trace src/index.ts --save before.json
+$ # ... make changes ...
+$ chainsaw trace src/index.ts --save after.json
+$ chainsaw diff before.json after.json
+```
+
 ### List packages
 
 ```
@@ -132,6 +158,8 @@ $ chainsaw packages src/index.ts
   zod                                       537 KB  76 files
   ...
 ```
+
+Use `--top` to control how many are shown (`--top 5`, `--top -1` for all, `--top 0` to hide).
 
 ### CI gating
 
@@ -179,13 +207,16 @@ $ # binary at target/release/chainsaw
 ## Flags
 
 ```
-chainsaw <COMMAND>
+chainsaw [OPTIONS] <COMMAND>
 
 Commands:
   trace        Trace the transitive import weight from an entry point
   diff         Compare two saved trace snapshots
   packages     List all third-party packages in the dependency graph
   completions  Generate shell completions
+
+Global options:
+      --no-color               Disable colored output
 ```
 
 ```
@@ -207,6 +238,23 @@ Options:
       --no-cache               Force full re-parse, ignoring cache
   -q, --quiet                  Suppress informational output (timing, warnings)
   -V, --version                Print version
+```
+
+```
+chainsaw diff [OPTIONS] <A> <B>
+
+Options:
+      --limit <N>              Max packages to show in diff output (-1 for all) [default: 10]
+```
+
+```
+chainsaw packages [OPTIONS] <ENTRY>
+
+Options:
+      --top <N>                Show top N packages by size (0 to hide, -1 for all) [default: 10]
+      --json                   Output machine-readable JSON
+      --no-cache               Force full re-parse, ignoring cache
+  -q, --quiet                  Suppress informational output (timing, warnings)
 ```
 
 ### Shell completions
