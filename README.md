@@ -20,7 +20,7 @@ Trace transitive import weight in TypeScript/JavaScript and Python codebases. Gi
 Point chainsaw at any `.ts`, `.tsx`, `.js`, `.jsx`, or `.py` file:
 
 ```
-$ chainsaw trace src/cli/main.ts
+chainsaw trace src/cli/main.ts
 
 src/cli/main.ts
 Static transitive weight: 17.7 MB (1870 modules)
@@ -44,7 +44,7 @@ The "static transitive weight" is the total size of every file that gets loaded 
 ### Trace a Python entry point
 
 ```
-$ chainsaw trace manage.py
+chainsaw trace manage.py
 
 manage.py
 Static transitive weight: 2.1 MB (608 modules)
@@ -61,7 +61,7 @@ Python resolution follows the same rules as `importlib`: source roots, virtualen
 If you want to understand *why* a package is in your dependency tree:
 
 ```
-$ chainsaw trace src/cli/main.ts --chain zod
+chainsaw trace src/cli/main.ts --chain zod
 
 3 chains to "zod" (3 hops):
 
@@ -75,7 +75,7 @@ $ chainsaw trace src/cli/main.ts --chain zod
 All three chains above pass through `src/config/schema.ts`. Chainsaw can find that for you:
 
 ```
-$ chainsaw trace src/cli/main.ts --cut zod
+chainsaw trace src/cli/main.ts --cut zod
 
 1 cut point to sever all 3 chains to "zod":
 
@@ -96,7 +96,7 @@ Each chain takes a different path — multiple fixes needed.
 See what's different between two parts of your codebase:
 
 ```
-$ chainsaw trace src/cli.ts --diff src/server.ts
+chainsaw trace src/cli.ts --diff src/server.ts
 
 Diff: src/cli.ts vs src/server.ts
 
@@ -121,9 +121,9 @@ In a monorepo, the diff target can be in a different package — chainsaw builds
 Save a snapshot, make changes, then compare:
 
 ```
-$ chainsaw trace src/cli/main.ts --save before.json
-$ # ... make changes ...
-$ chainsaw trace src/cli/main.ts --diff-from before.json
+chainsaw trace src/cli/main.ts --save before.json
+# ... make changes ...
+chainsaw trace src/cli/main.ts --diff-from before.json
 
 Diff: src/cli/main.ts vs src/cli/main.ts
 
@@ -141,16 +141,16 @@ Shared: 2 packages
 The `diff` subcommand compares two previously saved snapshots:
 
 ```
-$ chainsaw trace src/index.ts --save before.json
-$ # ... make changes ...
-$ chainsaw trace src/index.ts --save after.json
-$ chainsaw diff before.json after.json
+chainsaw trace src/index.ts --save before.json
+# ... make changes ...
+chainsaw trace src/index.ts --save after.json
+chainsaw diff before.json after.json
 ```
 
 ### List packages
 
 ```
-$ chainsaw packages src/index.ts
+chainsaw packages src/index.ts
 
 12 packages:
 
@@ -166,27 +166,27 @@ Use `--top` to control how many are shown (`--top 5`, `--top -1` for all, `--top
 Fail builds when import weight exceeds a threshold:
 
 ```
-$ chainsaw trace src/index.ts --max-weight 5MB --quiet --top 0 --top-modules 0
+chainsaw trace src/index.ts --max-weight 5MB --quiet --top 0 --top-modules 0
 src/index.ts
 Static transitive weight: 36.3 MB (4329 modules)
 
 error: static weight 36.3 MB exceeds threshold 5.0 MB
-$ echo $?
-1
 ```
+
+The exit code is `1` when the threshold is exceeded.
 
 Accepts human-readable sizes: `5MB`, `500KB`, `100B`, or bare byte counts.
 
 ### JSON output
 
 ```
-$ chainsaw trace src/index.ts --json
+chainsaw trace src/index.ts --json
 ```
 
 Pipe to `jq`, feed to a dashboard, or use in CI. Combine with `--quiet` to suppress stderr noise:
 
 ```
-$ chainsaw trace src/index.ts --json --quiet | jq .static_weight_bytes
+chainsaw trace src/index.ts --json --quiet | jq .static_weight_bytes
 ```
 
 ## Install
@@ -194,14 +194,14 @@ $ chainsaw trace src/index.ts --json --quiet | jq .static_weight_bytes
 Build from source (requires Rust 1.85+):
 
 ```
-$ cargo install --path .
+cargo install --path .
 ```
 
 Or:
 
 ```
-$ cargo build --release
-$ # binary at target/release/chainsaw
+cargo build --release
+# binary at target/release/chainsaw
 ```
 
 ## Flags
@@ -260,9 +260,9 @@ Options:
 ### Shell completions
 
 ```
-$ chainsaw completions zsh > ~/.zfunc/_chainsaw
-$ chainsaw completions bash > /etc/bash_completion.d/chainsaw
-$ chainsaw completions fish > ~/.config/fish/completions/chainsaw.fish
+chainsaw completions zsh > ~/.zfunc/_chainsaw
+chainsaw completions bash > /etc/bash_completion.d/chainsaw
+chainsaw completions fish > ~/.config/fish/completions/chainsaw.fish
 ```
 
 ## License
