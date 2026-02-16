@@ -21,6 +21,10 @@ impl PythonSupport {
             resolver: PythonResolver::new(root),
         }
     }
+
+    pub fn source_roots(&self) -> &[PathBuf] {
+        self.resolver.source_roots()
+    }
 }
 
 impl LanguageSupport for PythonSupport {

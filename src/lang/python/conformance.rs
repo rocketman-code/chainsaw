@@ -12,23 +12,32 @@ import json
 import sys
 import os
 
-def get_package(file_path, project_root):
-    """Derive the dotted package name for a file from its path."""
-    try:
-        rel = os.path.relpath(file_path, project_root)
-    except ValueError:
-        return None
-    parts = rel.replace(os.sep, '/').split('/')
-    parts = parts[:-1]
-    package_parts = []
-    current = project_root
-    for part in parts:
-        current = os.path.join(current, part)
-        if os.path.exists(os.path.join(current, '__init__.py')):
-            package_parts.append(part)
-        else:
-            break
-    return '.'.join(package_parts) if package_parts else None
+def get_package(file_path, source_roots):
+    """Derive the dotted package name for a file from its path.
+
+    Tries each source root to find one where the file sits inside a
+    chain of directories with __init__.py files (i.e. a proper package).
+    """
+    for root in source_roots:
+        try:
+            rel = os.path.relpath(file_path, root)
+        except ValueError:
+            continue
+        if rel.startswith('..'):
+            continue
+        parts = rel.replace(os.sep, '/').split('/')
+        parts = parts[:-1]
+        package_parts = []
+        current = root
+        for part in parts:
+            current = os.path.join(current, part)
+            if os.path.exists(os.path.join(current, '__init__.py')):
+                package_parts.append(part)
+            else:
+                break
+        if package_parts:
+            return '.'.join(package_parts)
+    return None
 
 def classify(spec, project_root):
     if spec is None:
@@ -51,21 +60,21 @@ def classify(spec, project_root):
 def main():
     data = json.load(sys.stdin)
     project_root = data['project_root']
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    source_roots = data.get('source_roots', [project_root])
+    for root in source_roots:
+        if root not in sys.path:
+            sys.path.insert(0, root)
     results = []
     for item in data['imports']:
         # Save sys.path before each find_spec call. find_spec internally
         # __import__s parent packages, which can execute __init__.py that
         # modifies sys.path (e.g. poetry-core injecting _vendor/).
         # Restoring sys.path ensures modifications don't leak across calls.
-        # We leave sys.modules alone: restoring it forces reimports (slow,
-        # and some packages like ansible crash on re-import).
         saved_path = sys.path[:]
         try:
             spec_name = item['specifier']
             if spec_name.startswith('.'):
-                package = get_package(item['file'], project_root)
+                package = get_package(item['file'], source_roots)
                 if package is None:
                     results.append({"type": "not_found", "resolved": None})
                     continue
@@ -107,6 +116,7 @@ fn resolver_conformance() {
     let files = find_python_files(&root);
 
     // Parse and collect all (file, specifier) pairs
+    let source_roots: Vec<&Path> = support.source_roots().iter().map(|p| p.as_path()).collect();
     let mut imports: Vec<(PathBuf, String)> = Vec::new();
     for file in &files {
         let source = match std::fs::read_to_string(file) {
@@ -134,7 +144,7 @@ fn resolver_conformance() {
         .collect();
 
     // Ask Python oracle
-    let python_results = run_oracle(&root, &imports);
+    let python_results = run_oracle(&root, &source_roots, &imports);
     assert_eq!(imports.len(), python_results.len(), "oracle returned wrong count");
 
     // Compare and categorize
@@ -319,9 +329,14 @@ fn find_python(root: &Path) -> PathBuf {
     PathBuf::from("python3")
 }
 
-fn run_oracle(root: &Path, imports: &[(PathBuf, String)]) -> Vec<OracleResult> {
+fn run_oracle(
+    root: &Path,
+    source_roots: &[&Path],
+    imports: &[(PathBuf, String)],
+) -> Vec<OracleResult> {
     let input = serde_json::json!({
         "project_root": root.to_string_lossy(),
+        "source_roots": source_roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
         "imports": imports.iter().map(|(file, spec)| {
             serde_json::json!({
                 "file": file.to_string_lossy(),
@@ -336,7 +351,7 @@ fn run_oracle(root: &Path, imports: &[(PathBuf, String)]) -> Vec<OracleResult> {
     tmp.flush().unwrap();
 
     let python = find_python(root);
-    let input_file = std::fs::File::open(tmp.path()).unwrap();
+    let input_file = tmp.reopen().expect("failed to reopen temp file");
     let output = std::process::Command::new(&python)
         .args(["-c", ORACLE_SCRIPT])
         .stdin(input_file)

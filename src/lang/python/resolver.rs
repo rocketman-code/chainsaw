@@ -42,6 +42,10 @@ impl PythonResolver {
         }
     }
 
+    pub fn source_roots(&self) -> &[PathBuf] {
+        &self.source_roots
+    }
+
     pub fn site_packages(&self) -> &[PathBuf] {
         &self.site_packages_dirs
     }
