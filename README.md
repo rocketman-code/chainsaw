@@ -15,17 +15,10 @@ Trace transitive import weight in TypeScript/JavaScript and Python codebases. Gi
 
 ## Install
 
-Build from source (requires Rust 1.85+):
+Requires Rust 1.85+. This installs the binary to `~/.cargo/bin/`, which is on your PATH if you installed Rust via [rustup](https://rustup.rs):
 
 ```
 cargo install --path .
-```
-
-Or:
-
-```
-cargo build --release
-# binary at target/release/chainsaw
 ```
 
 ## Usage
