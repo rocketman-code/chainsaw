@@ -67,16 +67,28 @@ const LOCKFILES: &[&str] = &[
     "requirements.txt",
 ];
 
+/// Find lockfile sentinels by walking up from `root` until a directory
+/// containing a lockfile is found. This handles workspace layouts where
+/// the lockfile lives at the workspace root, not the package root.
 fn find_dep_sentinels(root: &Path) -> Vec<(PathBuf, u128)> {
-    LOCKFILES
-        .iter()
-        .filter_map(|name| {
-            let path = root.join(name);
-            let meta = fs::metadata(&path).ok()?;
-            let mtime = mtime_of(&meta)?;
-            Some((path, mtime))
-        })
-        .collect()
+    let mut dir = root.to_path_buf();
+    loop {
+        let sentinels: Vec<(PathBuf, u128)> = LOCKFILES
+            .iter()
+            .filter_map(|name| {
+                let path = dir.join(name);
+                let meta = fs::metadata(&path).ok()?;
+                let mtime = mtime_of(&meta)?;
+                Some((path, mtime))
+            })
+            .collect();
+        if !sentinels.is_empty() {
+            return sentinels;
+        }
+        if !dir.pop() {
+            return Vec::new();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -667,6 +679,38 @@ mod tests {
                 matches!(result, GraphCacheResult::Hit { .. }),
                 "expected Hit after incremental save"
             );
+        }
+    }
+
+    #[test]
+    fn lockfile_sentinel_walks_up_to_workspace_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().canonicalize().unwrap();
+        let pkg = workspace.join("packages").join("app");
+        fs::create_dir_all(&pkg).unwrap();
+
+        // Lockfile at workspace root, not package root
+        fs::write(workspace.join("pnpm-lock.yaml"), "lockfileVersion: 9").unwrap();
+        let file = pkg.join("entry.ts");
+        fs::write(&file, "x = 1").unwrap();
+
+        let mut graph = ModuleGraph::new();
+        let size = fs::metadata(&file).unwrap().len();
+        graph.add_module(file.clone(), size, None);
+
+        // Save with package root — should find pnpm-lock.yaml via walk-up
+        let mut cache = ParseCache::new();
+        drop(cache.save(&pkg, &file, &graph, vec![], 0));
+
+        // First load: sentinels should be present → no resave needed
+        let mut loaded = ParseCache::load(&pkg);
+        let resolve_fn = |_: &str| false;
+        let result = loaded.try_load_graph(&file, &resolve_fn);
+        match result {
+            GraphCacheResult::Hit { needs_resave, .. } => {
+                assert!(!needs_resave, "sentinels should match — no resave needed");
+            }
+            other => panic!("expected Hit, got {other:?}"),
         }
     }
 }
