@@ -1,5 +1,5 @@
 # Perf registry: maps source files to criterion benchmarks.
-# Every .rs file under src/ MUST appear here — the integration test enforces this.
+# Every .rs file in the workspace MUST appear here — the integration test enforces this.
 # Files with benchmarks = [] are explicitly exempt (not perf-sensitive).
 # When a listed file changes, the corresponding benchmarks must show no regression.
 #
@@ -38,7 +38,23 @@ benchmarks = ["cache_load_validate_ts"]
 files = ["src/graph.rs"]
 benchmarks = ["build_graph/ts_cold", "build_graph/py_cold", "query_trace_ts", "query_trace_py"]
 
-# Exempt: not perf-sensitive (CLI, formatting, re-exports, error types, test-only)
+# Benchmark infrastructure: changes affect measurement or verdicts for all benchmarks
+[[entry]]
+files = [
+    "benches/benchmarks.rs",
+    "benches/corpus.rs",
+    "stats/src/lib.rs",
+    "xtask/src/perf_judge.rs",
+]
+benchmarks = [
+    "ts_parse_file", "py_parse_file",
+    "ts_resolve", "py_resolve",
+    "cache_load_validate_ts",
+    "build_graph/ts_cold", "build_graph/py_cold",
+    "query_trace_ts", "query_trace_py",
+]
+
+# Exempt: not perf-sensitive (CLI, formatting, re-exports, error types, test-only, orchestration)
 [[entry]]
 files = [
     "src/main.rs",
@@ -49,5 +65,11 @@ files = [
     "src/lang/typescript/mod.rs",
     "src/lang/python/mod.rs",
     "src/lang/python/conformance.rs",
+    "benches/corpus_test.rs",
+    "xtask/src/main.rs",
+    "xtask/src/hooks.rs",
+    "xtask/src/registry.rs",
+    "xtask/src/perf_validate.rs",
+    "tests/perf_registry.rs",
 ]
 benchmarks = []
