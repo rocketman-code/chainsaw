@@ -64,40 +64,77 @@ impl PythonResolver {
     }
 
     fn resolve_absolute(&self, specifier: &str) -> Option<PathBuf> {
-        let rel_path = specifier.replace('.', "/");
+        let components: Vec<&str> = specifier.split('.').collect();
+        let all_roots: Vec<&Path> = self
+            .source_roots
+            .iter()
+            .chain(&self.site_packages_dirs)
+            .map(|p| p.as_path())
+            .collect();
 
-        // For dotted imports, a regular package (__init__.py) in one root
-        // prevents resolution from later roots. Python locks __path__ to
-        // the first root that has __init__.py for the top-level component.
-        if let Some(slash) = rel_path.find('/') {
-            let top = &rel_path[..slash];
-            for root in self.source_roots.iter().chain(&self.site_packages_dirs) {
-                if root.join(top).join("__init__.py").exists() {
-                    return self.resolve_in_root(root, &rel_path);
+        // For dotted imports, resolve component-by-component matching Python's
+        // recursive import algorithm (_find_and_load_unlocked in _bootstrap.py).
+        // A regular package (__init__.py) at any level locks __path__ to that
+        // single root — subsequent components can only be found there.
+        if components.len() > 1 {
+            let mut valid_roots = all_roots.clone();
+            for (i, _) in components.iter().enumerate().take(components.len() - 1) {
+                let prefix: String = components[..=i].join("/");
+                let mut locked_root = None;
+                for &root in &valid_roots {
+                    if root.join(&prefix).join("__init__.py").exists() {
+                        locked_root = Some(root);
+                        break;
+                    }
+                }
+                if let Some(root) = locked_root {
+                    valid_roots = vec![root];
+                } else {
+                    // Namespace: keep only roots where the directory exists
+                    valid_roots.retain(|root| root.join(&prefix).is_dir());
+                }
+                if valid_roots.is_empty() {
+                    return None;
                 }
             }
+
+            // Resolve the leaf module within the narrowed set of roots
+            let rel_path = components.join("/");
+            for &root in &valid_roots {
+                if let Some(path) = self.resolve_in_root(root, &rel_path) {
+                    return Some(path);
+                }
+            }
+            // Namespace package for the full path
+            for &root in &valid_roots {
+                let pkg_dir = root.join(&rel_path);
+                if pkg_dir.is_dir() {
+                    return Some(pkg_dir);
+                }
+            }
+            return None;
         }
 
-        // Non-dotted or no regular package found (namespace): check all roots.
+        // Non-dotted: check all roots in order.
+        let rel_path = &components[0];
 
         // Pass 1: source roots — regular packages and .py modules
         for root in &self.source_roots {
-            if let Some(path) = try_resolve_module(root, specifier, false) {
+            if let Some(path) = try_resolve_module(root, rel_path, false) {
                 return Some(path);
             }
         }
 
         // Pass 2: site-packages — __init__.py, then C extension, then .py
-        // Python's per-directory loader order: extension (.so) before source (.py)
         for sp in &self.site_packages_dirs {
-            if let Some(path) = self.resolve_in_root(sp, &rel_path) {
+            if let Some(path) = self.resolve_in_root(sp, rel_path) {
                 return Some(path);
             }
         }
 
         // Pass 3: namespace packages (directories without __init__.py)
-        for root in self.source_roots.iter().chain(&self.site_packages_dirs) {
-            let pkg_dir = root.join(&rel_path);
+        for root in &all_roots {
+            let pkg_dir = root.join(rel_path);
             if pkg_dir.is_dir() {
                 return Some(pkg_dir);
             }
@@ -1138,6 +1175,40 @@ mod tests {
         // foo.extras only exists in site-packages, but foo is owned by source root
         let result = resolver.resolve(&root, "foo.extras");
         assert_eq!(result, None, "should not leak sub-modules from shadowed site-packages");
+    }
+
+    #[test]
+    fn intermediate_regular_package_prevents_cross_root_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // root_a: ns/ (namespace) -> pkg/ (regular, has __init__.py) -> mod.py
+        let root_a = root.join("root_a");
+        let ns_pkg_a = root_a.join("ns/pkg");
+        fs::create_dir_all(&ns_pkg_a).unwrap();
+        fs::write(ns_pkg_a.join("__init__.py"), "").unwrap();
+        fs::write(ns_pkg_a.join("mod.py"), "x = 1").unwrap();
+
+        // root_b: ns/ (namespace) -> pkg/ (no __init__.py) -> other.py
+        let root_b = root.join("root_b");
+        let ns_pkg_b = root_b.join("ns/pkg");
+        fs::create_dir_all(&ns_pkg_b).unwrap();
+        fs::write(ns_pkg_b.join("other.py"), "x = 1").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root_a, root_b],
+            site_packages_dirs: vec![],
+        };
+
+        // ns is namespace (merged across roots)
+        // ns.pkg is regular in root_a (locks __path__)
+        // ns.pkg.other only in root_b — Python would NOT find it
+        let result = resolver.resolve(&root, "ns.pkg.other");
+        assert_eq!(result, None, "intermediate regular package should lock resolution");
+
+        // ns.pkg.mod is in root_a — should still be found
+        let result = resolver.resolve(&root, "ns.pkg.mod");
+        assert_eq!(result, Some(root.join("root_a/ns/pkg/mod.py")));
     }
 
     #[test]
