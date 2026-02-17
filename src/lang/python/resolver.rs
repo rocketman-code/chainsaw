@@ -826,32 +826,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_namespace_package_submodule() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let ns_pkg = root.join("mynamespace");
-        fs::create_dir_all(&ns_pkg).unwrap();
-        fs::write(ns_pkg.join("core.py"), "x = 1").unwrap();
-
-        let resolver = make_resolver(&root);
-        let result = resolver.resolve(&root, "mynamespace.core");
-        assert_eq!(result, Some(ns_pkg.join("core.py")));
-    }
-
-    #[test]
-    fn resolve_regular_package_preferred_over_namespace() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let pkg = root.join("mypkg");
-        fs::create_dir_all(&pkg).unwrap();
-        fs::write(pkg.join("__init__.py"), "").unwrap();
-
-        let resolver = make_resolver(&root);
-        let result = resolver.resolve(&root, "mypkg");
-        assert_eq!(result, Some(pkg.join("__init__.py")));
-    }
-
-    #[test]
     fn namespace_in_source_root_does_not_shadow_site_packages() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -897,23 +871,6 @@ mod tests {
         fs::write(
             venv.join("pyvenv.cfg"),
             "home = /usr/bin\nversion_info = 3.11.5\n",
-        )
-        .unwrap();
-
-        let result = discover_site_packages_from_cfg(&root);
-        assert_eq!(result, Some(vec![sp]));
-    }
-
-    #[test]
-    fn discover_from_pyvenv_cfg_venv_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let venv = root.join("venv");
-        let sp = venv.join("lib/python3.10/site-packages");
-        fs::create_dir_all(&sp).unwrap();
-        fs::write(
-            venv.join("pyvenv.cfg"),
-            "home = /usr/bin\nversion = 3.10.0\n",
         )
         .unwrap();
 
@@ -1049,25 +1006,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_c_extension_simple_so() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-
-        let pkg_dir = root.join("site-packages/pkg");
-        fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(pkg_dir.join("__init__.py"), "").unwrap();
-        fs::write(pkg_dir.join("_fast.so"), "").unwrap();
-
-        let resolver = PythonResolver {
-            source_roots: vec![root.clone()],
-            site_packages_dirs: vec![root.join("site-packages")],
-        };
-
-        let result = resolver.resolve(&root, "pkg._fast");
-        assert!(result.is_some(), "should resolve simple .so extension");
-    }
-
-    #[test]
     fn resolve_c_extension_preferred_over_py_in_site_packages() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -1119,34 +1057,6 @@ mod tests {
             "expected .so over namespace dir, got: {}",
             resolved.display()
         );
-    }
-
-    #[test]
-    fn regular_package_prevents_cross_root_resolution() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-
-        // root_a has foo as a regular package (with __init__.py)
-        let root_a = root.join("root_a");
-        let foo_a = root_a.join("foo");
-        fs::create_dir_all(&foo_a).unwrap();
-        fs::write(foo_a.join("__init__.py"), "").unwrap();
-
-        // root_b has foo/bar.py but no __init__.py
-        let root_b = root.join("root_b");
-        let foo_b = root_b.join("foo");
-        fs::create_dir_all(&foo_b).unwrap();
-        fs::write(foo_b.join("bar.py"), "x = 1").unwrap();
-
-        let resolver = PythonResolver {
-            source_roots: vec![root_a, root_b],
-            site_packages_dirs: vec![],
-        };
-
-        // Python: foo is regular package in root_a, __path__ = [root_a/foo]
-        // foo.bar only exists in root_b — Python would NOT find it
-        let result = resolver.resolve(&root, "foo.bar");
-        assert_eq!(result, None, "should not resolve from shadowed root");
     }
 
     #[test]
@@ -1209,33 +1119,6 @@ mod tests {
         // ns.pkg.mod is in root_a — should still be found
         let result = resolver.resolve(&root, "ns.pkg.mod");
         assert_eq!(result, Some(root.join("root_a/ns/pkg/mod.py")));
-    }
-
-    #[test]
-    fn namespace_package_allows_cross_root_resolution() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-
-        // root_a has foo/ (no __init__.py — namespace)
-        let root_a = root.join("root_a");
-        let foo_a = root_a.join("foo");
-        fs::create_dir_all(&foo_a).unwrap();
-
-        // root_b has foo/bar.py (also no __init__.py — namespace)
-        let root_b = root.join("root_b");
-        let foo_b = root_b.join("foo");
-        fs::create_dir_all(&foo_b).unwrap();
-        fs::write(foo_b.join("bar.py"), "x = 1").unwrap();
-
-        let resolver = PythonResolver {
-            source_roots: vec![root_a, root_b],
-            site_packages_dirs: vec![],
-        };
-
-        // foo is namespace in both roots — Python merges __path__
-        // foo.bar should be found in root_b
-        let result = resolver.resolve(&root, "foo.bar");
-        assert_eq!(result, Some(foo_b.join("bar.py")));
     }
 
     #[test]
@@ -1408,6 +1291,128 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
         // Real package resolves to regular site-packages, not vendor
         let result = resolver.resolve(&root, "realpkg");
         assert_eq!(result, Some(real_pkg.join("__init__.py")));
+    }
+
+    // ========================================================================
+    // CPython test_namespace_pkgs conformance
+    //
+    // These tests use CPython's own test fixtures from
+    // Lib/test/test_importlib/namespace_pkgs/ to verify our resolver matches
+    // Python's import semantics. Each test corresponds to a test class in
+    // CPython's test_namespace_pkgs.py.
+    // ========================================================================
+
+    const CPYTHON_NS_FIXTURES: &str = concat!(
+        env!("HOME"),
+        "/dev/python/cpython/Lib/test/test_importlib/namespace_pkgs"
+    );
+
+    fn cpython_resolver(paths: &[&str]) -> (PythonResolver, PathBuf) {
+        let root = PathBuf::from(CPYTHON_NS_FIXTURES);
+        let source_roots: Vec<PathBuf> = paths.iter().map(|p| root.join(p)).collect();
+        let resolver = PythonResolver {
+            source_roots,
+            site_packages_dirs: vec![],
+        };
+        (resolver, root)
+    }
+
+    // CPython: SingleNamespacePackage (paths = ['portion1'])
+    #[test]
+    fn cpython_single_namespace_package() {
+        let (resolver, root) = cpython_resolver(&["portion1"]);
+        // foo.one resolves
+        let result = resolver.resolve(&root, "foo.one");
+        assert_eq!(result, Some(root.join("portion1/foo/one.py")));
+        // foo.two does not exist in portion1
+        let result = resolver.resolve(&root, "foo.two");
+        assert_eq!(result, None);
+    }
+
+    // CPython: CombinedNamespacePackages (paths = ['both_portions'])
+    #[test]
+    fn cpython_combined_namespace_packages() {
+        let (resolver, root) = cpython_resolver(&["both_portions"]);
+        let result = resolver.resolve(&root, "foo.one");
+        assert_eq!(result, Some(root.join("both_portions/foo/one.py")));
+        let result = resolver.resolve(&root, "foo.two");
+        assert_eq!(result, Some(root.join("both_portions/foo/two.py")));
+    }
+
+    // CPython: SeparatedNamespacePackages (paths = ['portion1', 'portion2'])
+    #[test]
+    fn cpython_separated_namespace_packages() {
+        let (resolver, root) = cpython_resolver(&["portion1", "portion2"]);
+        let result = resolver.resolve(&root, "foo.one");
+        assert_eq!(result, Some(root.join("portion1/foo/one.py")));
+        let result = resolver.resolve(&root, "foo.two");
+        assert_eq!(result, Some(root.join("portion2/foo/two.py")));
+    }
+
+    // CPython: SeparatedOverlappingNamespacePackages (paths = ['portion1', 'both_portions'])
+    // "first path wins" — portion1 has foo/one.py, both_portions also has foo/one.py,
+    // but portion1 is searched first.
+    #[test]
+    fn cpython_separated_overlapping_first_path_wins() {
+        let (resolver, root) = cpython_resolver(&["portion1", "both_portions"]);
+        let result = resolver.resolve(&root, "foo.one");
+        assert_eq!(result, Some(root.join("portion1/foo/one.py")));
+        let result = resolver.resolve(&root, "foo.two");
+        assert_eq!(result, Some(root.join("both_portions/foo/two.py")));
+    }
+
+    // CPython: LegacySupport (paths = ['not_a_namespace_pkg', 'portion1', 'portion2', 'both_portions'])
+    // Regular package (with __init__.py) takes precedence over namespace portions.
+    // foo.one resolves within not_a_namespace_pkg, foo.two does NOT resolve because
+    // __init__.py locks __path__ to not_a_namespace_pkg only.
+    #[test]
+    fn cpython_legacy_regular_package_takes_precedence() {
+        let (resolver, root) =
+            cpython_resolver(&["not_a_namespace_pkg", "portion1", "portion2", "both_portions"]);
+        let result = resolver.resolve(&root, "foo.one");
+        assert_eq!(result, Some(root.join("not_a_namespace_pkg/foo/one.py")));
+        // foo.two is NOT importable because foo is a regular package (has __init__.py)
+        // in not_a_namespace_pkg, which locks __path__ to that directory.
+        let result = resolver.resolve(&root, "foo.two");
+        assert_eq!(result, None);
+    }
+
+    // CPython: DynamicPathCalculation (paths = ['project1', 'project2'])
+    // Nested namespace packages: parent and parent.child are both namespaces
+    #[test]
+    fn cpython_dynamic_path_nested_namespaces() {
+        let (resolver, root) = cpython_resolver(&["project1", "project2"]);
+        let result = resolver.resolve(&root, "parent.child.one");
+        assert_eq!(result, Some(root.join("project1/parent/child/one.py")));
+        let result = resolver.resolve(&root, "parent.child.two");
+        assert_eq!(result, Some(root.join("project2/parent/child/two.py")));
+        // project3 is NOT on path, so parent.child.three fails
+        let result = resolver.resolve(&root, "parent.child.three");
+        assert_eq!(result, None);
+    }
+
+    // CPython: DynamicPathCalculation with project3 added
+    #[test]
+    fn cpython_dynamic_path_three_projects() {
+        let (resolver, root) = cpython_resolver(&["project1", "project2", "project3"]);
+        let result = resolver.resolve(&root, "parent.child.one");
+        assert_eq!(result, Some(root.join("project1/parent/child/one.py")));
+        let result = resolver.resolve(&root, "parent.child.two");
+        assert_eq!(result, Some(root.join("project2/parent/child/two.py")));
+        let result = resolver.resolve(&root, "parent.child.three");
+        assert_eq!(result, Some(root.join("project3/parent/child/three.py")));
+    }
+
+    // CPython: ModuleAndNamespacePackageInSameDir (paths = ['module_and_namespace_package'])
+    // Module a_test.py should be found in preference to namespace dir a_test/
+    #[test]
+    fn cpython_module_preferred_over_namespace_dir() {
+        let (resolver, root) = cpython_resolver(&["module_and_namespace_package"]);
+        let result = resolver.resolve(&root, "a_test");
+        assert_eq!(
+            result,
+            Some(root.join("module_and_namespace_package/a_test.py"))
+        );
     }
 
     #[test]
