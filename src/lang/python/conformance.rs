@@ -233,7 +233,9 @@ fn resolver_conformance() {
             // Both resolved — check if they agree
             (Some(our_path), Some(their_path), _) => {
                 let our_canon = our_path.canonicalize().unwrap_or_else(|_| our_path.clone());
-                let their_canon = PathBuf::from(their_path);
+                let their_canon = PathBuf::from(their_path)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(their_path));
                 if our_canon == their_canon {
                     matches += 1;
                 } else {
