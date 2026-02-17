@@ -11,6 +11,7 @@ license = "MIT"
 repository = "https://github.com/RocketMan234/chainsaw"
 keywords = ["typescript", "python", "imports", "dependencies"]
 categories = ["command-line-utilities", "development-tools"]
+autobenches = false
 
 [dependencies]
 oxc_parser = "0.113"
@@ -46,6 +47,10 @@ ignore = "0.4"
 [[bench]]
 name = "benchmarks"
 harness = false
+
+[[bench]]
+name = "corpus_test"
+harness = true
 
 [profile.release]
 lto = true
