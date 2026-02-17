@@ -96,13 +96,28 @@ impl PythonResolver {
                 if valid_roots.is_empty() {
                     return None;
                 }
+                if valid_roots.len() == 1 {
+                    break;
+                }
             }
 
-            // Resolve the leaf module within the narrowed set of roots
+            // Resolve the leaf: mirror non-dotted pass structure.
+            // Source roots: __init__.py and .py only (no C extension probing).
+            // Site-packages: __init__.py, C extension, then .py.
             let rel_path = components.join("/");
             for &root in &valid_roots {
-                if let Some(path) = self.resolve_in_root(root, &rel_path) {
-                    return Some(path);
+                let pkg_init = root.join(&rel_path).join("__init__.py");
+                if pkg_init.exists() {
+                    return Some(pkg_init);
+                }
+                if self.site_packages_dirs.iter().any(|sp| sp.as_path() == root) {
+                    if let Some(ext) = find_c_extension(root, &rel_path) {
+                        return Some(ext);
+                    }
+                }
+                let module_file = root.join(format!("{rel_path}.py"));
+                if module_file.exists() {
+                    return Some(module_file);
                 }
             }
             // Namespace package for the full path
@@ -1056,6 +1071,31 @@ mod tests {
             resolved.to_string_lossy().contains("cmod.cpython-312-darwin.so"),
             "expected .so over namespace dir, got: {}",
             resolved.display()
+        );
+    }
+
+    #[test]
+    fn dotted_import_source_root_skips_c_extension_probing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Source root has a package with a C extension .so (no .py)
+        let pkg = root.join("mypkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(pkg.join("ext.cpython-312-darwin.so"), "").unwrap();
+
+        let resolver = make_resolver(&root);
+
+        // Non-dotted "ext" in source root: try_resolve_module skips C extensions
+        let non_dotted = resolver.resolve(&root, "ext");
+        assert_eq!(non_dotted, None, "non-dotted should not find C ext in source root");
+
+        // Dotted "mypkg.ext" should be consistent: also skip C extensions
+        let dotted = resolver.resolve(&root, "mypkg.ext");
+        assert_eq!(
+            dotted, None,
+            "dotted import should not probe C extensions in source roots"
         );
     }
 
