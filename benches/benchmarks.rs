@@ -45,7 +45,8 @@ fn calibrate(f: &dyn Fn()) -> u64 {
     loop {
         let start = Instant::now();
         for _ in 0..batch {
-            black_box(f());
+            f();
+            black_box(());
         }
         if start.elapsed() >= Duration::from_nanos(TARGET_MEASUREMENT_NS) {
             return batch;
@@ -65,7 +66,7 @@ fn warmup(f: &dyn Fn(), batch: u64) -> usize {
             window.pop_front();
         }
         count += 1;
-        if window.len() == WARMUP_WINDOW && cv(&Vec::from(window.clone())) < WARMUP_CV_THRESHOLD {
+        if window.len() == WARMUP_WINDOW && cv(window.make_contiguous()) < WARMUP_CV_THRESHOLD {
             return count;
         }
         if count >= MAX_WARMUP_ITERATIONS {
@@ -77,7 +78,8 @@ fn warmup(f: &dyn Fn(), batch: u64) -> usize {
 fn measure(f: &dyn Fn(), batch: u64) -> (u64, f64) {
     let start = Instant::now();
     for _ in 0..batch {
-        black_box(f());
+        f();
+        black_box(());
     }
     (batch, start.elapsed().as_nanos() as f64)
 }
