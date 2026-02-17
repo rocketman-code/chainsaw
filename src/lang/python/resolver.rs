@@ -66,6 +66,20 @@ impl PythonResolver {
     fn resolve_absolute(&self, specifier: &str) -> Option<PathBuf> {
         let rel_path = specifier.replace('.', "/");
 
+        // For dotted imports, a regular package (__init__.py) in one root
+        // prevents resolution from later roots. Python locks __path__ to
+        // the first root that has __init__.py for the top-level component.
+        if let Some(slash) = rel_path.find('/') {
+            let top = &rel_path[..slash];
+            for root in self.source_roots.iter().chain(&self.site_packages_dirs) {
+                if root.join(top).join("__init__.py").exists() {
+                    return self.resolve_in_root(root, &rel_path);
+                }
+            }
+        }
+
+        // Non-dotted or no regular package found (namespace): check all roots.
+
         // Pass 1: source roots — regular packages and .py modules
         for root in &self.source_roots {
             if let Some(path) = try_resolve_module(root, specifier, false) {
@@ -76,19 +90,8 @@ impl PythonResolver {
         // Pass 2: site-packages — __init__.py, then C extension, then .py
         // Python's per-directory loader order: extension (.so) before source (.py)
         for sp in &self.site_packages_dirs {
-            let pkg_init = sp.join(&rel_path).join("__init__.py");
-            if pkg_init.exists() {
-                return Some(pkg_init);
-            }
-            // C extension before .py (Python's loader order).
-            // For dotted names, read_dir targets the package subdir (small).
-            // For non-dotted, read_dir targets site-packages (larger but cached).
-            if let Some(ext) = find_c_extension(sp, &rel_path) {
-                return Some(ext);
-            }
-            let module_file = sp.join(format!("{rel_path}.py"));
-            if module_file.exists() {
-                return Some(module_file);
+            if let Some(path) = self.resolve_in_root(sp, &rel_path) {
+                return Some(path);
             }
         }
 
@@ -98,6 +101,23 @@ impl PythonResolver {
             if pkg_dir.is_dir() {
                 return Some(pkg_dir);
             }
+        }
+        None
+    }
+
+    /// Resolve a module within a single root, using Python's per-directory
+    /// loader order: __init__.py > C extension (.so/.pyd) > source (.py).
+    fn resolve_in_root(&self, root: &Path, rel_path: &str) -> Option<PathBuf> {
+        let pkg_init = root.join(rel_path).join("__init__.py");
+        if pkg_init.exists() {
+            return Some(pkg_init);
+        }
+        if let Some(ext) = find_c_extension(root, rel_path) {
+            return Some(ext);
+        }
+        let module_file = root.join(format!("{rel_path}.py"));
+        if module_file.exists() {
+            return Some(module_file);
         }
         None
     }
@@ -1062,6 +1082,89 @@ mod tests {
             "expected .so over namespace dir, got: {}",
             resolved.display()
         );
+    }
+
+    #[test]
+    fn regular_package_prevents_cross_root_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // root_a has foo as a regular package (with __init__.py)
+        let root_a = root.join("root_a");
+        let foo_a = root_a.join("foo");
+        fs::create_dir_all(&foo_a).unwrap();
+        fs::write(foo_a.join("__init__.py"), "").unwrap();
+
+        // root_b has foo/bar.py but no __init__.py
+        let root_b = root.join("root_b");
+        let foo_b = root_b.join("foo");
+        fs::create_dir_all(&foo_b).unwrap();
+        fs::write(foo_b.join("bar.py"), "x = 1").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root_a, root_b],
+            site_packages_dirs: vec![],
+        };
+
+        // Python: foo is regular package in root_a, __path__ = [root_a/foo]
+        // foo.bar only exists in root_b — Python would NOT find it
+        let result = resolver.resolve(&root, "foo.bar");
+        assert_eq!(result, None, "should not resolve from shadowed root");
+    }
+
+    #[test]
+    fn regular_package_in_source_prevents_site_packages_submodule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Source root has foo as a regular package
+        let src = root.join("src");
+        let foo_src = src.join("foo");
+        fs::create_dir_all(&foo_src).unwrap();
+        fs::write(foo_src.join("__init__.py"), "").unwrap();
+
+        // Site-packages has foo with a different sub-module
+        let sp = root.join("site-packages");
+        let foo_sp = sp.join("foo");
+        fs::create_dir_all(&foo_sp).unwrap();
+        fs::write(foo_sp.join("__init__.py"), "").unwrap();
+        fs::write(foo_sp.join("extras.py"), "x = 1").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![src],
+            site_packages_dirs: vec![sp],
+        };
+
+        // foo.extras only exists in site-packages, but foo is owned by source root
+        let result = resolver.resolve(&root, "foo.extras");
+        assert_eq!(result, None, "should not leak sub-modules from shadowed site-packages");
+    }
+
+    #[test]
+    fn namespace_package_allows_cross_root_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // root_a has foo/ (no __init__.py — namespace)
+        let root_a = root.join("root_a");
+        let foo_a = root_a.join("foo");
+        fs::create_dir_all(&foo_a).unwrap();
+
+        // root_b has foo/bar.py (also no __init__.py — namespace)
+        let root_b = root.join("root_b");
+        let foo_b = root_b.join("foo");
+        fs::create_dir_all(&foo_b).unwrap();
+        fs::write(foo_b.join("bar.py"), "x = 1").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root_a, root_b],
+            site_packages_dirs: vec![],
+        };
+
+        // foo is namespace in both roots — Python merges __path__
+        // foo.bar should be found in root_b
+        let result = resolver.resolve(&root, "foo.bar");
+        assert_eq!(result, Some(foo_b.join("bar.py")));
     }
 
     #[test]
