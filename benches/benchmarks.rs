@@ -8,28 +8,61 @@ use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
 use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
-use stats::{cv, mean, trim, trimmed_mean, welch_t_test};
+use stats::{cv, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim, trimmed_mean};
 
 mod corpus;
 
 // --- Constants ---
+//
+// Three categories:
+//   Root: measurable properties of the machine/environment
+//   Human: threshold choices that aren't derivable from data
+//   Derived: computed from the above (derivation documented inline)
 
-const MIN_SAMPLES: usize = 5;
-const MAX_SAMPLES: usize = 50;
-const WARMUP_WINDOW: usize = 5;
-const WARMUP_CV_THRESHOLD: f64 = 0.02;
-const MAX_WARMUP_ITERATIONS: usize = 100;
-const TARGET_MEASUREMENT_NS: u64 = 1_000_000; // 1ms
-const EARLY_STOP_P_REGRESSION: f64 = 0.001;
-const EARLY_STOP_P_CLEAN: f64 = 0.10;
+// Root: minimum between-run environmental noise (empirical floor)
+const NOISE_FLOOR_MIN: f64 = 0.01;
+// Root: macOS mach_absolute_time resolution is ~41ns; 1ms = 24,000x headroom
+const TARGET_MEASUREMENT_NS: u64 = 1_000_000;
+
+// Human: 99% confidence for final verdicts
+const VERDICT_P: f64 = 0.01;
+// Human: minimum actionable effect size (changes below 2% aren't worth investigating)
 const REGRESSION_THRESHOLD: f64 = 0.02;
+// Human: standard robust trimming fraction (Yuen 1974, 10-20% accepted range)
 const TRIM_FRACTION: f64 = 0.10;
-// Both thresholds must be exceeded to warn (AND condition). This exploits
-// a natural asymmetry: fast benchmarks have high ratio variance but tiny
-// absolute variance, slow benchmarks have the opposite. Empirically validated
-// against 25 runs — zero false positives, catches warmup regressions > 500ms.
+
+// Derived: warmup convergence.
+// Threshold must be achievable by all benchmarks (fast benchmarks inherently have
+// 1-2% CV from OS scheduling jitter). 2% is achievable; 1% causes fast benchmarks
+// to exhaust MAX_WARMUP_ITERATIONS without converging.
+const WARMUP_CV_THRESHOLD: f64 = 0.02;
+// Want P(false convergence | true_CV > 2 * threshold) < 5%.
+// At K=7: P ≈ 4.2% via normal approximation of CV sampling distribution.
+const WARMUP_WINDOW: usize = 7;
+// Safety bound: empirically ~10x typical convergence iterations
+const MAX_WARMUP_ITERATIONS: usize = 100;
+
+// Derived: sampling.
+// MIN_SAMPLES: minimum for t-test with meaningful df (≥3 after trimming)
+const MIN_SAMPLES: usize = 5;
+// MAX_SAMPLES: the knee of the MDE (minimum detectable effect) curve.
+// MDE(n) ∝ sqrt(CV^2 * 2/n + sigma_env^2). At n=20, marginal improvement drops
+// below 5% per doubling — sigma_env dominates and more samples barely help.
+// The noise-aware test accounts for both SE_sampling and SE_env in quadrature,
+// so correctness doesn't require SE_sampling to be negligible.
+const MAX_SAMPLES: usize = 20;
+
+// Derived: early stopping.
+// Must not false-positive under session drift (not yet corrected during early stop).
+// At p=0.001, drift tolerance is 3.8x sigma_env (verified via noise_aware_welch_t_test).
+// At sigma_env=2%: tolerates 7.5% drift. Session drift rarely exceeds 5%.
+const EARLY_STOP_P: f64 = 0.001;
+
+// Overhead warning: both thresholds must be exceeded (AND condition).
+// Fast benchmarks have high ratio variance but tiny absolute variance,
+// slow benchmarks have the opposite. Empirically validated against 25 runs.
 const OVERHEAD_WARN_RATIO: f64 = 3.0;
-const OVERHEAD_WARN_MIN_INCREASE_NS: f64 = 500_000_000.0; // 500ms
+const OVERHEAD_WARN_MIN_INCREASE_NS: f64 = 500_000_000.0;
 
 // --- Benchmark definition ---
 
@@ -85,57 +118,48 @@ fn measure(f: &dyn Fn(), batch: u64) -> (u64, f64) {
 }
 
 enum StopReason {
-    Regression(f64, f64), // (change_pct, p_value)
-    Faster(f64, f64),     // (change_pct, p_value)
-    Clean(f64, f64),      // (change_pct, p_value)
-    MaxSamples(f64, f64), // (change_pct, p_value)
-    NoBaseline,
+    EarlyStop,  // strong signal detected via noise-aware test
+    MaxSamples, // reached MAX_SAMPLES
+    NoBaseline, // save-baseline mode
 }
 
 fn sample(
     f: &dyn Fn(),
     batch: u64,
     baseline: Option<&[f64]>,
+    sigma_env: Option<f64>,
 ) -> (Vec<(u64, f64)>, StopReason) {
     let mut samples: Vec<(u64, f64)> = Vec::new();
 
     loop {
         samples.push(measure(f, batch));
 
-        if let Some(base) = baseline {
+        // Early stop only when sigma_env is available (subsequent comparisons).
+        // First comparison runs to MAX_SAMPLES to establish sigma_env.
+        // Uses noise_aware_welch_t_test so environmental shifts don't trigger
+        // false early stops. Only catches strong signals (p < 0.001).
+        if let (Some(base), Some(sigma)) = (baseline, sigma_env) {
             if samples.len() >= MIN_SAMPLES {
                 let per_iter: Vec<f64> =
                     samples.iter().map(|(b, t)| t / *b as f64).collect();
                 let base_trimmed = trim(base, TRIM_FRACTION);
                 let sample_trimmed = trim(&per_iter, TRIM_FRACTION);
-                let p = welch_t_test(&base_trimmed, &sample_trimmed);
+                let p = noise_aware_welch_t_test(&base_trimmed, &sample_trimmed, sigma);
                 let change_pct =
                     (mean(&sample_trimmed) - mean(&base_trimmed)) / mean(&base_trimmed);
 
-                if p < EARLY_STOP_P_REGRESSION && change_pct > REGRESSION_THRESHOLD {
-                    return (samples, StopReason::Regression(change_pct, p));
-                }
-                if p < EARLY_STOP_P_REGRESSION && change_pct < -REGRESSION_THRESHOLD {
-                    return (samples, StopReason::Faster(change_pct, p));
-                }
-                if p > EARLY_STOP_P_CLEAN {
-                    return (samples, StopReason::Clean(change_pct, p));
+                if p < EARLY_STOP_P && change_pct.abs() > REGRESSION_THRESHOLD {
+                    return (samples, StopReason::EarlyStop);
                 }
             }
         }
 
         if samples.len() >= MAX_SAMPLES {
-            if let Some(base) = baseline {
-                let per_iter: Vec<f64> =
-                    samples.iter().map(|(b, t)| t / *b as f64).collect();
-                let base_trimmed = trim(base, TRIM_FRACTION);
-                let sample_trimmed = trim(&per_iter, TRIM_FRACTION);
-                let p = welch_t_test(&base_trimmed, &sample_trimmed);
-                let change_pct =
-                    (mean(&sample_trimmed) - mean(&base_trimmed)) / mean(&base_trimmed);
-                return (samples, StopReason::MaxSamples(change_pct, p));
-            }
-            return (samples, StopReason::NoBaseline);
+            return if baseline.is_some() {
+                (samples, StopReason::MaxSamples)
+            } else {
+                (samples, StopReason::NoBaseline)
+            };
         }
     }
 }
@@ -204,6 +228,26 @@ fn load_baseline(name: &str, baseline_name: &str) -> Option<Baseline> {
             .collect(),
         overhead_ns: sample.overhead_ns,
     })
+}
+
+fn sigma_env_path(slot: &str) -> PathBuf {
+    PathBuf::from("target/criterion").join(format!("sigma_env_{slot}.json"))
+}
+
+fn load_sigma_env(slot: &str) -> Option<f64> {
+    let content = std::fs::read_to_string(sigma_env_path(slot)).ok()?;
+    #[derive(serde::Deserialize)]
+    struct SigmaEnv {
+        sigma_env: f64,
+    }
+    let data: SigmaEnv = serde_json::from_str(&content).ok()?;
+    Some(data.sigma_env)
+}
+
+fn save_sigma_env(slot: &str, sigma_env: f64) {
+    let path = sigma_env_path(slot);
+    let json = format!("{{\"sigma_env\":{sigma_env}}}");
+    let _ = std::fs::write(path, json);
 }
 
 fn format_time(nanos: f64) -> String {
@@ -480,6 +524,22 @@ fn register_benchmarks() -> Vec<Benchmark> {
 
 // --- Main ---
 
+struct BenchResult {
+    name: &'static str,
+    avg_ns: f64,
+    samples_count: usize,
+    stop_reason: StopReason,
+    cal_time: Duration,
+    warm_time: Duration,
+    warm_iters: usize,
+    sample_time: Duration,
+    total_time: Duration,
+    overhead_ns: f64,
+    baseline_overhead_ns: Option<f64>,
+    baseline_trimmed: Option<Vec<f64>>,
+    current_trimmed: Vec<f64>,
+}
+
 fn main() {
     let args = parse_args();
     let benchmarks = register_benchmarks();
@@ -506,74 +566,151 @@ fn main() {
     }
 
     let slot = args.save_baseline.as_deref().unwrap_or("new");
+    let baseline_name = args.baseline.as_deref();
+    let comparing = baseline_name.is_some();
+
+    // Load stored sigma_env for noise-aware early stopping.
+    // None on first comparison — all benchmarks run to MAX_SAMPLES.
+    let stored_sigma = baseline_name.and_then(load_sigma_env);
 
     let suite_start = Instant::now();
+    let mut results: Vec<BenchResult> = Vec::new();
 
     for bench in &filtered {
         let bench_start = Instant::now();
 
-        // Calibrate
         let cal_start = Instant::now();
         let batch = calibrate(&bench.run);
         let cal_time = cal_start.elapsed();
 
-        // Warmup
         let warm_start = Instant::now();
         let warm_iters = warmup(&bench.run, batch);
         let warm_time = warm_start.elapsed();
 
-        // Load baseline if comparing
-        let baseline = args
-            .baseline
-            .as_ref()
-            .and_then(|name| load_baseline(bench.name, name));
+        let baseline = baseline_name.and_then(|name| load_baseline(bench.name, name));
 
-        // Sample
         let sample_start = Instant::now();
-        let (samples, stop_reason) =
-            sample(&bench.run, batch, baseline.as_ref().map(|b| b.per_iter.as_slice()));
+        let (samples, stop_reason) = sample(
+            &bench.run,
+            batch,
+            baseline.as_ref().map(|b| b.per_iter.as_slice()),
+            stored_sigma,
+        );
         let sample_time = sample_start.elapsed();
 
-        // Save
         let overhead_ns = (cal_time + warm_time).as_nanos() as f64;
         save_samples(bench.name, slot, &samples, overhead_ns);
 
-        // Report
         let per_iter: Vec<f64> = samples.iter().map(|(b, t)| t / *b as f64).collect();
-        let avg = trimmed_mean(&per_iter, TRIM_FRACTION);
-        let total = bench_start.elapsed();
+        let avg_ns = trimmed_mean(&per_iter, TRIM_FRACTION);
+        let current_trimmed = trim(&per_iter, TRIM_FRACTION);
+        let baseline_trimmed = baseline.as_ref().map(|b| trim(&b.per_iter, TRIM_FRACTION));
 
-        let reason_str = match stop_reason {
-            StopReason::Regression(pct, p) => {
-                format!("REGRESSION +{:.1}%, p={:.4}", pct * 100.0, p)
+        results.push(BenchResult {
+            name: bench.name,
+            avg_ns,
+            samples_count: samples.len(),
+            stop_reason,
+            cal_time,
+            warm_time,
+            warm_iters,
+            sample_time,
+            total_time: bench_start.elapsed(),
+            overhead_ns,
+            baseline_overhead_ns: baseline.as_ref().and_then(|b| b.overhead_ns),
+            baseline_trimmed,
+            current_trimmed,
+        });
+    }
+
+    // Unified verdict pipeline: session bias → noise floor → noise-aware test.
+    // Same path for every benchmark regardless of early stopping.
+    let (session_drift, effective_sigma) = if comparing {
+        let change_pcts: Vec<f64> = results
+            .iter()
+            .filter_map(|r| {
+                r.baseline_trimmed
+                    .as_ref()
+                    .map(|base| (mean(&r.current_trimmed) - mean(base)) / mean(base))
+            })
+            .collect();
+
+        if change_pcts.is_empty() {
+            (0.0, 0.0)
+        } else {
+            let (adjusted, drift) = session_bias_adjust(&change_pcts);
+            let fresh_sigma = noise_floor(&adjusted, NOISE_FLOOR_MIN);
+            // Use the more conservative of stored vs fresh sigma_env
+            let effective = match stored_sigma {
+                Some(stored) => stored.max(fresh_sigma),
+                None => fresh_sigma,
+            };
+            // Store fresh sigma_env for future comparisons
+            if let Some(name) = baseline_name {
+                save_sigma_env(name, fresh_sigma);
             }
-            StopReason::Faster(pct, p) => {
-                format!("faster {:.1}%, p={:.4}", pct * 100.0, p)
+            (drift, effective)
+        }
+    } else {
+        (0.0, 0.0)
+    };
+
+    // Report: single verdict path for all benchmarks
+    for result in &results {
+        let verdict_str = if let Some(base) = &result.baseline_trimmed {
+            // Subtract session drift from candidate samples (doesn't change variance)
+            let drift_ns = session_drift * mean(base);
+            let adjusted_candidate: Vec<f64> =
+                result.current_trimmed.iter().map(|x| x - drift_ns).collect();
+            let p = noise_aware_welch_t_test(base, &adjusted_candidate, effective_sigma);
+            let adjusted_change = (mean(&adjusted_candidate) - mean(base)) / mean(base);
+            let raw_change = (mean(&result.current_trimmed) - mean(base)) / mean(base);
+
+            if p < VERDICT_P && adjusted_change > REGRESSION_THRESHOLD {
+                format!(
+                    "REGRESSION +{:.1}%, p={:.4} (raw {:+.1}%)",
+                    adjusted_change * 100.0,
+                    p,
+                    raw_change * 100.0,
+                )
+            } else if p < VERDICT_P && adjusted_change < -REGRESSION_THRESHOLD {
+                format!(
+                    "faster {:.1}%, p={:.4} (raw {:+.1}%)",
+                    adjusted_change * 100.0,
+                    p,
+                    raw_change * 100.0,
+                )
+            } else {
+                format!(
+                    "clean {:+.1}%, p={:.2} (raw {:+.1}%)",
+                    adjusted_change * 100.0,
+                    p,
+                    raw_change * 100.0,
+                )
             }
-            StopReason::Clean(pct, p) => {
-                format!("clean {:+.1}%, p={:.2}", pct * 100.0, p)
-            }
-            StopReason::MaxSamples(pct, p) => {
-                format!("max samples {:+.1}%, p={:.4}", pct * 100.0, p)
-            }
-            StopReason::NoBaseline => "baseline saved".to_string(),
+        } else {
+            "baseline saved".to_string()
+        };
+
+        let samples_label = match result.stop_reason {
+            StopReason::EarlyStop => format!("{} samples (early stop)", result.samples_count),
+            _ => format!("{} samples", result.samples_count),
         };
 
         eprintln!(
-            "{}: {} | calibrate {}ms, warmup {}ms ({} iters), {} samples in {}ms [{}]",
-            bench.name,
-            format_time(avg),
-            cal_time.as_millis(),
-            warm_time.as_millis(),
-            warm_iters,
-            samples.len(),
-            sample_time.as_millis(),
-            reason_str,
+            "{}: {} | calibrate {}ms, warmup {}ms ({} iters), {} in {}ms [{}]",
+            result.name,
+            format_time(result.avg_ns),
+            result.cal_time.as_millis(),
+            result.warm_time.as_millis(),
+            result.warm_iters,
+            samples_label,
+            result.sample_time.as_millis(),
+            verdict_str,
         );
 
-        // Also report overhead ratio
-        let overhead_ms = cal_time.as_millis() + warm_time.as_millis();
-        let useful_ms = sample_time.as_millis();
+        let overhead_ms = result.cal_time.as_millis() + result.warm_time.as_millis();
+        let useful_ms = result.sample_time.as_millis();
         if useful_ms > 0 {
             eprintln!(
                 "  overhead: {}ms / {}ms useful = {:.0}%",
@@ -583,29 +720,38 @@ fn main() {
             );
         }
 
-        // Warn if overhead increased significantly vs baseline
-        if let Some(baseline_overhead) = baseline.as_ref().and_then(|b| b.overhead_ns) {
-            let ratio = overhead_ns / baseline_overhead;
-            let increase = overhead_ns - baseline_overhead;
+        if let Some(baseline_overhead) = result.baseline_overhead_ns {
+            let ratio = result.overhead_ns / baseline_overhead;
+            let increase = result.overhead_ns - baseline_overhead;
             if ratio > OVERHEAD_WARN_RATIO && increase > OVERHEAD_WARN_MIN_INCREASE_NS {
                 eprintln!(
                     "  WARNING: overhead increased {:.1}x ({} -> {})",
                     ratio,
                     format_time(baseline_overhead),
-                    format_time(overhead_ns),
+                    format_time(result.overhead_ns),
                 );
             }
         }
 
+        eprintln!("  total: {}ms", result.total_time.as_millis());
+    }
+
+    if comparing {
         eprintln!(
-            "  total: {}ms",
-            total.as_millis(),
+            "\nSession drift: {:+.1}%, noise floor: {:.1}% (sigma_env {})",
+            session_drift * 100.0,
+            effective_sigma * 100.0,
+            if stored_sigma.is_some() {
+                "stored"
+            } else {
+                "calibrated"
+            },
         );
     }
 
     eprintln!(
         "\nSuite complete: {} benchmarks in {:.1}s",
-        filtered.len(),
+        results.len(),
         suite_start.elapsed().as_secs_f64(),
     );
 }
