@@ -103,7 +103,7 @@ pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
     }
 
     // Judge
-    let results = perf_judge::judge(&dirs, baseline_name);
+    let results = perf_judge::judge(&dirs, baseline_name, &criterion_dir);
     perf_judge::print_results(&results);
 
     // Confirmation runs for any failures
@@ -182,7 +182,7 @@ fn confirm_failures(
         .iter()
         .map(|r| criterion_dir.join(&r.name).to_string_lossy().to_string())
         .collect();
-    let confirm_results = perf_judge::judge(&failed_dirs, baseline_name);
+    let confirm_results = perf_judge::judge(&failed_dirs, baseline_name, criterion_dir);
 
     println!("\nConfirmation results:");
     perf_judge::print_results(&confirm_results);
