@@ -1,10 +1,9 @@
 use serde::Deserialize;
-use stats::{mean, trim, welch_t_test};
+use stats::{
+    format_time, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim,
+    NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P,
+};
 use std::path::Path;
-
-const REGRESSION_THRESHOLD: f64 = 0.02; // 2%
-const P_VALUE_THRESHOLD: f64 = 0.01;
-const TRIM_FRACTION: f64 = 0.10;
 
 #[derive(Deserialize)]
 struct CriterionSample {
@@ -16,7 +15,8 @@ pub struct BenchResult {
     pub name: String,
     pub baseline_mean: f64,
     pub candidate_mean: f64,
-    pub change_pct: f64,
+    pub raw_change_pct: f64,
+    pub adjusted_change_pct: f64,
     pub p_value: f64,
     pub verdict: Verdict,
 }
@@ -44,10 +44,20 @@ impl std::fmt::Display for Verdict {
     }
 }
 
-/// Judge criterion benchmark directories. Returns structured results.
-pub fn judge(dirs: &[String], baseline_name: &str) -> Vec<BenchResult> {
-    let mut results = Vec::new();
+struct LoadedBench {
+    name: String,
+    baseline_trimmed: Vec<f64>,
+    candidate_trimmed: Vec<f64>,
+    baseline_mean: f64,
+    candidate_mean: f64,
+    raw_change_pct: f64,
+}
 
+/// Judge criterion benchmark directories using the unified noise-aware pipeline.
+/// Same algorithm as benchmarks.rs: session bias → noise floor → noise-aware t-test.
+pub fn judge(dirs: &[String], baseline_name: &str, criterion_dir: &Path) -> Vec<BenchResult> {
+    // Phase 1: load all samples, compute raw changes
+    let mut loaded = Vec::new();
     for dir in dirs {
         let path = Path::new(dir);
         let name = extract_bench_name(path);
@@ -79,22 +89,68 @@ pub fn judge(dirs: &[String], baseline_name: &str) -> Vec<BenchResult> {
         let candidate_trimmed = trim(&candidate, TRIM_FRACTION);
         let baseline_mean = mean(&baseline_trimmed);
         let candidate_mean = mean(&candidate_trimmed);
-        let change_pct = (candidate_mean - baseline_mean) / baseline_mean;
-        let p_value = welch_t_test(&baseline_trimmed, &candidate_trimmed);
+        let raw_change_pct = (candidate_mean - baseline_mean) / baseline_mean;
 
-        let verdict = if candidate_mean < baseline_mean {
-            Verdict::Faster
-        } else if change_pct > REGRESSION_THRESHOLD && p_value < P_VALUE_THRESHOLD {
+        loaded.push(LoadedBench {
+            name,
+            baseline_trimmed,
+            candidate_trimmed,
+            baseline_mean,
+            candidate_mean,
+            raw_change_pct,
+        });
+    }
+
+    if loaded.is_empty() {
+        return Vec::new();
+    }
+
+    // Phase 2: session bias correction + noise floor estimation
+    let raw_changes: Vec<f64> = loaded.iter().map(|l| l.raw_change_pct).collect();
+    let (adjusted_changes, drift) = session_bias_adjust(&raw_changes);
+    let fresh_sigma = noise_floor(&adjusted_changes, NOISE_FLOOR_MIN);
+    let stored_sigma = load_sigma_env(criterion_dir, baseline_name);
+    let effective_sigma = match stored_sigma {
+        Some(s) => s.max(fresh_sigma),
+        None => fresh_sigma,
+    };
+
+    if loaded.len() >= 3 {
+        println!(
+            "Session drift: {:+.1}%, noise floor: {:.1}% (sigma_env {})",
+            drift * 100.0,
+            effective_sigma * 100.0,
+            if stored_sigma.is_some() { "stored" } else { "calibrated" },
+        );
+    }
+
+    // Phase 3: per-benchmark verdicts with drift-adjusted candidates
+    let mut results = Vec::new();
+    for (i, l) in loaded.iter().enumerate() {
+        let drift_ns = drift * l.baseline_mean;
+        let adjusted_candidate: Vec<f64> =
+            l.candidate_trimmed.iter().map(|x| x - drift_ns).collect();
+        let p_value = noise_aware_welch_t_test(
+            &l.baseline_trimmed,
+            &adjusted_candidate,
+            effective_sigma,
+        );
+        let adjusted_change = adjusted_changes[i];
+
+        let verdict = if p_value < VERDICT_P && adjusted_change > REGRESSION_THRESHOLD {
             Verdict::Fail
+        } else if p_value < VERDICT_P && adjusted_change < -REGRESSION_THRESHOLD {
+            Verdict::Faster
         } else {
             Verdict::Pass
         };
 
         results.push(BenchResult {
-            name,
-            baseline_mean,
-            candidate_mean,
-            change_pct,
+            name: l.name.clone(),
+            baseline_mean: l.baseline_mean,
+            candidate_mean: l.candidate_mean,
+            raw_change_pct: l.raw_change_pct,
+            adjusted_change_pct: adjusted_change,
             p_value,
             verdict,
         });
@@ -103,23 +159,35 @@ pub fn judge(dirs: &[String], baseline_name: &str) -> Vec<BenchResult> {
     results
 }
 
+fn load_sigma_env(criterion_dir: &Path, baseline_name: &str) -> Option<f64> {
+    let path = criterion_dir.join(format!("sigma_env_{baseline_name}.json"));
+    let content = std::fs::read_to_string(path).ok()?;
+    #[derive(Deserialize)]
+    struct SigmaEnv {
+        sigma_env: f64,
+    }
+    let data: SigmaEnv = serde_json::from_str(&content).ok()?;
+    Some(data.sigma_env)
+}
+
 /// Print a results table to stdout.
 pub fn print_results(results: &[BenchResult]) {
     if results.is_empty() {
         return;
     }
     println!(
-        "{:<35} {:>12} {:>12} {:>8} {:>8}  {}",
-        "Benchmark", "Baseline", "Candidate", "Change", "p-value", "Verdict"
+        "{:<35} {:>12} {:>12} {:>8} {:>8} {:>8}  {}",
+        "Benchmark", "Baseline", "Candidate", "Adj", "Raw", "p-value", "Verdict"
     );
-    println!("{}", "-".repeat(85));
+    println!("{}", "-".repeat(95));
     for r in results {
         println!(
-            "{:<35} {:>12} {:>12} {:>+7.1}% {:>8.4}  {}",
+            "{:<35} {:>12} {:>12} {:>+7.1}% {:>+7.1}% {:>8.4}  {}",
             r.name,
             format_time(r.baseline_mean),
             format_time(r.candidate_mean),
-            r.change_pct * 100.0,
+            r.adjusted_change_pct * 100.0,
+            r.raw_change_pct * 100.0,
             r.p_value,
             r.verdict,
         );
@@ -134,18 +202,6 @@ fn extract_bench_name(path: &Path) -> String {
         path.file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| s.to_string())
-    }
-}
-
-fn format_time(nanos: f64) -> String {
-    if nanos < 1_000.0 {
-        format!("{nanos:.0}ns")
-    } else if nanos < 1_000_000.0 {
-        format!("{:.1}us", nanos / 1_000.0)
-    } else if nanos < 1_000_000_000.0 {
-        format!("{:.1}ms", nanos / 1_000_000.0)
-    } else {
-        format!("{:.2}s", nanos / 1_000_000_000.0)
     }
 }
 
@@ -191,14 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn format_time_units() {
-        assert_eq!(format_time(500.0), "500ns");
-        assert_eq!(format_time(131_000.0), "131.0us");
-        assert_eq!(format_time(95_000_000.0), "95.0ms");
-        assert_eq!(format_time(1_500_000_000.0), "1.50s");
-    }
-
-    #[test]
     fn judge_returns_structured_results() {
         // Write synthetic criterion data to temp dirs
         let tmp = tempfile::tempdir().unwrap();
@@ -214,7 +262,7 @@ mod tests {
             bench_a.to_string_lossy().to_string(),
             bench_b.to_string_lossy().to_string(),
         ];
-        let results = judge(&dirs, "main");
+        let results = judge(&dirs, "main", tmp.path());
 
         assert_eq!(results.len(), 2);
 
@@ -230,7 +278,7 @@ mod tests {
             "15% regression should fail, got {:?}",
             results[1].verdict
         );
-        assert!(results[1].change_pct > 0.10);
+        assert!(results[1].raw_change_pct > 0.10);
     }
 
     #[test]
@@ -248,7 +296,7 @@ mod tests {
             pass_dir.to_string_lossy().to_string(),
             fail_dir.to_string_lossy().to_string(),
         ];
-        let results = judge(&dirs, "main");
+        let results = judge(&dirs, "main", tmp.path());
         let failed: Vec<&str> = results
             .iter()
             .filter(|r| r.verdict.is_fail())
@@ -276,14 +324,14 @@ mod tests {
         write_raw_sample(&bench, "new", &candidate);
 
         let dirs = vec![bench.to_string_lossy().to_string()];
-        let results = judge(&dirs, "main");
+        let results = judge(&dirs, "main", tmp.path());
 
         assert_eq!(results.len(), 1);
         assert!(
             !results[0].verdict.is_fail(),
             "outlier-skewed baseline should not cause false positive, \
              got change={:.1}%, p={:.4}",
-            results[0].change_pct * 100.0,
+            results[0].adjusted_change_pct * 100.0,
             results[0].p_value,
         );
     }
