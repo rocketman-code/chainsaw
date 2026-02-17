@@ -64,29 +64,39 @@ impl PythonResolver {
     }
 
     fn resolve_absolute(&self, specifier: &str) -> Option<PathBuf> {
-        let all_roots = self.source_roots.iter().chain(&self.site_packages_dirs);
-        // Pass 1: regular packages and modules only (no namespace)
-        for root in all_roots.clone() {
+        let rel_path = specifier.replace('.', "/");
+
+        // Pass 1: source roots — regular packages and .py modules
+        for root in &self.source_roots {
             if let Some(path) = try_resolve_module(root, specifier, false) {
                 return Some(path);
             }
         }
-        // Pass 2: namespace packages (directories without __init__.py)
-        for root in all_roots {
-            if let Some(path) = try_resolve_module(root, specifier, true) {
-                return Some(path);
+
+        // Pass 2: site-packages — __init__.py, then C extension, then .py
+        // Python's per-directory loader order: extension (.so) before source (.py)
+        for sp in &self.site_packages_dirs {
+            let pkg_init = sp.join(&rel_path).join("__init__.py");
+            if pkg_init.exists() {
+                return Some(pkg_init);
+            }
+            // C extension before .py (Python's loader order).
+            // For dotted names, read_dir targets the package subdir (small).
+            // For non-dotted, read_dir targets site-packages (larger but cached).
+            if let Some(ext) = find_c_extension(sp, &rel_path) {
+                return Some(ext);
+            }
+            let module_file = sp.join(format!("{rel_path}.py"));
+            if module_file.exists() {
+                return Some(module_file);
             }
         }
-        // Pass 3: C extension modules (site-packages only, dotted imports only).
-        // C extensions are always sub-modules of packages (e.g., yaml._yaml),
-        // never top-level. Skipping non-dotted imports avoids expensive
-        // read_dir(site-packages) for every unresolved stdlib import.
-        if specifier.contains('.') {
-            let rel_path = specifier.replace('.', "/");
-            for sp in &self.site_packages_dirs {
-                if let Some(ext) = find_c_extension(sp, &rel_path) {
-                    return Some(ext);
-                }
+
+        // Pass 3: namespace packages (directories without __init__.py)
+        for root in self.source_roots.iter().chain(&self.site_packages_dirs) {
+            let pkg_dir = root.join(&rel_path);
+            if pkg_dir.is_dir() {
+                return Some(pkg_dir);
             }
         }
         None
@@ -1001,14 +1011,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_py_preferred_over_c_extension() {
+    fn resolve_c_extension_preferred_over_py_in_site_packages() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
 
         let pkg_dir = root.join("site-packages/pkg");
         fs::create_dir_all(&pkg_dir).unwrap();
         fs::write(pkg_dir.join("__init__.py"), "").unwrap();
-        // Both .py and .so exist — .py should win
+        // Both .py and .so exist — .so should win (matches Python's loader order)
         fs::write(pkg_dir.join("mod.py"), "x = 1").unwrap();
         fs::write(pkg_dir.join("mod.cpython-312-darwin.so"), "").unwrap();
 
@@ -1018,7 +1028,40 @@ mod tests {
         };
 
         let result = resolver.resolve(&root, "pkg.mod");
-        assert_eq!(result, Some(pkg_dir.join("mod.py")));
+        let resolved = result.unwrap();
+        assert!(
+            resolved.to_string_lossy().contains("mod.cpython-312-darwin.so"),
+            "expected .so, got: {}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn resolve_top_level_c_extension_over_namespace_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let sp = root.join("site-packages");
+        // Top-level .so (like ciso8601)
+        fs::create_dir_all(&sp).unwrap();
+        fs::write(sp.join("cmod.cpython-312-darwin.so"), "").unwrap();
+        // Directory with only type stubs (no __init__.py) — not a real package
+        let stub_dir = sp.join("cmod");
+        fs::create_dir_all(&stub_dir).unwrap();
+        fs::write(stub_dir.join("__init__.pyi"), "").unwrap();
+
+        let resolver = PythonResolver {
+            source_roots: vec![root.clone()],
+            site_packages_dirs: vec![sp],
+        };
+
+        let result = resolver.resolve(&root, "cmod");
+        let resolved = result.unwrap();
+        assert!(
+            resolved.to_string_lossy().contains("cmod.cpython-312-darwin.so"),
+            "expected .so over namespace dir, got: {}",
+            resolved.display()
+        );
     }
 
     #[test]
