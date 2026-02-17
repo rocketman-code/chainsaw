@@ -1,3 +1,27 @@
+// Shared constants for benchmark comparison. Both the harness (benches/benchmarks.rs)
+// and the attestation gate (xtask/perf_judge.rs) import these to stay in sync.
+
+/// 99% confidence for final verdicts.
+pub const VERDICT_P: f64 = 0.01;
+/// Minimum actionable effect size (changes below 2% aren't worth investigating).
+pub const REGRESSION_THRESHOLD: f64 = 0.02;
+/// Standard robust trimming fraction (Yuen 1974, 10-20% accepted range).
+pub const TRIM_FRACTION: f64 = 0.10;
+/// Minimum between-run environmental noise (empirical floor).
+pub const NOISE_FLOOR_MIN: f64 = 0.01;
+
+pub fn format_time(nanos: f64) -> String {
+    if nanos < 1_000.0 {
+        format!("{nanos:.0}ns")
+    } else if nanos < 1_000_000.0 {
+        format!("{:.1}us", nanos / 1_000.0)
+    } else if nanos < 1_000_000_000.0 {
+        format!("{:.1}ms", nanos / 1_000_000.0)
+    } else {
+        format!("{:.2}s", nanos / 1_000_000_000.0)
+    }
+}
+
 pub fn median(data: &[f64]) -> f64 {
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -264,6 +288,14 @@ mod tests {
                 mean_ns + (uniform - 0.5) * 2.0 * noise
             })
             .collect()
+    }
+
+    #[test]
+    fn format_time_units() {
+        assert_eq!(format_time(500.0), "500ns");
+        assert_eq!(format_time(131_000.0), "131.0us");
+        assert_eq!(format_time(95_000_000.0), "95.0ms");
+        assert_eq!(format_time(1_500_000_000.0), "1.50s");
     }
 
     #[test]

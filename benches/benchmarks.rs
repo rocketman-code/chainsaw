@@ -8,28 +8,21 @@ use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
 use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
-use stats::{cv, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim, trimmed_mean};
+use stats::{
+    cv, format_time, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim,
+    trimmed_mean, NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P,
+};
 
 mod corpus;
 
 // --- Constants ---
 //
-// Three categories:
-//   Root: measurable properties of the machine/environment
-//   Human: threshold choices that aren't derivable from data
-//   Derived: computed from the above (derivation documented inline)
+// Shared constants (VERDICT_P, REGRESSION_THRESHOLD, TRIM_FRACTION, NOISE_FLOOR_MIN)
+// are defined in the stats crate so both the harness and the attestation gate agree.
+// Below are harness-only constants with derivation documented inline.
 
-// Root: minimum between-run environmental noise (empirical floor)
-const NOISE_FLOOR_MIN: f64 = 0.01;
 // Root: macOS mach_absolute_time resolution is ~41ns; 1ms = 24,000x headroom
 const TARGET_MEASUREMENT_NS: u64 = 1_000_000;
-
-// Human: 99% confidence for final verdicts
-const VERDICT_P: f64 = 0.01;
-// Human: minimum actionable effect size (changes below 2% aren't worth investigating)
-const REGRESSION_THRESHOLD: f64 = 0.02;
-// Human: standard robust trimming fraction (Yuen 1974, 10-20% accepted range)
-const TRIM_FRACTION: f64 = 0.10;
 
 // Derived: warmup convergence.
 // Threshold must be achievable by all benchmarks (fast benchmarks inherently have
@@ -248,18 +241,6 @@ fn save_sigma_env(slot: &str, sigma_env: f64) {
     let path = sigma_env_path(slot);
     let json = format!("{{\"sigma_env\":{sigma_env}}}");
     let _ = std::fs::write(path, json);
-}
-
-fn format_time(nanos: f64) -> String {
-    if nanos < 1_000.0 {
-        format!("{nanos:.0}ns")
-    } else if nanos < 1_000_000.0 {
-        format!("{:.1}us", nanos / 1_000.0)
-    } else if nanos < 1_000_000_000.0 {
-        format!("{:.1}ms", nanos / 1_000_000.0)
-    } else {
-        format!("{:.2}s", nanos / 1_000_000_000.0)
-    }
 }
 
 // --- CLI ---
