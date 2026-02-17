@@ -8,6 +8,7 @@ use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
 use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
+use clap::Parser;
 use stats::{
     cv, format_time, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim,
     trimmed_mean, NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P,
@@ -245,57 +246,31 @@ fn save_sigma_env(slot: &str, sigma_env: f64) {
 
 // --- CLI ---
 
+#[derive(Parser)]
+#[command(
+    name = "chainsaw-bench",
+    about = "Adaptive benchmark harness for chainsaw",
+    version
+)]
 struct Args {
+    /// Save results to a named baseline slot
+    #[arg(long)]
     save_baseline: Option<String>,
+
+    /// Compare against a named baseline
+    #[arg(long)]
     baseline: Option<String>,
+
+    /// List available benchmarks
+    #[arg(long)]
     list: bool,
-    filter: Option<String>,
-}
 
-fn parse_args() -> Args {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut save_baseline = None;
-    let mut baseline = None;
-    let mut list = false;
-    let mut filter_parts: Vec<String> = Vec::new();
+    /// Ignored (passed by cargo bench)
+    #[arg(long, hide = true)]
+    bench: bool,
 
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--save-baseline" => {
-                i += 1;
-                save_baseline = Some(args.get(i).unwrap_or_else(|| {
-                    eprintln!("error: --save-baseline requires a value");
-                    std::process::exit(1);
-                }).clone());
-            }
-            "--baseline" => {
-                i += 1;
-                baseline = Some(args.get(i).unwrap_or_else(|| {
-                    eprintln!("error: --baseline requires a value");
-                    std::process::exit(1);
-                }).clone());
-            }
-            "--list" => list = true,
-            "--bench" => {} // ignored (cargo passes this)
-            other if !other.starts_with('-') => filter_parts.push(other.to_string()),
-            _ => {} // ignore unknown flags (cargo bench passes extras)
-        }
-        i += 1;
-    }
-
-    let filter = if filter_parts.is_empty() {
-        None
-    } else {
-        Some(filter_parts.join("|"))
-    };
-
-    Args {
-        save_baseline,
-        baseline,
-        list,
-        filter,
-    }
+    /// Benchmark name filters (multiple allowed, matched with OR)
+    filter: Vec<String>,
 }
 
 fn matches_filter(name: &str, filter: &str) -> bool {
@@ -522,7 +497,7 @@ struct BenchResult {
 }
 
 fn main() {
-    let args = parse_args();
+    let args = Args::parse();
     let benchmarks = register_benchmarks();
 
     if args.list {
@@ -532,7 +507,12 @@ fn main() {
         return;
     }
 
-    let filtered: Vec<&Benchmark> = if let Some(ref filter) = args.filter {
+    let filter = if args.filter.is_empty() {
+        None
+    } else {
+        Some(args.filter.join("|"))
+    };
+    let filtered: Vec<&Benchmark> = if let Some(ref filter) = filter {
         benchmarks
             .iter()
             .filter(|b| matches_filter(b.name, filter))
