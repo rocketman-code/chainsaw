@@ -10,6 +10,8 @@ use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
 use stats::{cv, mean, trim, trimmed_mean, welch_t_test};
 
+mod corpus;
+
 // --- Constants ---
 
 const MIN_SAMPLES: usize = 5;
@@ -275,30 +277,39 @@ fn matches_filter(name: &str, filter: &str) -> bool {
 
 // --- Benchmark registration ---
 
-fn ts_root() -> PathBuf {
-    std::env::var("TS_BENCH_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/Users/hlal/dev/cloudflare/workers-sdk"))
+fn ts_entry() -> (PathBuf, PathBuf) {
+    match std::env::var("TS_BENCH_ROOT") {
+        Ok(root) => {
+            let root = PathBuf::from(root);
+            let entry = root.join("packages/wrangler/src/index.ts");
+            (root, entry)
+        }
+        Err(_) => corpus::ts_corpus(),
+    }
 }
 
-fn py_root() -> PathBuf {
-    std::env::var("PY_BENCH_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/Users/hlal/dev/aws/aws-cli"))
+fn py_entry() -> (PathBuf, PathBuf) {
+    match std::env::var("PY_BENCH_ROOT") {
+        Ok(root) => {
+            let root = PathBuf::from(root);
+            let entry = root.join("awscli/__init__.py");
+            (root, entry)
+        }
+        Err(_) => corpus::py_corpus(),
+    }
 }
 
 fn register_benchmarks() -> Vec<Benchmark> {
     let mut benches = Vec::new();
 
-    let ts = ts_root();
-    let py = py_root();
+    let (ts, ts_entry_path) = ts_entry();
+    let (py, py_entry_path) = py_entry();
 
     // ts_parse_file
-    let entry = ts.join("packages/wrangler/src/index.ts");
-    match std::fs::read_to_string(&entry) {
+    match std::fs::read_to_string(&ts_entry_path) {
         Ok(source) => {
             let lang = TypeScriptSupport::new(&ts);
-            let entry = entry.clone();
+            let entry = ts_entry_path.clone();
             benches.push(Benchmark {
                 name: "ts_parse_file",
                 run: Box::new(move || {
@@ -306,15 +317,14 @@ fn register_benchmarks() -> Vec<Benchmark> {
                 }),
             });
         }
-        Err(_) => eprintln!("Skipping ts_parse_file: {} not found", entry.display()),
+        Err(_) => eprintln!("Skipping ts_parse_file: {} not found", ts_entry_path.display()),
     }
 
     // py_parse_file
-    let entry = py.join("awscli/__init__.py");
-    match std::fs::read_to_string(&entry) {
+    match std::fs::read_to_string(&py_entry_path) {
         Ok(source) => {
             let lang = PythonSupport::new(&py);
-            let entry = entry.clone();
+            let entry = py_entry_path.clone();
             benches.push(Benchmark {
                 name: "py_parse_file",
                 run: Box::new(move || {
@@ -322,13 +332,13 @@ fn register_benchmarks() -> Vec<Benchmark> {
                 }),
             });
         }
-        Err(_) => eprintln!("Skipping py_parse_file: {} not found", entry.display()),
+        Err(_) => eprintln!("Skipping py_parse_file: {} not found", py_entry_path.display()),
     }
 
     // ts_resolve
     if ts.join("package.json").exists() {
         let lang = TypeScriptSupport::new(&ts);
-        let from_dir = ts.join("packages/wrangler/src");
+        let from_dir = ts_entry_path.parent().unwrap().to_path_buf();
         benches.push(Benchmark {
             name: "ts_resolve",
             run: Box::new(move || {
@@ -343,10 +353,17 @@ fn register_benchmarks() -> Vec<Benchmark> {
     if py.join("pyproject.toml").exists() || py.join("setup.py").exists() {
         let lang = PythonSupport::new(&py);
         let root = py.clone();
+        // Resolve the top-level package: env var override means real codebase (awscli),
+        // otherwise synthetic corpus uses "app"
+        let specifier = if std::env::var("PY_BENCH_ROOT").is_ok() {
+            "awscli"
+        } else {
+            "app"
+        };
         benches.push(Benchmark {
             name: "py_resolve",
             run: Box::new(move || {
-                lang.resolve(black_box(&root), black_box("awscli"));
+                lang.resolve(black_box(&root), black_box(specifier));
             }),
         });
     } else {
@@ -359,10 +376,10 @@ fn register_benchmarks() -> Vec<Benchmark> {
     // calls that run ~10% faster on warm pages. Since save-baseline takes 50
     // build_graph iterations (21s of I/O) but comparison early-stops at 5, the
     // cache warming differs between modes, producing false positive regressions.
-    let entry = ts.join("packages/wrangler/src/index.ts");
-    if entry.exists() {
+    if ts_entry_path.exists() {
         let lang = TypeScriptSupport::new(&ts);
         let root = ts.clone();
+        let entry = ts_entry_path.clone();
         let mut cache = ParseCache::new();
         let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
         let unresolvable_count: usize =
@@ -385,11 +402,10 @@ fn register_benchmarks() -> Vec<Benchmark> {
     }
 
     // build_graph/ts_cold
-    let entry = ts.join("packages/wrangler/src/index.ts");
-    if entry.exists() {
+    if ts_entry_path.exists() {
         let lang = TypeScriptSupport::new(&ts);
         let root = ts.clone();
-        let entry = entry.clone();
+        let entry = ts_entry_path.clone();
         benches.push(Benchmark {
             name: "build_graph/ts_cold",
             run: Box::new(move || {
@@ -405,11 +421,10 @@ fn register_benchmarks() -> Vec<Benchmark> {
     }
 
     // build_graph/py_cold
-    let entry = py.join("awscli/__init__.py");
-    if entry.exists() {
+    if py_entry_path.exists() {
         let lang = PythonSupport::new(&py);
         let root = py.clone();
-        let entry = entry.clone();
+        let entry = py_entry_path.clone();
         benches.push(Benchmark {
             name: "build_graph/py_cold",
             run: Box::new(move || {
@@ -425,9 +440,9 @@ fn register_benchmarks() -> Vec<Benchmark> {
     }
 
     // query_trace_ts
-    let entry = ts.join("packages/wrangler/src/index.ts");
-    if entry.exists() {
+    if ts_entry_path.exists() {
         let lang = TypeScriptSupport::new(&ts);
+        let entry = ts_entry_path;
         let mut cache = ParseCache::new();
         let result = chainsaw::walker::build_graph(&entry, &ts, &lang, &mut cache);
         let graph = result.graph;
@@ -442,9 +457,9 @@ fn register_benchmarks() -> Vec<Benchmark> {
     }
 
     // query_trace_py
-    let entry = py.join("awscli/__init__.py");
-    if entry.exists() {
+    if py_entry_path.exists() {
         let lang = PythonSupport::new(&py);
+        let entry = py_entry_path;
         let mut cache = ParseCache::new();
         let result = chainsaw::walker::build_graph(&entry, &py, &lang, &mut cache);
         let graph = result.graph;
