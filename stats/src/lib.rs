@@ -1,3 +1,84 @@
+pub fn median(data: &[f64]) -> f64 {
+    let mut sorted = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    }
+}
+
+/// Median absolute deviation: median of |x_i - median(x)|.
+/// Robust measure of spread with 50% breakdown point.
+pub fn mad(data: &[f64]) -> f64 {
+    let med = median(data);
+    let deviations: Vec<f64> = data.iter().map(|x| (x - med).abs()).collect();
+    median(&deviations)
+}
+
+/// Minimum number of benchmarks needed for reliable session bias estimation.
+/// Below this, the median is too volatile to use as a bias estimator.
+const MIN_BENCHMARKS_FOR_BIAS: usize = 3;
+
+/// Estimate environmental noise floor from suite-level adjusted changes.
+/// Uses MAD * 1.4826 (consistency factor for normal distributions) as the
+/// sigma estimate. Returns max(estimate, min_floor). With fewer than 3
+/// benchmarks, returns min_floor directly.
+pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
+    if adjusted_changes.len() < MIN_BENCHMARKS_FOR_BIAS {
+        return min_floor;
+    }
+    let sigma_env = 1.4826 * mad(adjusted_changes);
+    sigma_env.max(min_floor)
+}
+
+/// Welch's t-test with environmental noise floor (GUM quadrature).
+/// noise_floor_frac is the environmental sigma as a fraction of the baseline
+/// mean. The environmental SE is added in quadrature with the sampling SE,
+/// inflating the denominator to absorb between-run variance.
+pub fn noise_aware_welch_t_test(
+    baseline: &[f64],
+    candidate: &[f64],
+    noise_floor_frac: f64,
+) -> f64 {
+    let n1 = baseline.len() as f64;
+    let n2 = candidate.len() as f64;
+    let v1 = variance(baseline);
+    let v2 = variance(candidate);
+    let m1 = mean(baseline);
+    let m2 = mean(candidate);
+
+    if v1 == 0.0 && v2 == 0.0 && noise_floor_frac == 0.0 {
+        return 1.0;
+    }
+
+    let se_sampling_sq = v1 / n1 + v2 / n2;
+    let se_env = noise_floor_frac * m1;
+    let se_total = (se_sampling_sq + se_env * se_env).sqrt();
+
+    let t = (m2 - m1) / se_total;
+
+    // Welch-Satterthwaite df (from sampling variance only)
+    let num = (v1 / n1 + v2 / n2).powi(2);
+    let den = (v1 / n1).powi(2) / (n1 - 1.0) + (v2 / n2).powi(2) / (n2 - 1.0);
+    let df = if den == 0.0 { 2.0 } else { (num / den).max(2.0) };
+
+    2.0 * student_t_cdf(-t.abs(), df)
+}
+
+/// Subtract estimated session-level bias from per-benchmark change percentages.
+/// Returns (adjusted_changes, estimated_drift). If fewer than 3 benchmarks,
+/// returns the original changes unchanged with drift = 0.
+pub fn session_bias_adjust(change_pcts: &[f64]) -> (Vec<f64>, f64) {
+    if change_pcts.len() < MIN_BENCHMARKS_FOR_BIAS {
+        return (change_pcts.to_vec(), 0.0);
+    }
+    let drift = median(change_pcts);
+    let adjusted = change_pcts.iter().map(|c| c - drift).collect();
+    (adjusted, drift)
+}
+
 pub fn mean(data: &[f64]) -> f64 {
     data.iter().sum::<f64>() / data.len() as f64
 }
@@ -310,10 +391,176 @@ mod tests {
     #[test]
     fn cv_of_constant_data_is_zero() {
         let data = vec![100.0; 10];
-        // variance is 0, mean is 100, cv = 0/100 = NaN... but variance(constant) = 0
-        // Actually with Bessel's correction, sum of squared diffs is 0, so variance = 0
-        // cv = sqrt(0) / 100 = 0
         assert_eq!(cv(&data), 0.0);
+    }
+
+    #[test]
+    fn session_bias_removes_uniform_drift() {
+        // All benchmarks shifted +3% due to thermal throttling.
+        // After adjustment, all should be ~0%.
+        let changes = vec![0.03, 0.031, 0.029, 0.032, 0.028, 0.03, 0.031, 0.029, 0.03];
+        let (adjusted, drift) = session_bias_adjust(&changes);
+        assert!(
+            (drift - 0.03).abs() < 0.002,
+            "drift should be ~3%, got {:.1}%",
+            drift * 100.0
+        );
+        for (i, &a) in adjusted.iter().enumerate() {
+            assert!(
+                a.abs() < 0.005,
+                "bench {i} adjusted change should be ~0%, got {:.1}%",
+                a * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn session_bias_preserves_real_regression() {
+        // 8 benchmarks unaffected (+1% session noise), 1 genuinely regressed +5%.
+        // After adjustment, the regressed one should still show ~+4%.
+        let changes = vec![0.01, 0.012, 0.008, 0.011, 0.009, 0.01, 0.011, 0.009, 0.05];
+        let (adjusted, drift) = session_bias_adjust(&changes);
+        assert!(
+            (drift - 0.01).abs() < 0.002,
+            "drift should be ~1%, got {:.1}%",
+            drift * 100.0
+        );
+        // The regressed benchmark (last) should show ~4% after adjustment
+        let regressed = *adjusted.last().unwrap();
+        assert!(
+            (regressed - 0.04).abs() < 0.005,
+            "regressed bench should be ~4%, got {:.1}%",
+            regressed * 100.0
+        );
+    }
+
+    #[test]
+    fn session_bias_too_few_benchmarks() {
+        // With only 2 benchmarks, can't reliably estimate session bias.
+        let changes = vec![0.03, 0.05];
+        let (adjusted, drift) = session_bias_adjust(&changes);
+        assert_eq!(drift, 0.0, "drift should be 0 with too few benchmarks");
+        assert_eq!(adjusted, changes, "should return unadjusted with too few");
+    }
+
+    #[test]
+    fn median_odd_count() {
+        assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
+    }
+
+    #[test]
+    fn median_even_count() {
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+    }
+
+    #[test]
+    fn median_single_element() {
+        assert_eq!(median(&[42.0]), 42.0);
+    }
+
+    #[test]
+    fn mad_symmetric_data() {
+        // [1, 2, 3, 4, 5] → median=3, deviations=[2,1,0,1,2] → MAD=1
+        assert!((mad(&[1.0, 2.0, 3.0, 4.0, 5.0]) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn mad_with_outlier() {
+        // [1, 2, 3, 4, 100] → median=3, deviations=[2,1,0,1,97] → MAD=1
+        // MAD is robust to the outlier
+        assert!((mad(&[1.0, 2.0, 3.0, 4.0, 100.0]) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn mad_constant_data() {
+        assert_eq!(mad(&[5.0, 5.0, 5.0, 5.0, 5.0]), 0.0);
+    }
+
+    #[test]
+    fn noise_floor_from_adjusted_changes() {
+        // 8 benches with ~1% noise, 1 outlier at 10%
+        // adjusted = [-0.005, 0.003, -0.008, 0.005, -0.002, 0.006, -0.004, 0.003, 0.10]
+        // |adjusted| = [0.005, 0.003, 0.008, 0.005, 0.002, 0.006, 0.004, 0.003, 0.10]
+        // median(|adj|) = 0.005 → sigma_env = 1.4826 * 0.005 = 0.007413
+        let adj = vec![-0.005, 0.003, -0.008, 0.005, -0.002, 0.006, -0.004, 0.003, 0.10];
+        let floor = noise_floor(&adj, 0.01);
+        // MAD = 0.005, 1.4826 * 0.005 = 0.007413, but min is 0.01
+        assert!(
+            (floor - 0.01).abs() < 1e-10,
+            "should be clamped to min 0.01, got {floor}"
+        );
+    }
+
+    #[test]
+    fn noise_floor_high_spread() {
+        // All benchmarks scatter widely: adjusted = [-0.04, 0.05, -0.03, 0.02, -0.05, 0.04, -0.02, 0.03, 0.06]
+        // |adj| = [0.04, 0.05, 0.03, 0.02, 0.05, 0.04, 0.02, 0.03, 0.06]
+        // sorted |adj| = [0.02, 0.02, 0.03, 0.03, 0.04, 0.04, 0.05, 0.05, 0.06]
+        // median(|adj|) = 0.04 → sigma_env = 1.4826 * 0.04 = 0.059304
+        let adj = vec![-0.04, 0.05, -0.03, 0.02, -0.05, 0.04, -0.02, 0.03, 0.06];
+        let floor = noise_floor(&adj, 0.01);
+        assert!(
+            (floor - 0.059304).abs() < 0.001,
+            "expected ~5.9%, got {:.1}%",
+            floor * 100.0
+        );
+    }
+
+    #[test]
+    fn noise_floor_too_few() {
+        let adj = vec![0.03, 0.05];
+        let floor = noise_floor(&adj, 0.01);
+        assert_eq!(floor, 0.01, "should return min_floor with too few benchmarks");
+    }
+
+    #[test]
+    fn noise_aware_t_test_absorbs_environmental_shift() {
+        // Baseline: 50 samples at mean=100, sigma=0.5 (CV=0.5%)
+        // Candidate: 5 samples at mean=105 (5% environmental shift, not real)
+        // Standard t-test would give p ≈ 0 (false positive)
+        // With noise_floor=0.03 (3%), SE_env = 3.0, SE_total ≈ 3.0
+        // t ≈ 5.0/3.0 ≈ 1.67, p ≈ 0.12 → correctly NOT significant at 0.05
+        let baseline = synthetic_samples(100.0, 0.5, 50);
+        let candidate = synthetic_samples(105.0, 0.5, 5);
+
+        let p_standard = welch_t_test(&baseline, &candidate);
+        let p_noise_aware = noise_aware_welch_t_test(&baseline, &candidate, 0.03);
+
+        assert!(
+            p_standard < 0.001,
+            "standard t-test should flag this, got p={p_standard}"
+        );
+        assert!(
+            p_noise_aware > 0.05,
+            "noise-aware test should absorb 5% shift with 3% floor, got p={p_noise_aware}"
+        );
+    }
+
+    #[test]
+    fn noise_aware_t_test_detects_large_regression() {
+        // 10% regression with 3% noise floor → should still detect
+        let baseline = synthetic_samples(100.0, 0.5, 50);
+        let candidate = synthetic_samples(110.0, 0.5, 5);
+
+        let p = noise_aware_welch_t_test(&baseline, &candidate, 0.03);
+        assert!(
+            p < 0.05,
+            "10% regression should be detected even with 3% floor, got p={p}"
+        );
+    }
+
+    #[test]
+    fn noise_aware_t_test_zero_floor_equals_standard() {
+        let baseline = synthetic_samples(100.0, 1.0, 30);
+        let candidate = synthetic_samples(103.0, 1.0, 30);
+
+        let p_standard = welch_t_test(&baseline, &candidate);
+        let p_noise_aware = noise_aware_welch_t_test(&baseline, &candidate, 0.0);
+
+        assert!(
+            (p_standard - p_noise_aware).abs() < 1e-10,
+            "zero floor should equal standard: {p_standard} vs {p_noise_aware}"
+        );
     }
 
     #[test]
