@@ -255,12 +255,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
         ignore: args.ignore,
     };
     let result = query::trace(&loaded.graph, entry_id, &opts);
-    let entry_rel = loaded
-        .entry
-        .strip_prefix(&loaded.root)
-        .unwrap_or(&loaded.entry)
-        .to_string_lossy()
-        .into_owned();
+    let entry_rel = entry_label(&loaded.entry, &loaded.root);
 
     // Save snapshot if requested (works with any mode)
     if let Some(ref save_path) = args.save {
@@ -558,11 +553,7 @@ fn handle_diff(
     let diff_snapshot =
         if let Some(&diff_id) = loaded.graph.path_to_id.get(&diff_entry) {
             // Same graph — trace directly
-            let diff_rel = diff_entry
-                .strip_prefix(&loaded.root)
-                .unwrap_or(&diff_entry)
-                .to_string_lossy()
-                .into_owned();
+            let diff_rel = entry_label(&diff_entry, &loaded.root);
             query::trace(&loaded.graph, diff_id, opts).to_snapshot(&diff_rel)
         } else {
             // Different project — build second graph
@@ -573,12 +564,7 @@ fn handle_diff(
             else {
                 return Err(Error::EntryNotInGraph(diff_loaded.entry));
             };
-            let diff_rel = diff_loaded
-                .entry
-                .strip_prefix(&diff_loaded.root)
-                .unwrap_or(&diff_loaded.entry)
-                .to_string_lossy()
-                .into_owned();
+            let diff_rel = entry_label(&diff_loaded.entry, &diff_loaded.root);
             query::trace(&diff_loaded.graph, diff_id, opts)
                 .to_snapshot(&diff_rel)
         };
@@ -608,6 +594,17 @@ fn run_packages(args: &PackagesArgs, no_color: bool, sc: &report::StderrColor) -
         report::print_packages(&loaded.graph, args.top, no_color);
     }
     Ok(())
+}
+
+/// Build a display label for an entry point that includes the project
+/// directory name for disambiguation (e.g. `wrangler/src/index.ts`
+/// instead of just `src/index.ts`).
+fn entry_label(entry: &Path, root: &Path) -> String {
+    let rel = entry.strip_prefix(root).unwrap_or(entry);
+    match root.file_name() {
+        Some(name) => Path::new(name).join(rel).to_string_lossy().into_owned(),
+        None => rel.to_string_lossy().into_owned(),
+    }
 }
 
 /// Determine whether a --chain/--cut argument looks like a file path
