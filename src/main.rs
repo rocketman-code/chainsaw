@@ -304,6 +304,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
             top_modules: args.top_modules,
             include_dynamic: args.include_dynamic,
             no_color,
+            max_weight: args.max_weight,
         };
         report::print_trace(
             &loaded.graph,
@@ -314,15 +315,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
         );
     }
 
-    if let Some(threshold) = args.max_weight
-        && result.static_weight > threshold
-    {
-        eprintln!(
-            "{} static weight {} exceeds threshold {}",
-            sc.error("error:"),
-            report::format_size(result.static_weight),
-            report::format_size(threshold),
-        );
+    if args.max_weight.is_some_and(|t| result.static_weight > t) {
         std::process::exit(1);
     }
 

@@ -147,6 +147,7 @@ pub struct DisplayOpts {
     pub top_modules: i32,
     pub include_dynamic: bool,
     pub no_color: bool,
+    pub max_weight: Option<u64>,
 }
 
 /// Build display names for a chain, expanding duplicate package nodes
@@ -176,31 +177,43 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
 pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, opts: &DisplayOpts) {
     let c = C::new(opts.no_color);
     println!("{}", relative_path(entry_path, root));
-    if opts.include_dynamic {
-        println!(
-            "{} {} ({} module{}, static + dynamic)",
-            c.bold_green("Total transitive weight:"),
-            format_size(result.static_weight),
-            result.static_module_count,
-            plural(result.static_module_count as u64)
+    let (kind, suffix) = if opts.include_dynamic {
+        ("total", ", static + dynamic")
+    } else {
+        ("static", "")
+    };
+    let weight = format_size(result.static_weight);
+    let modules = format!(
+        "{} module{}{}",
+        result.static_module_count,
+        plural(result.static_module_count as u64),
+        suffix,
+    );
+
+    if let Some(threshold) = opts.max_weight.filter(|&t| result.static_weight > t) {
+        let sc = StderrColor::new(opts.no_color);
+        eprintln!(
+            "{} {kind} transitive weight {weight} ({modules}) exceeds --max-weight threshold {}",
+            sc.error("error:"),
+            format_size(threshold),
         );
     } else {
+        let label = if opts.include_dynamic {
+            "Total transitive weight:"
+        } else {
+            "Static transitive weight:"
+        };
+        println!("{} {weight} ({modules})", c.bold_green(label));
+    }
+
+    if !opts.include_dynamic && result.dynamic_only_module_count > 0 {
         println!(
-            "{} {} ({} module{})",
-            c.bold_green("Static transitive weight:"),
-            format_size(result.static_weight),
-            result.static_module_count,
-            plural(result.static_module_count as u64)
+            "{} {} ({} module{}, not loaded at startup)",
+            c.bold_green("Dynamic-only weight:"),
+            format_size(result.dynamic_only_weight),
+            result.dynamic_only_module_count,
+            plural(result.dynamic_only_module_count as u64)
         );
-        if result.dynamic_only_module_count > 0 {
-            println!(
-                "{} {} ({} module{}, not loaded at startup)",
-                c.bold_green("Dynamic-only weight:"),
-                format_size(result.dynamic_only_weight),
-                result.dynamic_only_module_count,
-                plural(result.dynamic_only_module_count as u64)
-            );
-        }
     }
 
     if opts.top != 0 {
