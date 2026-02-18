@@ -18,6 +18,10 @@ pub enum Error {
     SnapshotParse(PathBuf, serde_json::Error),
     /// Cannot write a snapshot file to disk.
     SnapshotWrite(PathBuf, std::io::Error),
+    /// Mutually exclusive CLI flags were used together.
+    MutuallyExclusiveFlags(String),
+    /// --chain/--cut target is the entry point itself.
+    TargetIsEntryPoint(String),
 }
 
 impl Error {
@@ -28,6 +32,11 @@ impl Error {
                 Some("chainsaw supports TypeScript/JavaScript and Python files")
             }
             Self::EntryNotInGraph(_) => Some("is it reachable from the project root?"),
+            Self::TargetIsEntryPoint(flag) => Some(if flag == "--chain" {
+                "--chain finds import chains from the entry to a dependency"
+            } else {
+                "--cut finds where to sever import chains to a dependency"
+            }),
             _ => None,
         }
     }
@@ -58,6 +67,12 @@ impl std::fmt::Display for Error {
             }
             Self::SnapshotWrite(path, source) => {
                 write!(f, "cannot write snapshot '{}': {source}", path.display())
+            }
+            Self::MutuallyExclusiveFlags(flags) => {
+                write!(f, "{flags} cannot be used together")
+            }
+            Self::TargetIsEntryPoint(flag) => {
+                write!(f, "{flag} target is the entry point itself")
             }
         }
     }

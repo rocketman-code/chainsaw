@@ -235,12 +235,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
     .flatten()
     .collect();
     if query_flags.len() > 1 {
-        eprintln!(
-            "{} {} cannot be used together",
-            sc.error("error:"),
-            query_flags.join(" and ")
-        );
-        std::process::exit(1);
+        return Err(Error::MutuallyExclusiveFlags(query_flags.join(" and ")));
     }
 
     // Load or build graph
@@ -274,11 +269,15 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
 
     // Handle --chain/--cut/--diff-from/--diff modes
     if let Some(ref chain_arg) = args.chain {
-        handle_chain(&loaded, entry_id, chain_arg, args.include_dynamic, args.json, no_color, sc);
+        if !handle_chain(&loaded, entry_id, chain_arg, args.include_dynamic, args.json, no_color)? {
+            std::process::exit(1);
+        }
         return Ok(());
     }
     if let Some(ref cut_arg) = args.cut {
-        handle_cut(&loaded, entry_id, cut_arg, args.top, args.include_dynamic, args.json, no_color, sc);
+        if !handle_cut(&loaded, entry_id, cut_arg, args.top, args.include_dynamic, args.json, no_color)? {
+            std::process::exit(1);
+        }
         return Ok(());
     }
     if let Some(ref snapshot_path) = args.diff_from {
@@ -421,17 +420,11 @@ fn check_entry_target(
     resolved: &ResolvedTarget,
     entry_id: chainsaw::graph::ModuleId,
     flag_name: &str,
-    hint: &str,
-    sc: &report::StderrColor,
-) {
+) -> Result<(), Error> {
     if resolved.target == query::ChainTarget::Module(entry_id) {
-        eprintln!(
-            "{} {flag_name} target is the entry point itself",
-            sc.error("error:")
-        );
-        eprintln!("hint: {hint}");
-        std::process::exit(1);
+        return Err(Error::TargetIsEntryPoint(flag_name.to_string()));
     }
+    Ok(())
 }
 
 fn handle_chain(
@@ -441,10 +434,9 @@ fn handle_chain(
     include_dynamic: bool,
     json: bool,
     no_color: bool,
-    sc: &report::StderrColor,
-) {
+) -> Result<bool, Error> {
     let resolved = resolve_target(chain_arg, loaded);
-    check_entry_target(&resolved, entry_id, "--chain", "--chain finds import chains from the entry to a dependency", sc);
+    check_entry_target(&resolved, entry_id, "--chain")?;
     let chains = query::find_all_chains(
         &loaded.graph,
         entry_id,
@@ -469,9 +461,7 @@ fn handle_chain(
             no_color,
         );
     }
-    if chains.is_empty() {
-        std::process::exit(1);
-    }
+    Ok(!chains.is_empty())
 }
 
 #[allow(clippy::too_many_arguments)] // private dispatch, called from one site
@@ -483,10 +473,9 @@ fn handle_cut(
     include_dynamic: bool,
     json: bool,
     no_color: bool,
-    sc: &report::StderrColor,
-) {
+) -> Result<bool, Error> {
     let resolved = resolve_target(cut_arg, loaded);
-    check_entry_target(&resolved, entry_id, "--cut", "--cut finds where to sever import chains to a dependency", sc);
+    check_entry_target(&resolved, entry_id, "--cut")?;
     let chains = query::find_all_chains(
         &loaded.graph,
         entry_id,
@@ -521,9 +510,7 @@ fn handle_cut(
             no_color,
         );
     }
-    if chains.is_empty() {
-        std::process::exit(1);
-    }
+    Ok(!chains.is_empty())
 }
 
 fn handle_diff_from(
