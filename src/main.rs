@@ -76,7 +76,7 @@ struct TraceArgs {
     #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
     top: i32,
 
-    /// Show top N modules by exclusive weight (0 to hide, -1 for all)
+    /// Show top N modules by exclusive weight — bytes not reachable through any other path (0 to hide, -1 for all)
     #[arg(long, default_value_t = 20, allow_hyphen_values = true)]
     top_modules: i32,
 
