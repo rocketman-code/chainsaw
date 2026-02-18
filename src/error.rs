@@ -15,7 +15,7 @@ pub enum Error {
     /// Cannot read a snapshot file from disk.
     SnapshotRead(PathBuf, std::io::Error),
     /// Snapshot file contains invalid JSON.
-    SnapshotParse(PathBuf, String),
+    SnapshotParse(PathBuf, serde_json::Error),
     /// Cannot write a snapshot file to disk.
     SnapshotWrite(PathBuf, std::io::Error),
 }
@@ -53,8 +53,8 @@ impl std::fmt::Display for Error {
             Self::SnapshotRead(path, source) => {
                 write!(f, "cannot read snapshot '{}': {source}", path.display())
             }
-            Self::SnapshotParse(path, msg) => {
-                write!(f, "invalid snapshot '{}': {msg}", path.display())
+            Self::SnapshotParse(path, source) => {
+                write!(f, "invalid snapshot '{}': {source}", path.display())
             }
             Self::SnapshotWrite(path, source) => {
                 write!(f, "cannot write snapshot '{}': {source}", path.display())
@@ -70,6 +70,7 @@ impl std::error::Error for Error {
             Self::EntryNotFound(_, e)
             | Self::SnapshotRead(_, e)
             | Self::SnapshotWrite(_, e) => Some(e),
+            Self::SnapshotParse(_, e) => Some(e),
             _ => None,
         }
     }
