@@ -391,45 +391,33 @@ fn load_snapshot(path: &Path) -> Result<query::TraceSnapshot, Error> {
         .map_err(|e| Error::SnapshotParse(path.to_path_buf(), e.to_string()))
 }
 
-fn resolve_target(
-    arg: &str,
-    loaded: &loader::LoadedGraph,
-    sc: &report::StderrColor,
-) -> ResolvedTarget {
-    let is_path = looks_like_path(arg, loaded.valid_extensions);
-    if is_path {
-        let target_path =
-            loaded.root.join(arg).canonicalize().unwrap_or_else(|e| {
-                eprintln!("{} cannot find file '{arg}': {e}", sc.error("error:"));
-                std::process::exit(1);
-            });
-        let Some(&id) = loaded.graph.path_to_id.get(&target_path) else {
-            eprintln!(
-                "{} '{arg}' is not in the dependency graph",
-                sc.error("error:")
-            );
-            eprintln!("hint: is it reachable from the entry point?");
-            std::process::exit(1);
-        };
-        let p = &loaded.graph.module(id).path;
-        let label = p
-            .strip_prefix(&loaded.root)
-            .unwrap_or(p)
-            .to_string_lossy()
-            .into_owned();
-        ResolvedTarget {
-            target: query::ChainTarget::Module(id),
-            label,
-            exists: true,
+fn resolve_target(arg: &str, loaded: &loader::LoadedGraph) -> ResolvedTarget {
+    if looks_like_path(arg, loaded.valid_extensions) {
+        if let Ok(target_path) = loaded.root.join(arg).canonicalize() {
+            if let Some(&id) = loaded.graph.path_to_id.get(&target_path) {
+                let p = &loaded.graph.module(id).path;
+                let label = p
+                    .strip_prefix(&loaded.root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned();
+                return ResolvedTarget {
+                    target: query::ChainTarget::Module(id),
+                    label,
+                    exists: true,
+                };
+            }
         }
-    } else {
-        let name = arg.to_string();
-        let exists = loaded.graph.package_map.contains_key(arg);
-        ResolvedTarget {
-            target: query::ChainTarget::Package(name.clone()),
-            label: name,
-            exists,
-        }
+        // File doesn't exist or isn't in the graph — fall through to
+        // package name lookup. Handles packages like "six.py" or
+        // "highlight.js" whose names match file extensions.
+    }
+    let name = arg.to_string();
+    let exists = loaded.graph.package_map.contains_key(arg);
+    ResolvedTarget {
+        target: query::ChainTarget::Package(name.clone()),
+        label: name,
+        exists,
     }
 }
 
@@ -459,7 +447,7 @@ fn handle_chain(
     no_color: bool,
     sc: &report::StderrColor,
 ) {
-    let resolved = resolve_target(chain_arg, loaded, sc);
+    let resolved = resolve_target(chain_arg, loaded);
     check_entry_target(&resolved, entry_id, "--chain", "--chain finds import chains from the entry to a dependency", sc);
     let chains = query::find_all_chains(
         &loaded.graph,
@@ -501,7 +489,7 @@ fn handle_cut(
     no_color: bool,
     sc: &report::StderrColor,
 ) {
-    let resolved = resolve_target(cut_arg, loaded, sc);
+    let resolved = resolve_target(cut_arg, loaded);
     check_entry_target(&resolved, entry_id, "--cut", "--cut finds where to sever import chains to a dependency", sc);
     let chains = query::find_all_chains(
         &loaded.graph,
@@ -682,7 +670,7 @@ mod tests {
         assert!(!looks_like_path("zod", exts));
         assert!(!looks_like_path("express", exts));
         // highlight.js is ambiguous — .js extension triggers path heuristic.
-        // Acceptable: canonicalize will error clearly if no such file exists.
+        // resolve_target tries as file path first, falls back to package lookup.
         assert!(looks_like_path("highlight.js", exts));
     }
 
@@ -692,6 +680,43 @@ mod tests {
         assert!(looks_like_path("utils.ts", exts));
         assert!(looks_like_path("main.py", exts));
         assert!(!looks_like_path("utils.txt", exts));
+    }
+
+    #[test]
+    fn resolve_target_falls_back_to_package_for_extension_named_package() {
+        use chainsaw::graph::{ModuleGraph, PackageInfo, ModuleId};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let entry = root.join("entry.py");
+        std::fs::write(&entry, "").unwrap();
+
+        let mut graph = ModuleGraph::new();
+        graph.add_module(entry.clone(), 0, None);
+        graph.package_map.insert(
+            "six.py".to_string(),
+            PackageInfo {
+                name: "six.py".to_string(),
+                entry_module: ModuleId(0),
+                total_reachable_size: 100,
+                total_reachable_files: 1,
+            },
+        );
+
+        let loaded = loader::LoadedGraph {
+            graph,
+            root,
+            entry,
+            valid_extensions: &["py"],
+            from_cache: false,
+            unresolvable_dynamic_count: 0,
+            unresolvable_dynamic_files: vec![],
+        };
+        // "six.py" looks like a path (.py extension) but no such file exists.
+        // Should fall back to package lookup, not exit(1).
+        let resolved = resolve_target("six.py", &loaded);
+        assert_eq!(resolved.target, query::ChainTarget::Package("six.py".to_string()));
+        assert!(resolved.exists);
     }
 
     #[test]
