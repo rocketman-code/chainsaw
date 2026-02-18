@@ -243,7 +243,14 @@ pub fn package_name_from_path(path: &Path, site_packages: &[PathBuf]) -> Option<
             if name.ends_with(".dist-info") || name.ends_with(".egg-info") {
                 continue;
             }
-            return Some(name.to_string());
+            // Strip C extension platform suffix: ciso8601.cpython-314-darwin.so -> ciso8601
+            let stem = if name.ends_with(".so") || name.ends_with(".pyd") {
+                // split_once always succeeds here since name ends with .so/.pyd
+                name.split_once('.').unwrap().0
+            } else {
+                name
+            };
+            return Some(stem.to_string());
         }
     }
     None
@@ -817,6 +824,25 @@ mod tests {
         let path = PathBuf::from("/other/place/module.py");
         let result = package_name_from_path(&path, &[sp]);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn package_name_strips_c_extension_suffix() {
+        let sp = PathBuf::from("/fake/site-packages");
+        // Top-level C extension like ciso8601
+        let path = sp.join("ciso8601.cpython-314-darwin.so");
+        let result = package_name_from_path(&path, &[sp.clone()]);
+        assert_eq!(result, Some("ciso8601".to_string()));
+
+        // Top-level C extension with underscores
+        let path = sp.join("_cffi_backend.cpython-314-darwin.so");
+        let result = package_name_from_path(&path, &[sp.clone()]);
+        assert_eq!(result, Some("_cffi_backend".to_string()));
+
+        // .pyd on Windows
+        let path = sp.join("ciso8601.cp314-win_amd64.pyd");
+        let result = package_name_from_path(&path, &[sp]);
+        assert_eq!(result, Some("ciso8601".to_string()));
     }
 
     #[test]
