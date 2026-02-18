@@ -112,10 +112,13 @@ fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
 /// Falls back to the file name if the package name isn't found in path components.
 fn package_relative_path(path: &Path, package_name: &str) -> String {
     let components: Vec<_> = path.components().collect();
-    // Scoped packages: match @scope then name as consecutive components
+    // Scan backwards to find the last match — avoids false matches from
+    // workspace dirs that share a package name (e.g. pnpm store paths
+    // like .pnpm/cloudflare@5.2.0/node_modules/cloudflare/index.js where
+    // an ancestor dir is also named "cloudflare").
     if let Some((scope, name)) = package_name.split_once('/') {
-        for i in 0..components.len().saturating_sub(1) {
-            if let (Component::Normal(a), Component::Normal(b)) = (&components[i], &components[i + 1])
+        for (i, pair) in components.windows(2).enumerate().rev() {
+            if let (Component::Normal(a), Component::Normal(b)) = (&pair[0], &pair[1])
                 && a.to_str() == Some(scope) && b.to_str() == Some(name)
             {
                 let sub: PathBuf = components[i..].iter().collect();
@@ -123,7 +126,7 @@ fn package_relative_path(path: &Path, package_name: &str) -> String {
             }
         }
     } else {
-        for (i, comp) in components.iter().enumerate() {
+        for (i, comp) in components.iter().enumerate().rev() {
             if let Component::Normal(name) = comp
                 && name.to_str() == Some(package_name)
             {
@@ -723,5 +726,34 @@ mod tests {
         let result = should_use_color(true, false);
         unsafe { std::env::remove_var("TERM") };
         assert!(!result);
+    }
+
+    #[test]
+    fn package_relative_path_pnpm_store() {
+        // pnpm store path where workspace dir matches package name
+        let path = PathBuf::from("/dev/cloudflare/workers-sdk/node_modules/.pnpm/cloudflare@5.2.0/node_modules/cloudflare/index.js");
+        assert_eq!(
+            package_relative_path(&path, "cloudflare"),
+            "cloudflare/index.js"
+        );
+    }
+
+    #[test]
+    fn package_relative_path_scoped_pnpm() {
+        let path = PathBuf::from("/project/node_modules/.pnpm/@babel+parser@7.25.0/node_modules/@babel/parser/lib/index.js");
+        assert_eq!(
+            package_relative_path(&path, "@babel/parser"),
+            "@babel/parser/lib/index.js"
+        );
+    }
+
+    #[test]
+    fn package_relative_path_simple() {
+        // Non-pnpm: straightforward node_modules/pkg/file
+        let path = PathBuf::from("/project/node_modules/lodash/fp/map.js");
+        assert_eq!(
+            package_relative_path(&path, "lodash"),
+            "lodash/fp/map.js"
+        );
     }
 }
