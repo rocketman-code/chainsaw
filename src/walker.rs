@@ -31,16 +31,22 @@ struct FileResult {
     unresolvable_dynamic: usize,
 }
 
+struct DiscoverResult {
+    files: Vec<FileResult>,
+    warnings: Vec<String>,
+}
+
 /// Phase 1: Concurrent file discovery using a lock-free work queue.
 /// Returns all discovered files with their parsed imports and resolved paths.
 fn concurrent_discover(
     entry: &Path,
     root: &Path,
     lang: &dyn LanguageSupport,
-) -> Vec<FileResult> {
+) -> DiscoverResult {
     let queue: SegQueue<PathBuf> = SegQueue::new();
     let seen: DashSet<PathBuf> = DashSet::new();
     let results: Mutex<Vec<FileResult>> = Mutex::new(Vec::new());
+    let warnings: SegQueue<String> = SegQueue::new();
     let active = AtomicUsize::new(1); // entry file is active
     let extensions = lang.extensions();
 
@@ -58,7 +64,7 @@ fn concurrent_discover(
                         let mut file = match File::open(&path) {
                             Ok(f) => f,
                             Err(e) => {
-                                eprintln!("warning: {}: {e}", path.display());
+                                warnings.push(format!("{}: {e}", path.display()));
                                 active.fetch_sub(1, Ordering::AcqRel);
                                 continue;
                             }
@@ -66,7 +72,7 @@ fn concurrent_discover(
                         let meta = match file.metadata() {
                             Ok(m) => m,
                             Err(e) => {
-                                eprintln!("warning: {}: {e}", path.display());
+                                warnings.push(format!("{}: {e}", path.display()));
                                 active.fetch_sub(1, Ordering::AcqRel);
                                 continue;
                             }
@@ -77,7 +83,7 @@ fn concurrent_discover(
                         let size = meta.len();
                         let mut source = String::with_capacity(size as usize + 1);
                         if let Err(e) = file.read_to_string(&mut source) {
-                            eprintln!("warning: {}: {e}", path.display());
+                            warnings.push(format!("{}: {e}", path.display()));
                             active.fetch_sub(1, Ordering::AcqRel);
                             continue;
                         }
@@ -85,7 +91,7 @@ fn concurrent_discover(
                         let result = match lang.parse(&path, &source) {
                             Ok(r) => r,
                             Err(e) => {
-                                eprintln!("warning: {e}");
+                                warnings.push(e.to_string());
                                 active.fetch_sub(1, Ordering::AcqRel);
                                 continue;
                             }
@@ -143,9 +149,10 @@ fn concurrent_discover(
         }
     });
 
-    let mut results = results.into_inner().unwrap();
-    results.par_sort_unstable_by(|a, b| a.path.cmp(&b.path));
-    results
+    let mut files = results.into_inner().unwrap();
+    files.par_sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    let warnings = std::iter::from_fn(|| warnings.pop()).collect();
+    DiscoverResult { files, warnings }
 }
 
 /// Result of building a module graph.
@@ -156,6 +163,8 @@ pub struct BuildResult {
     pub unresolvable_dynamic: Vec<(PathBuf, usize)>,
     /// Import specifiers that failed to resolve (for cache invalidation).
     pub unresolved_specifiers: Vec<String>,
+    /// Warnings from files that could not be opened, read, or parsed.
+    pub file_warnings: Vec<String>,
 }
 
 /// Build a complete `ModuleGraph` from the given entry point.
@@ -168,7 +177,8 @@ pub fn build_graph(
     cache: &mut ParseCache,
 ) -> BuildResult {
     // Phase 1: Concurrent discovery (lock-free work queue)
-    let file_results = concurrent_discover(entry, root, lang);
+    let discovered = concurrent_discover(entry, root, lang);
+    let file_results = discovered.files;
 
     // Phase 2: Serial graph construction from sorted results
     let mut graph = ModuleGraph::new();
@@ -241,6 +251,7 @@ pub fn build_graph(
         graph,
         unresolvable_dynamic: unresolvable_files,
         unresolved_specifiers: unresolved.into_iter().collect(),
+        file_warnings: discovered.warnings,
     }
 }
 

@@ -341,6 +341,9 @@ fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: &report:
         loaded.graph.module_count(),
         start.elapsed().as_secs_f64() * 1000.0
     );
+    for w in &loaded.file_warnings {
+        eprintln!("{} {w}", sc.warning("warning:"));
+    }
     if loaded.unresolvable_dynamic_count > 0 && !loaded.from_cache {
         let count = loaded.unresolvable_dynamic_count;
         eprintln!(
@@ -609,16 +612,7 @@ fn run_packages(args: &PackagesArgs, no_color: bool, sc: &report::StderrColor) -
     let start = Instant::now();
     let (loaded, _cache_write) = loader::load_graph(&args.entry, args.no_cache)?;
     if !args.quiet {
-        eprintln!(
-            "{} ({} modules) in {:.1}ms",
-            sc.status(if loaded.from_cache {
-                "Loaded cached graph"
-            } else {
-                "Built graph"
-            }),
-            loaded.graph.module_count(),
-            start.elapsed().as_secs_f64() * 1000.0
-        );
+        print_build_status(&loaded, start, sc);
     }
 
     if args.json {
@@ -704,6 +698,7 @@ mod tests {
             from_cache: false,
             unresolvable_dynamic_count: 0,
             unresolvable_dynamic_files: vec![],
+            file_warnings: vec![],
         };
         // "six.py" looks like a path (.py extension) but no such file exists.
         // Should fall back to package lookup, not exit(1).

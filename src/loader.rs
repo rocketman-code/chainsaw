@@ -24,6 +24,8 @@ pub struct LoadedGraph {
     pub unresolvable_dynamic_count: usize,
     /// Files containing unresolvable dynamic imports, with per-file counts.
     pub unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
+    /// Warnings from files that could not be opened, read, or parsed.
+    pub file_warnings: Vec<String>,
 }
 
 /// Load a dependency graph from the given entry point.
@@ -70,6 +72,7 @@ pub fn load_graph(entry: &Path, no_cache: bool) -> Result<(LoadedGraph, CacheWri
             from_cache: result.from_cache,
             unresolvable_dynamic_count: result.unresolvable_dynamic_count,
             unresolvable_dynamic_files: result.unresolvable_dynamic_files,
+            file_warnings: result.file_warnings,
         },
         handle,
     ))
@@ -83,6 +86,7 @@ struct BuildResult {
     graph: ModuleGraph,
     unresolvable_dynamic_count: usize,
     unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
+    file_warnings: Vec<String>,
     from_cache: bool,
 }
 
@@ -118,6 +122,7 @@ fn build_or_load(
                         graph,
                         unresolvable_dynamic_count: unresolvable_dynamic,
                         unresolvable_dynamic_files: Vec::new(),
+                        file_warnings: Vec::new(),
                         from_cache: true,
                     },
                     handle,
@@ -150,6 +155,7 @@ fn build_or_load(
                             graph,
                             unresolvable_dynamic_count: result.unresolvable_dynamic,
                             unresolvable_dynamic_files: Vec::new(),
+                            file_warnings: Vec::new(),
                             from_cache: true,
                         },
                         handle,
@@ -176,6 +182,7 @@ fn build_or_load(
             graph: result.graph,
             unresolvable_dynamic_count: unresolvable_count,
             unresolvable_dynamic_files: result.unresolvable_dynamic,
+            file_warnings: result.file_warnings,
             from_cache: false,
         },
         handle,
