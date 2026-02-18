@@ -381,7 +381,7 @@ fn load_snapshot(path: &Path) -> Result<query::TraceSnapshot, Error> {
     let data = std::fs::read_to_string(path)
         .map_err(|e| Error::SnapshotRead(path.to_path_buf(), e))?;
     serde_json::from_str(&data)
-        .map_err(|e| Error::SnapshotParse(path.to_path_buf(), e.to_string()))
+        .map_err(|e| Error::SnapshotParse(path.to_path_buf(), e))
 }
 
 fn resolve_target(arg: &str, loaded: &loader::LoadedGraph) -> ResolvedTarget {
