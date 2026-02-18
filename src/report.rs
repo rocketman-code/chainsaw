@@ -199,9 +199,9 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
             );
         }
     }
-    println!();
 
     if opts.top != 0 {
+        println!();
         let deps_label = if opts.include_dynamic { "Heavy dependencies (static + dynamic):" } else { "Heavy dependencies (static):" };
         println!("{}", c.bold_green(deps_label));
         if result.heavy_packages.is_empty() {
