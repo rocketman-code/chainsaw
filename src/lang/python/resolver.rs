@@ -315,7 +315,21 @@ fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
             .map(PathBuf::from)
             .filter(|p| p.exists())
             .collect(),
-        _ => Vec::new(),
+        Ok(out) => {
+            eprintln!(
+                "warning: failed to discover site-packages: {} exited with {}",
+                python.display(),
+                out.status,
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: failed to discover site-packages: {}: {e}",
+                python.display(),
+            );
+            Vec::new()
+        }
     }
 }
 
