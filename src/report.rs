@@ -11,17 +11,16 @@ use crate::query::{CutModule, DiffResult, TraceResult};
 ///
 /// Color is disabled when any of these hold:
 /// - `no_color_flag` is true (`--no-color`)
-/// - `NO_COLOR` environment variable is set (any value, per <https://no-color.org>)
-/// - `TERM=dumb`
+/// - `no_color_env` is true (`NO_COLOR` set, per <https://no-color.org>)
+/// - `term_dumb` is true (`TERM=dumb`)
 /// - the stream is not a TTY
-pub fn should_use_color(stream_is_tty: bool, no_color_flag: bool) -> bool {
-    if no_color_flag {
-        return false;
-    }
-    if std::env::var_os("NO_COLOR").is_some() {
-        return false;
-    }
-    if std::env::var("TERM").is_ok_and(|v| v == "dumb") {
+pub fn should_use_color(
+    stream_is_tty: bool,
+    no_color_flag: bool,
+    no_color_env: bool,
+    term_dumb: bool,
+) -> bool {
+    if no_color_flag || no_color_env || term_dumb {
         return false;
     }
     stream_is_tty
@@ -38,7 +37,14 @@ struct C {
 
 impl C {
     fn new(no_color: bool) -> Self {
-        Self { color: should_use_color(std::io::stdout().is_terminal(), no_color) }
+        Self {
+            color: should_use_color(
+                std::io::stdout().is_terminal(),
+                no_color,
+                std::env::var_os("NO_COLOR").is_some(),
+                std::env::var("TERM").is_ok_and(|v| v == "dumb"),
+            ),
+        }
     }
 
     fn bold_green(self, s: &str) -> String {
@@ -65,7 +71,14 @@ pub struct StderrColor {
 
 impl StderrColor {
     pub fn new(no_color: bool) -> Self {
-        Self { color: should_use_color(std::io::stderr().is_terminal(), no_color) }
+        Self {
+            color: should_use_color(
+                std::io::stderr().is_terminal(),
+                no_color,
+                std::env::var_os("NO_COLOR").is_some(),
+                std::env::var("TERM").is_ok_and(|v| v == "dumb"),
+            ),
+        }
     }
 
     pub fn error(self, s: &str) -> String {
@@ -691,54 +704,29 @@ pub fn print_trace_json(
 mod tests {
     use super::*;
 
-    // Safety: env var mutation is unsafe in edition 2024 because it is not
-    // thread-safe. These tests are acceptable because they use unique env
-    // vars and restore original values immediately.
-
     #[test]
     fn color_enabled_when_tty_and_no_overrides() {
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-            std::env::remove_var("TERM");
-        }
-        assert!(should_use_color(true, false));
+        assert!(should_use_color(true, false, false, false));
     }
 
     #[test]
     fn color_disabled_when_not_tty() {
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-            std::env::remove_var("TERM");
-        }
-        assert!(!should_use_color(false, false));
+        assert!(!should_use_color(false, false, false, false));
     }
 
     #[test]
     fn color_disabled_by_flag() {
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-            std::env::remove_var("TERM");
-        }
-        assert!(!should_use_color(true, true));
+        assert!(!should_use_color(true, true, false, false));
     }
 
     #[test]
     fn color_disabled_by_no_color_env() {
-        unsafe { std::env::set_var("NO_COLOR", "1") };
-        let result = should_use_color(true, false);
-        unsafe { std::env::remove_var("NO_COLOR") };
-        assert!(!result);
+        assert!(!should_use_color(true, false, true, false));
     }
 
     #[test]
     fn color_disabled_by_term_dumb() {
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-            std::env::set_var("TERM", "dumb");
-        }
-        let result = should_use_color(true, false);
-        unsafe { std::env::remove_var("TERM") };
-        assert!(!result);
+        assert!(!should_use_color(true, false, false, true));
     }
 
     #[test]
