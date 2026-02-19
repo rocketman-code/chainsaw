@@ -73,7 +73,7 @@ impl ChainTarget {
 }
 
 /// Whether to follow an edge based on its kind and the `include_dynamic` flag.
-fn should_follow(kind: EdgeKind, include_dynamic: bool) -> bool {
+const fn should_follow(kind: EdgeKind, include_dynamic: bool) -> bool {
     match kind {
         EdgeKind::Static => true,
         EdgeKind::Dynamic if include_dynamic => true,

@@ -119,7 +119,7 @@ pub enum GraphCacheResult {
 pub struct CacheWriteHandle(Option<thread::JoinHandle<()>>);
 
 impl CacheWriteHandle {
-    pub fn none() -> Self {
+    pub const fn none() -> Self {
         Self(None)
     }
 }

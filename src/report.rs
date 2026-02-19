@@ -14,7 +14,8 @@ use crate::query::{CutModule, DiffResult, TraceResult};
 /// - `no_color_env` is true (`NO_COLOR` set, per <https://no-color.org>)
 /// - `term_dumb` is true (`TERM=dumb`)
 /// - the stream is not a TTY
-pub fn should_use_color(
+#[allow(clippy::fn_params_excessive_bools)]
+pub const fn should_use_color(
     stream_is_tty: bool,
     no_color_flag: bool,
     no_color_env: bool,
@@ -26,7 +27,7 @@ pub fn should_use_color(
     stream_is_tty
 }
 
-fn plural(n: u64) -> &'static str {
+const fn plural(n: u64) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
