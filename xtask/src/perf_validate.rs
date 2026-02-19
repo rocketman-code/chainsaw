@@ -25,12 +25,9 @@ struct Attestation {
 pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
     let root = project_root();
 
-    let registry = match Registry::load(&root) {
-        Some(r) => r,
-        None => {
-            eprintln!("No perf.toml found. Nothing to validate.");
-            return 0;
-        }
+    let Some(registry) = Registry::load(&root) else {
+        eprintln!("No perf.toml found. Nothing to validate.");
+        return 0;
     };
 
     let baseline_name = baseline.unwrap_or("main");
@@ -127,7 +124,7 @@ pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
 }
 
 /// If there are failures, re-bench and re-judge to confirm.
-/// Returns Some(exit_code) if regression confirmed or bench failed,
+/// Returns `Some(exit_code)` if regression confirmed or bench failed,
 /// None if all clear (either no failures or noise dismissed).
 fn confirm_failures(
     results: &[BenchResult],

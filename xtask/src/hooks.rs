@@ -12,9 +12,8 @@ pub fn pre_commit() -> i32 {
         return 0; // Not on main, no gate
     }
 
-    let registry = match Registry::load(&root) {
-        Some(r) => r,
-        None => return 0, // No registry, no gate
+    let Some(registry) = Registry::load(&root) else {
+        return 0; // No registry, no gate
     };
 
     let staged = staged_files(&root);
@@ -43,9 +42,8 @@ pub fn pre_commit() -> i32 {
 pub fn pre_push() -> i32 {
     let root = project_root();
 
-    let registry = match Registry::load(&root) {
-        Some(r) => r,
-        None => return 0,
+    let Some(registry) = Registry::load(&root) else {
+        return 0;
     };
 
     let changed = files_since_main(&root);
@@ -258,7 +256,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn make_attestation(commit_sha: &str, overall: &str, benchmarks: &[&str]) -> String {
-        let bench_json: Vec<String> = benchmarks.iter().map(|b| format!("\"{}\"", b)).collect();
+        let bench_json: Vec<String> = benchmarks.iter().map(|b| format!("\"{b}\"")).collect();
         format!(
             r#"{{"commit_sha":"{}","timestamp":"2026-01-01T00:00:00Z","required_benchmarks":[{}],"overall":"{}"}}"#,
             commit_sha,
@@ -279,7 +277,7 @@ mod tests {
     #[test]
     fn verify_attestation_wrong_commit_sha() {
         let required: BTreeSet<String> =
-            ["ts_parse_file"].into_iter().map(String::from).collect();
+            std::iter::once("ts_parse_file").map(String::from).collect();
         let json = make_attestation("abc123", "pass", &["ts_parse_file"]);
 
         let err = verify_attestation(&json, "def456", &required).unwrap_err();
@@ -299,7 +297,7 @@ mod tests {
     #[test]
     fn verify_attestation_failed_verdict() {
         let required: BTreeSet<String> =
-            ["ts_parse_file"].into_iter().map(String::from).collect();
+            std::iter::once("ts_parse_file").map(String::from).collect();
         let json = make_attestation("abc123", "fail", &["ts_parse_file"]);
 
         let err = verify_attestation(&json, "abc123", &required).unwrap_err();
@@ -309,7 +307,7 @@ mod tests {
     #[test]
     fn verify_attestation_superset_is_ok() {
         let required: BTreeSet<String> =
-            ["ts_parse_file"].into_iter().map(String::from).collect();
+            std::iter::once("ts_parse_file").map(String::from).collect();
         let json = make_attestation("abc123", "pass", &["ts_parse_file", "build_graph/ts_cold"]);
 
         assert!(verify_attestation(&json, "abc123", &required).is_ok());
@@ -318,7 +316,7 @@ mod tests {
     #[test]
     fn verify_attestation_invalid_json() {
         let required: BTreeSet<String> =
-            ["ts_parse_file"].into_iter().map(String::from).collect();
+            std::iter::once("ts_parse_file").map(String::from).collect();
 
         let err = verify_attestation("not json", "abc123", &required).unwrap_err();
         assert!(err.contains("parse") || err.contains("invalid"), "expected parse error, got: {err}");

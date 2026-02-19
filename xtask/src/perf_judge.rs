@@ -29,17 +29,17 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    pub fn is_fail(&self) -> bool {
-        matches!(self, Verdict::Fail)
+    pub const fn is_fail(&self) -> bool {
+        matches!(self, Self::Fail)
     }
 }
 
 impl std::fmt::Display for Verdict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Verdict::Pass => write!(f, "pass"),
-            Verdict::Faster => write!(f, "faster"),
-            Verdict::Fail => write!(f, "FAIL"),
+            Self::Pass => write!(f, "pass"),
+            Self::Faster => write!(f, "faster"),
+            Self::Fail => write!(f, "FAIL"),
         }
     }
 }
@@ -110,10 +110,7 @@ pub fn judge(dirs: &[String], baseline_name: &str, criterion_dir: &Path) -> Vec<
     let (adjusted_changes, drift) = session_bias_adjust(&raw_changes);
     let fresh_sigma = noise_floor(&adjusted_changes, NOISE_FLOOR_MIN);
     let stored_sigma = load_sigma_env(criterion_dir, baseline_name);
-    let effective_sigma = match stored_sigma {
-        Some(s) => s.max(fresh_sigma),
-        None => fresh_sigma,
-    };
+    let effective_sigma = stored_sigma.map_or(fresh_sigma, |s| s.max(fresh_sigma));
 
     if loaded.len() >= 3 {
         println!(
@@ -160,12 +157,12 @@ pub fn judge(dirs: &[String], baseline_name: &str, criterion_dir: &Path) -> Vec<
 }
 
 fn load_sigma_env(criterion_dir: &Path, baseline_name: &str) -> Option<f64> {
-    let path = criterion_dir.join(format!("sigma_env_{baseline_name}.json"));
-    let content = std::fs::read_to_string(path).ok()?;
     #[derive(Deserialize)]
     struct SigmaEnv {
         sigma_env: f64,
     }
+    let path = criterion_dir.join(format!("sigma_env_{baseline_name}.json"));
+    let content = std::fs::read_to_string(path).ok()?;
     let data: SigmaEnv = serde_json::from_str(&content).ok()?;
     Some(data.sigma_env)
 }
@@ -196,13 +193,10 @@ pub fn print_results(results: &[BenchResult]) {
 
 fn extract_bench_name(path: &Path) -> String {
     let s = path.to_string_lossy();
-    if let Some(pos) = s.find("criterion/") {
-        s[pos + "criterion/".len()..].trim_end_matches('/').to_string()
-    } else {
-        path.file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| s.to_string())
-    }
+    s.find("criterion/").map_or_else(
+        || path.file_name().map_or_else(|| s.to_string(), |f| f.to_string_lossy().to_string()),
+        |pos| s[pos + "criterion/".len()..].trim_end_matches('/').to_string(),
+    )
 }
 
 fn load_samples(path: &Path) -> Result<Vec<f64>, String> {
@@ -234,12 +228,14 @@ mod tests {
 
     /// Create synthetic criterion sample data.
     /// Returns per-iteration times (ns).
+    #[allow(clippy::suboptimal_flops)]
     fn synthetic_samples(mean_ns: f64, noise: f64, n: usize) -> Vec<f64> {
         // Deterministic pseudo-noise: use a simple LCG
         let mut rng = 12345_u64;
         (0..n)
             .map(|_| {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                #[allow(clippy::cast_precision_loss)]
                 let uniform = (rng >> 33) as f64 / (1u64 << 31) as f64; // 0..1
                 mean_ns + (uniform - 0.5) * 2.0 * noise
             })
