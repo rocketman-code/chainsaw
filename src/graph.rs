@@ -32,6 +32,7 @@ pub enum EdgeKind {
 
 /// A single source file in the dependency graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Module {
     pub id: ModuleId,
     pub path: PathBuf,
@@ -42,6 +43,7 @@ pub struct Module {
 
 /// A directed import edge between two modules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Edge {
     pub id: EdgeId,
     pub from: ModuleId,
@@ -62,6 +64,7 @@ pub struct PackageInfo {
 
 /// A directed graph of modules connected by import edges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ModuleGraph {
     pub modules: Vec<Module>,
     pub edges: Vec<Edge>,

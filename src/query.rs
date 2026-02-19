@@ -8,6 +8,7 @@ use crate::graph::{EdgeKind, ModuleGraph, ModuleId};
 
 /// Results of tracing transitive import weight from an entry module.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TraceResult {
     /// Total file size reachable via static imports
     pub static_weight: u64,
@@ -29,6 +30,7 @@ pub struct TraceResult {
 
 /// A third-party package with its reachable size and shortest import chain.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct HeavyPackage {
     pub name: String,
     pub total_size: u64,
@@ -39,6 +41,7 @@ pub struct HeavyPackage {
 
 /// A module with its exclusive weight (bytes only it contributes to the graph).
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct ModuleCost {
     pub module_id: ModuleId,
     pub exclusive_size: u64,
@@ -596,6 +599,7 @@ fn all_shortest_chains(
 
 /// A module whose dynamic conversion would sever one or more import chains.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct CutModule {
     pub module_id: ModuleId,
     pub chains_broken: usize,
@@ -671,6 +675,7 @@ pub fn find_cut_modules(
 
 /// Minimal snapshot of a trace result for before/after comparison.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TraceSnapshot {
     pub entry: String,
     pub static_weight: u64,
@@ -695,6 +700,7 @@ impl TraceResult {
 
 /// A package that appears in only one side of a diff, with its size.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct DiffPackage {
     pub name: String,
     pub size: u64,
@@ -702,6 +708,7 @@ pub struct DiffPackage {
 
 /// Compute a diff between two trace snapshots.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct DiffResult {
     pub entry_a_weight: u64,
     pub entry_b_weight: u64,

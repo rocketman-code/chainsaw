@@ -36,6 +36,7 @@ impl std::error::Error for ParseError {}
 
 /// A single import extracted from source code before resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RawImport {
     pub specifier: String,
     pub kind: EdgeKind,
@@ -43,6 +44,7 @@ pub struct RawImport {
 
 /// All imports extracted from a single source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ParseResult {
     pub imports: Vec<RawImport>,
     pub unresolvable_dynamic: usize,
