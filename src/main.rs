@@ -138,16 +138,12 @@ struct PackagesArgs {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn parse_size(s: &str) -> Result<u64, String> {
     let s = s.trim();
-    let (num_str, multiplier) = if let Some(n) = s.strip_suffix("MB") {
-        (n.trim(), 1_000_000.0)
-    } else if let Some(n) = s.strip_suffix("KB") {
-        (n.trim(), 1_000.0)
-    } else if let Some(n) = s.strip_suffix("B") {
-        (n.trim(), 1.0)
-    } else {
-        // bare number = bytes
-        (s, 1.0)
-    };
+    let (num_str, multiplier) = s
+        .strip_suffix("MB")
+        .map(|n| (n.trim(), 1_000_000.0))
+        .or_else(|| s.strip_suffix("KB").map(|n| (n.trim(), 1_000.0)))
+        .or_else(|| s.strip_suffix("B").map(|n| (n.trim(), 1.0)))
+        .unwrap_or((s, 1.0));
     let value: f64 = num_str.parse().map_err(|_| format!("invalid size: {s}"))?;
     Ok((value * multiplier) as u64)
 }
@@ -168,7 +164,7 @@ const MAX_WALKER_THREADS: usize = 8;
 
 fn main() {
     let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZero::get)
         .unwrap_or(1);
     let threads = cpus.min(MAX_WALKER_THREADS);
     rayon::ThreadPoolBuilder::new()
@@ -180,7 +176,7 @@ fn main() {
     let no_color = cli.no_color;
     let sc = report::StderrColor::new(no_color);
 
-    if let Err(e) = run(cli.command, no_color, &sc) {
+    if let Err(e) = run(cli.command, no_color, sc) {
         eprintln!("{} {e}", sc.error("error:"));
         if let Some(hint) = e.hint() {
             eprintln!("hint: {hint}");
@@ -189,7 +185,7 @@ fn main() {
     }
 }
 
-fn run(command: Commands, no_color: bool, sc: &report::StderrColor) -> Result<(), Error> {
+fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
     match command {
         Commands::Trace(args) => run_trace(args, no_color, sc),
 
@@ -221,7 +217,7 @@ fn run(command: Commands, no_color: bool, sc: &report::StderrColor) -> Result<()
     }
 }
 
-fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Result<(), Error> {
+fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
     let start = Instant::now();
 
     // Validate mutually exclusive flags before loading graph
@@ -324,7 +320,7 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: &report::StderrColor) -> Resul
     Ok(())
 }
 
-fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: &report::StderrColor) {
+fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: report::StderrColor) {
     eprintln!(
         "{} ({} modules) in {:.1}ms",
         sc.status(if loaded.from_cache {
@@ -358,7 +354,7 @@ fn save_snapshot(
     result: &query::TraceResult,
     entry_rel: &str,
     quiet: bool,
-    sc: &report::StderrColor,
+    sc: report::StderrColor,
 ) -> Result<(), Error> {
     let snapshot = result.to_snapshot(entry_rel);
     let data = serde_json::to_string_pretty(&snapshot).unwrap();
@@ -538,7 +534,7 @@ fn handle_diff(
     no_cache: bool,
     limit: i32,
     no_color: bool,
-    sc: &report::StderrColor,
+    sc: report::StderrColor,
 ) -> Result<(), Error> {
     let diff_entry = diff_path
         .canonicalize()
@@ -581,7 +577,7 @@ fn handle_diff(
     Ok(())
 }
 
-fn run_packages(args: &PackagesArgs, no_color: bool, sc: &report::StderrColor) -> Result<(), Error> {
+fn run_packages(args: &PackagesArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
     let start = Instant::now();
     let (loaded, _cache_write) = loader::load_graph(&args.entry, args.no_cache)?;
     if !args.quiet {
@@ -601,10 +597,10 @@ fn run_packages(args: &PackagesArgs, no_color: bool, sc: &report::StderrColor) -
 /// instead of just `src/index.ts`).
 fn entry_label(entry: &Path, root: &Path) -> String {
     let rel = entry.strip_prefix(root).unwrap_or(entry);
-    match root.file_name() {
-        Some(name) => Path::new(name).join(rel).to_string_lossy().into_owned(),
-        None => rel.to_string_lossy().into_owned(),
-    }
+    root.file_name().map_or_else(
+        || rel.to_string_lossy().into_owned(),
+        |name| Path::new(name).join(rel).to_string_lossy().into_owned(),
+    )
 }
 
 /// Determine whether a --chain/--cut argument looks like a file path
