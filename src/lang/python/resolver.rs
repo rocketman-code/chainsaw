@@ -159,6 +159,7 @@ impl PythonResolver {
 
     /// Resolve a module within a single root, using Python's per-directory
     /// loader order: __init__.py > C extension (.so/.pyd) > source (.py).
+    #[allow(clippy::unused_self)]
     fn resolve_in_root(&self, root: &Path, rel_path: &str) -> Option<PathBuf> {
         let pkg_init = root.join(rel_path).join("__init__.py");
         if pkg_init.exists() {
@@ -244,7 +245,8 @@ pub fn package_name_from_path(path: &Path, site_packages: &[PathBuf]) -> Option<
                 continue;
             }
             // Strip C extension platform suffix: ciso8601.cpython-314-darwin.so -> ciso8601
-            let stem = if name.ends_with(".so") || name.ends_with(".pyd") {
+            let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str());
+            let stem = if matches!(ext, Some("so" | "pyd")) {
                 // split_once always succeeds here since name ends with .so/.pyd
                 name.split_once('.').unwrap().0
             } else {

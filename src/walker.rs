@@ -104,6 +104,7 @@ fn concurrent_discover(
                         };
 
                         // Resolve imports and discover new files
+                        #[allow(clippy::or_fun_call)]
                         let dir = path.parent().unwrap_or(Path::new("."));
                         let imports: Vec<(RawImport, Option<PathBuf>)> = result
                             .imports

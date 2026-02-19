@@ -244,6 +244,7 @@ fn try_incremental_update(
         graph.modules[mid.0 as usize].size_bytes = new_size;
 
         // Update parse cache entry
+        #[allow(clippy::or_fun_call)]
         let dir = path.parent().unwrap_or(Path::new("."));
         let resolved_paths: Vec<Option<PathBuf>> = new_result
             .imports
