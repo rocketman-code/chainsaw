@@ -38,7 +38,7 @@ pub fn median(data: &[f64]) -> f64 {
     }
 }
 
-/// Median absolute deviation: median of |x_i - median(x)|.
+/// Median absolute deviation: median of |`x_i` - median(x)|.
 /// Robust measure of spread with 50% breakdown point.
 #[must_use]
 pub fn mad(data: &[f64]) -> f64 {
@@ -52,9 +52,10 @@ pub fn mad(data: &[f64]) -> f64 {
 const MIN_BENCHMARKS_FOR_BIAS: usize = 3;
 
 /// Estimate environmental noise floor from suite-level adjusted changes.
+///
 /// Uses MAD * 1.4826 (consistency factor for normal distributions) as the
-/// sigma estimate. Returns max(estimate, min_floor). With fewer than 3
-/// benchmarks, returns min_floor directly.
+/// sigma estimate. Returns max(estimate, `min_floor`). With fewer than 3
+/// benchmarks, returns `min_floor` directly.
 #[must_use]
 pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
     if adjusted_changes.len() < MIN_BENCHMARKS_FOR_BIAS {
@@ -65,7 +66,8 @@ pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
 }
 
 /// Welch's t-test with environmental noise floor (GUM quadrature).
-/// noise_floor_frac is the environmental sigma as a fraction of the baseline
+///
+/// `noise_floor_frac` is the environmental sigma as a fraction of the baseline
 /// mean. The environmental SE is added in quadrature with the sampling SE,
 /// inflating the denominator to absorb between-run variance.
 #[must_use]
@@ -100,7 +102,8 @@ pub fn noise_aware_welch_t_test(
 }
 
 /// Subtract estimated session-level bias from per-benchmark change percentages.
-/// Returns (adjusted_changes, estimated_drift). If fewer than 3 benchmarks,
+///
+/// Returns (`adjusted_changes`, `estimated_drift`). If fewer than 3 benchmarks,
 /// returns the original changes unchanged with drift = 0.
 #[must_use]
 pub fn session_bias_adjust(change_pcts: &[f64]) -> (Vec<f64>, f64) {
@@ -123,7 +126,7 @@ pub fn variance(data: &[f64]) -> f64 {
     data.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (data.len() - 1) as f64
 }
 
-/// Coefficient of variation: std_dev / mean.
+/// Coefficient of variation: `std_dev` / `mean`.
 #[must_use]
 pub fn cv(data: &[f64]) -> f64 {
     variance(data).sqrt() / mean(data)
@@ -183,7 +186,7 @@ fn student_t_cdf(t: f64, df: f64) -> f64 {
     0.5 * regularized_beta(x, df / 2.0, 0.5)
 }
 
-/// Regularized incomplete beta function I_x(a, b).
+/// Regularized incomplete beta function `I_x(a, b)`.
 fn regularized_beta(x: f64, a: f64, b: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
