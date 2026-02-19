@@ -38,6 +38,7 @@ struct DiscoverResult {
 
 /// Phase 1: Concurrent file discovery using a lock-free work queue.
 /// Returns all discovered files with their parsed imports and resolved paths.
+#[allow(clippy::too_many_lines)]
 fn concurrent_discover(
     entry: &Path,
     root: &Path,
@@ -81,6 +82,7 @@ fn concurrent_discover(
                             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                             .map(|d| d.as_nanos());
                         let size = meta.len();
+                        #[allow(clippy::cast_possible_truncation)]
                         let mut source = String::with_capacity(size as usize + 1);
                         if let Err(e) = file.read_to_string(&mut source) {
                             warnings.push(format!("{}: {e}", path.display()));
