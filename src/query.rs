@@ -66,8 +66,8 @@ pub enum ChainTarget {
 impl ChainTarget {
     fn matches(&self, graph: &ModuleGraph, mid: ModuleId) -> bool {
         match self {
-            ChainTarget::Package(name) => graph.module(mid).package.as_deref() == Some(name),
-            ChainTarget::Module(target) => mid == *target,
+            Self::Package(name) => graph.module(mid).package.as_deref() == Some(name),
+            Self::Module(target) => mid == *target,
         }
     }
 }
@@ -666,7 +666,7 @@ pub fn find_cut_modules(
 }
 
 /// Minimal snapshot of a trace result for before/after comparison.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceSnapshot {
     pub entry: String,
     pub static_weight: u64,
