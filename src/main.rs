@@ -14,7 +14,7 @@ use chainsaw::{error::Error, loader, query, report};
     name = "chainsaw",
     version,
     about = "TypeScript/JavaScript and Python dependency graph analyzer",
-    after_help = "Repository: https://github.com/RocketMan234/chainsaw"
+    after_help = "Repository: https://github.com/rocketman-code/chainsaw"
 )]
 struct Cli {
     /// Disable colored output
