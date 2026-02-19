@@ -129,6 +129,15 @@ impl CacheWriteHandle {
     pub const fn none() -> Self {
         Self(None)
     }
+
+    /// Block until the background cache write completes.
+    ///
+    /// This is equivalent to dropping the handle, but makes the intent explicit.
+    pub fn join(mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl Drop for CacheWriteHandle {
