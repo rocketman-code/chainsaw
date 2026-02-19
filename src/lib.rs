@@ -1,6 +1,14 @@
+//! Build and query dependency graphs for TypeScript/JavaScript and Python codebases.
+//!
+//! Chainsaw parses import statements, resolves them against the filesystem, and
+//! constructs a full transitive dependency graph from any entry file. The graph
+//! can then be queried for total import weight, heaviest packages, shortest
+//! import chains, optimal cut points, and before/after diffs.
+//!
+//! This library backs the `chainsaw` CLI. The public API is internal and
+//! unstable -- it exists so benchmarks and tests can access internals.
+
 #![warn(clippy::pedantic)]
-// Binary crate with internal library — all callers are us.
-// These doc lints are for public API documentation, not applicable here.
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
