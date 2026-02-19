@@ -8,11 +8,11 @@ edition = "2024"
 rust-version = "1.85"
 description = "Trace transitive import weight in TypeScript and Python codebases"
 license = "MIT"
-repository = "https://github.com/RocketMan234/chainsaw"
+repository = "https://github.com/rocketman-code/chainsaw"
 keywords = ["typescript", "python", "imports", "dependencies"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
-exclude = ["Justfile", "perf.toml", "scripts/", "docs/", "benches/", "tests/", ".cargo/"]
+exclude = ["Justfile", "perf.toml", "scripts/", "docs/", "benches/", "tests/", ".cargo/", "xtask/", "stats/"]
 autobenches = false
 
 [dependencies]
