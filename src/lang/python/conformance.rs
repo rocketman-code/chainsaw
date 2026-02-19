@@ -157,9 +157,10 @@ struct OracleResult {
 
 /// Compare our Python resolver against Python's own importlib as ground truth.
 ///
-/// Run with: PYTHON_PROJECT=/path/to/project cargo test python::conformance -- --ignored --nocapture
+/// Run with: `PYTHON_PROJECT=/path/to/project cargo test python::conformance -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "requires PYTHON_PROJECT env var"]
+#[allow(clippy::too_many_lines)]
 fn resolver_conformance() {
     let project = std::env::var("PYTHON_PROJECT")
         .expect("Set PYTHON_PROJECT env var to a Python project root");
@@ -171,23 +172,23 @@ fn resolver_conformance() {
     let files = find_python_files(&root);
 
     // Parse and collect all (file, specifier) pairs
-    let source_roots: Vec<&Path> = support.source_roots().iter().map(|p| p.as_path()).collect();
+    let source_roots: Vec<&Path> = support.source_roots().iter().map(PathBuf::as_path).collect();
     let mut imports: Vec<(PathBuf, String)> = Vec::new();
     for file in &files {
-        let source = match std::fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
         };
-        if let Ok(parsed) = support.parse(file, &source) {
-            let in_package = has_package_chain(file, &source_roots);
-            for imp in parsed.imports {
-                // Skip relative imports from files not in a valid package
-                // chain — Python can't resolve them and neither can the oracle.
-                if imp.specifier.starts_with('.') && !in_package {
-                    continue;
-                }
-                imports.push((file.clone(), imp.specifier));
+        let Ok(parsed) = support.parse(file, &source) else {
+            continue;
+        };
+        let in_package = has_package_chain(file, &source_roots);
+        for imp in parsed.imports {
+            // Skip relative imports from files not in a valid package
+            // chain — Python can't resolve them and neither can the oracle.
+            if imp.specifier.starts_with('.') && !in_package {
+                continue;
             }
+            imports.push((file.clone(), imp.specifier));
         }
     }
 

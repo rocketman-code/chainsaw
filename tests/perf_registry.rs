@@ -11,9 +11,8 @@ fn perf_registry_matches_benchmarks() {
     for name in &bench_names {
         assert!(
             registry_benchmarks.contains(name),
-            "Benchmark '{}' exists in benches/benchmarks.rs but is not registered in perf.toml. \
+            "Benchmark '{name}' exists in benches/benchmarks.rs but is not registered in perf.toml. \
              Add it to perf.toml so regressions are caught.",
-            name
         );
     }
 
@@ -21,9 +20,8 @@ fn perf_registry_matches_benchmarks() {
     for name in &registry_benchmarks {
         assert!(
             bench_names.contains(name),
-            "Benchmark '{}' is registered in perf.toml but does not exist in benches/benchmarks.rs. \
+            "Benchmark '{name}' is registered in perf.toml but does not exist in benches/benchmarks.rs. \
              Remove it from perf.toml or add the benchmark.",
-            name
         );
     }
 
@@ -31,9 +29,8 @@ fn perf_registry_matches_benchmarks() {
     for file in &registry_files {
         assert!(
             Path::new(file).exists(),
-            "Source file '{}' is listed in perf.toml but does not exist on disk. \
+            "Source file '{file}' is listed in perf.toml but does not exist on disk. \
              Update perf.toml after file renames or deletions.",
-            file
         );
     }
 
@@ -45,19 +42,18 @@ fn perf_registry_matches_benchmarks() {
         for file in &files {
             assert!(
                 registry_files.contains(file),
-                "'{}' is not registered in perf.toml. \
+                "'{file}' is not registered in perf.toml. \
                  Add it with benchmarks if perf-sensitive, or with benchmarks = [] if exempt.",
-                file
             );
         }
     }
 }
 
-/// Benchmarks that do parallel stat() must run before benchmarks that read full
-/// file contents on the same tree. build_graph reads 3200+ files, warming the OS
+/// Benchmarks that do parallel `stat()` must run before benchmarks that read full
+/// file contents on the same tree. `build_graph` reads 3200+ files, warming the OS
 /// page cache. In save-baseline mode (50 iterations) this warming is heavy; in
-/// comparison mode (early-stop at 5) it's light. cache_load_validate_ts does
-/// stat() calls that are ~10% faster on warm pages, producing false positive
+/// comparison mode (early-stop at 5) it's light. `cache_load_validate_ts` does
+/// `stat()` calls that are ~10% faster on warm pages, producing false positive
 /// regressions when comparing across modes.
 #[test]
 fn io_sensitive_benchmarks_run_before_io_heavy() {
@@ -72,10 +68,8 @@ fn io_sensitive_benchmarks_run_before_io_heavy() {
         .expect("no build_graph benchmark found");
     assert!(
         cache_pos < build_graph_pos,
-        "cache_load_validate_ts (position {}) must run before build_graph benchmarks \
-         (position {}) to avoid OS page cache contamination between modes",
-        cache_pos,
-        build_graph_pos,
+        "cache_load_validate_ts (position {cache_pos}) must run before build_graph benchmarks \
+         (position {build_graph_pos}) to avoid OS page cache contamination between modes",
     );
 }
 
@@ -137,24 +131,16 @@ fn parse_perf_toml() -> (HashSet<String>, HashSet<String>) {
         if trimmed.starts_with("benchmarks = [") {
             in_benchmarks_array = true;
             in_files_array = false;
-            // Handle single-line array
+            extract_array_values(trimmed, &mut benchmarks);
             if trimmed.ends_with(']') {
-                extract_array_values(trimmed, &mut benchmarks);
                 in_benchmarks_array = false;
-            } else {
-                // Start of multi-line array
-                extract_array_values(trimmed, &mut benchmarks);
             }
         } else if trimmed.starts_with("files = [") {
             in_files_array = true;
             in_benchmarks_array = false;
-            // Handle single-line array
+            extract_array_values(trimmed, &mut files);
             if trimmed.ends_with(']') {
-                extract_array_values(trimmed, &mut files);
                 in_files_array = false;
-            } else {
-                // Start of multi-line array
-                extract_array_values(trimmed, &mut files);
             }
         } else if in_benchmarks_array || in_files_array {
             // Continue parsing multi-line array

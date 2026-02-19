@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -82,6 +83,7 @@ fn calibrate(f: &dyn Fn()) -> u64 {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn warmup(f: &dyn Fn(), batch: u64) -> usize {
     let mut window: VecDeque<f64> = VecDeque::with_capacity(WARMUP_WINDOW + 1);
     let mut count = 0;
@@ -102,6 +104,7 @@ fn warmup(f: &dyn Fn(), batch: u64) -> usize {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn measure(f: &dyn Fn(), batch: u64) -> (u64, f64) {
     let start = Instant::now();
     for _ in 0..batch {
@@ -117,6 +120,7 @@ enum StopReason {
     NoBaseline, // save-baseline mode
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn sample(
     f: &dyn Fn(),
     batch: u64,
@@ -160,6 +164,7 @@ fn sample(
 
 // --- I/O ---
 
+#[allow(clippy::cast_precision_loss)]
 fn save_samples(name: &str, slot: &str, samples: &[(u64, f64)], overhead_ns: f64) {
     let dir = PathBuf::from("target/criterion").join(name).join(slot);
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -187,7 +192,7 @@ fn format_array(data: &[f64]) -> String {
         if i > 0 {
             s.push(',');
         }
-        s.push_str(&format!("{v}"));
+        let _ = write!(s, "{v}");
     }
     s.push(']');
     s
@@ -199,12 +204,6 @@ struct Baseline {
 }
 
 fn load_baseline(name: &str, baseline_name: &str) -> Option<Baseline> {
-    let path = PathBuf::from("target/criterion")
-        .join(name)
-        .join(baseline_name)
-        .join("sample.json");
-    let content = std::fs::read_to_string(&path).ok()?;
-
     #[derive(serde::Deserialize)]
     struct Sample {
         iters: Vec<f64>,
@@ -212,6 +211,12 @@ fn load_baseline(name: &str, baseline_name: &str) -> Option<Baseline> {
         #[serde(default)]
         overhead_ns: Option<f64>,
     }
+
+    let path = PathBuf::from("target/criterion")
+        .join(name)
+        .join(baseline_name)
+        .join("sample.json");
+    let content = std::fs::read_to_string(&path).ok()?;
     let sample: Sample = serde_json::from_str(&content).ok()?;
     Some(Baseline {
         per_iter: sample
@@ -229,11 +234,12 @@ fn sigma_env_path(slot: &str) -> PathBuf {
 }
 
 fn load_sigma_env(slot: &str) -> Option<f64> {
-    let content = std::fs::read_to_string(sigma_env_path(slot)).ok()?;
     #[derive(serde::Deserialize)]
     struct SigmaEnv {
         sigma_env: f64,
     }
+
+    let content = std::fs::read_to_string(sigma_env_path(slot)).ok()?;
     let data: SigmaEnv = serde_json::from_str(&content).ok()?;
     Some(data.sigma_env)
 }
@@ -280,27 +286,28 @@ fn matches_filter(name: &str, filter: &str) -> bool {
 // --- Benchmark registration ---
 
 fn ts_entry() -> (PathBuf, PathBuf) {
-    match std::env::var("TS_BENCH_ROOT") {
-        Ok(root) => {
+    std::env::var("TS_BENCH_ROOT").map_or_else(
+        |_| corpus::ts_corpus(),
+        |root| {
             let root = PathBuf::from(root);
             let entry = root.join("packages/wrangler/src/index.ts");
             (root, entry)
-        }
-        Err(_) => corpus::ts_corpus(),
-    }
+        },
+    )
 }
 
 fn py_entry() -> (PathBuf, PathBuf) {
-    match std::env::var("PY_BENCH_ROOT") {
-        Ok(root) => {
+    std::env::var("PY_BENCH_ROOT").map_or_else(
+        |_| corpus::py_corpus(),
+        |root| {
             let root = PathBuf::from(root);
             let entry = root.join("awscli/__init__.py");
             (root, entry)
-        }
-        Err(_) => corpus::py_corpus(),
-    }
+        },
+    )
 }
 
+#[allow(clippy::too_many_lines)]
 fn register_benchmarks() -> Vec<Benchmark> {
     let mut benches = Vec::new();
 
@@ -496,6 +503,7 @@ struct BenchResult {
     current_trimmed: Vec<f64>,
 }
 
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 fn main() {
     let args = Args::parse();
     let benchmarks = register_benchmarks();
@@ -512,14 +520,15 @@ fn main() {
     } else {
         Some(args.filter.join("|"))
     };
-    let filtered: Vec<&Benchmark> = if let Some(ref filter) = filter {
-        benchmarks
-            .iter()
-            .filter(|b| matches_filter(b.name, filter))
-            .collect()
-    } else {
-        benchmarks.iter().collect()
-    };
+    let filtered: Vec<&Benchmark> = filter.as_ref().map_or_else(
+        || benchmarks.iter().collect(),
+        |filter| {
+            benchmarks
+                .iter()
+                .filter(|b| matches_filter(b.name, filter))
+                .collect()
+        },
+    );
 
     if filtered.is_empty() {
         eprintln!("No benchmarks matched the filter");
@@ -602,10 +611,7 @@ fn main() {
             let (adjusted, drift) = session_bias_adjust(&change_pcts);
             let fresh_sigma = noise_floor(&adjusted, NOISE_FLOOR_MIN);
             // Use the more conservative of stored vs fresh sigma_env
-            let effective = match stored_sigma {
-                Some(stored) => stored.max(fresh_sigma),
-                None => fresh_sigma,
-            };
+            let effective = stored_sigma.map_or(fresh_sigma, |stored| stored.max(fresh_sigma));
             // Store fresh sigma_env for future comparisons
             if let Some(name) = baseline_name {
                 save_sigma_env(name, fresh_sigma);
@@ -618,40 +624,41 @@ fn main() {
 
     // Report: single verdict path for all benchmarks
     for result in &results {
-        let verdict_str = if let Some(base) = &result.baseline_trimmed {
-            // Subtract session drift from candidate samples (doesn't change variance)
-            let drift_ns = session_drift * mean(base);
-            let adjusted_candidate: Vec<f64> =
-                result.current_trimmed.iter().map(|x| x - drift_ns).collect();
-            let p = noise_aware_welch_t_test(base, &adjusted_candidate, effective_sigma);
-            let adjusted_change = (mean(&adjusted_candidate) - mean(base)) / mean(base);
-            let raw_change = (mean(&result.current_trimmed) - mean(base)) / mean(base);
+        let verdict_str = result.baseline_trimmed.as_ref().map_or_else(
+            || "baseline saved".to_string(),
+            |base| {
+                // Subtract session drift from candidate samples (doesn't change variance)
+                let drift_ns = session_drift * mean(base);
+                let adjusted_candidate: Vec<f64> =
+                    result.current_trimmed.iter().map(|x| x - drift_ns).collect();
+                let p = noise_aware_welch_t_test(base, &adjusted_candidate, effective_sigma);
+                let adjusted_change = (mean(&adjusted_candidate) - mean(base)) / mean(base);
+                let raw_change = (mean(&result.current_trimmed) - mean(base)) / mean(base);
 
-            if p < VERDICT_P && adjusted_change > REGRESSION_THRESHOLD {
-                format!(
-                    "REGRESSION +{:.1}%, p={:.4} (raw {:+.1}%)",
-                    adjusted_change * 100.0,
-                    p,
-                    raw_change * 100.0,
-                )
-            } else if p < VERDICT_P && adjusted_change < -REGRESSION_THRESHOLD {
-                format!(
-                    "faster {:.1}%, p={:.4} (raw {:+.1}%)",
-                    adjusted_change * 100.0,
-                    p,
-                    raw_change * 100.0,
-                )
-            } else {
-                format!(
-                    "clean {:+.1}%, p={:.2} (raw {:+.1}%)",
-                    adjusted_change * 100.0,
-                    p,
-                    raw_change * 100.0,
-                )
-            }
-        } else {
-            "baseline saved".to_string()
-        };
+                if p < VERDICT_P && adjusted_change > REGRESSION_THRESHOLD {
+                    format!(
+                        "REGRESSION +{:.1}%, p={:.4} (raw {:+.1}%)",
+                        adjusted_change * 100.0,
+                        p,
+                        raw_change * 100.0,
+                    )
+                } else if p < VERDICT_P && adjusted_change < -REGRESSION_THRESHOLD {
+                    format!(
+                        "faster {:.1}%, p={:.4} (raw {:+.1}%)",
+                        adjusted_change * 100.0,
+                        p,
+                        raw_change * 100.0,
+                    )
+                } else {
+                    format!(
+                        "clean {:+.1}%, p={:.2} (raw {:+.1}%)",
+                        adjusted_change * 100.0,
+                        p,
+                        raw_change * 100.0,
+                    )
+                }
+            },
+        );
 
         let samples_label = match result.stop_reason {
             StopReason::EarlyStop => format!("{} samples (early stop)", result.samples_count),
