@@ -34,7 +34,7 @@ pub fn median(data: &[f64]) -> f64 {
     if n % 2 == 1 {
         sorted[n / 2]
     } else {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        sorted[n / 2 - 1].midpoint(sorted[n / 2])
     }
 }
 
@@ -70,13 +70,16 @@ pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
 /// `noise_floor_frac` is the environmental sigma as a fraction of the baseline
 /// mean. The environmental SE is added in quadrature with the sampling SE,
 /// inflating the denominator to absorb between-run variance.
+#[allow(clippy::suboptimal_flops)]
 #[must_use]
 pub fn noise_aware_welch_t_test(
     baseline: &[f64],
     candidate: &[f64],
     noise_floor_frac: f64,
 ) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
     let n1 = baseline.len() as f64;
+    #[allow(clippy::cast_precision_loss)]
     let n2 = candidate.len() as f64;
     let v1 = variance(baseline);
     let v2 = variance(candidate);
@@ -117,13 +120,17 @@ pub fn session_bias_adjust(change_pcts: &[f64]) -> (Vec<f64>, f64) {
 
 #[must_use]
 pub fn mean(data: &[f64]) -> f64 {
-    data.iter().sum::<f64>() / data.len() as f64
+    #[allow(clippy::cast_precision_loss)]
+    let n = data.len() as f64;
+    data.iter().sum::<f64>() / n
 }
 
 #[must_use]
 pub fn variance(data: &[f64]) -> f64 {
     let m = mean(data);
-    data.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (data.len() - 1) as f64
+    #[allow(clippy::cast_precision_loss)]
+    let dof = (data.len() - 1) as f64;
+    data.iter().map(|x| (x - m).powi(2)).sum::<f64>() / dof
 }
 
 /// Coefficient of variation: `std_dev` / `mean`.
@@ -142,6 +149,11 @@ pub fn cv(data: &[f64]) -> f64 {
 pub fn trim(data: &[f64], fraction: f64) -> Vec<f64> {
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let k = (sorted.len() as f64 * fraction).floor() as usize;
     sorted[k..sorted.len() - k].to_vec()
 }
@@ -157,7 +169,9 @@ pub fn trimmed_mean(data: &[f64], fraction: f64) -> f64 {
 /// Returns two-tailed p-value.
 #[must_use]
 pub fn welch_t_test(baseline: &[f64], candidate: &[f64]) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
     let n1 = baseline.len() as f64;
+    #[allow(clippy::cast_precision_loss)]
     let n2 = candidate.len() as f64;
     let v1 = variance(baseline);
     let v2 = variance(candidate);
@@ -181,12 +195,14 @@ pub fn welch_t_test(baseline: &[f64], candidate: &[f64]) -> f64 {
 
 /// CDF of Student's t-distribution.
 /// P(T <= t) for t < 0 using the regularized incomplete beta function.
+#[allow(clippy::suboptimal_flops)]
 fn student_t_cdf(t: f64, df: f64) -> f64 {
     let x = df / (df + t * t);
     0.5 * regularized_beta(x, df / 2.0, 0.5)
 }
 
 /// Regularized incomplete beta function `I_x(a, b)`.
+#[allow(clippy::suboptimal_flops)]
 fn regularized_beta(x: f64, a: f64, b: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
@@ -212,6 +228,7 @@ fn regularized_beta(x: f64, a: f64, b: f64) -> f64 {
 }
 
 /// Continued fraction for the incomplete beta function (Lentz's algorithm).
+#[allow(clippy::many_single_char_names, clippy::suboptimal_flops)]
 fn beta_cf(x: f64, a: f64, b: f64) -> f64 {
     const MAX_ITER: usize = 200;
     const EPS: f64 = 1e-15;
@@ -228,6 +245,7 @@ fn beta_cf(x: f64, a: f64, b: f64) -> f64 {
     let mut f = d;
 
     for m in 1..=MAX_ITER {
+        #[allow(clippy::cast_precision_loss)]
         let m = m as f64;
 
         // Even step: d_{2m}
@@ -267,17 +285,18 @@ fn beta_cf(x: f64, a: f64, b: f64) -> f64 {
 }
 
 /// Lanczos approximation for ln(Gamma(x)).
+#[allow(clippy::suboptimal_flops)]
 fn ln_gamma(x: f64) -> f64 {
     const COEFFS: [f64; 9] = [
-        0.99999999999980993,
-        676.5203681218851,
-        -1259.1392167224028,
-        771.32342877765313,
-        -176.61502916214059,
-        12.507343278686905,
-        -0.13857109526572012,
-        9.9843695780195716e-6,
-        1.5056327351493116e-7,
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
     ];
 
     if x < 0.5 {
@@ -289,7 +308,10 @@ fn ln_gamma(x: f64) -> f64 {
     let x = x - 1.0;
     let mut a = COEFFS[0];
     for (i, &c) in COEFFS[1..].iter().enumerate() {
-        a += c / (x + 1.0 + i as f64);
+        #[allow(clippy::cast_precision_loss)]
+        {
+            a += c / (x + 1.0 + i as f64);
+        }
     }
 
     let t = x + 7.5; // x + g + 0.5 where g = 7
