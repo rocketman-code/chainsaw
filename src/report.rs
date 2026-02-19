@@ -1,3 +1,5 @@
+//! Human-readable output formatting for trace results, diffs, and package lists.
+
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Component, Path, PathBuf};

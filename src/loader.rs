@@ -1,3 +1,5 @@
+//! Entry point for building or loading a cached dependency graph.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

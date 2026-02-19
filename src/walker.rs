@@ -1,3 +1,9 @@
+//! Concurrent dependency graph construction.
+//!
+//! Starting from an entry file, discovers all reachable modules by parsing
+//! imports and resolving them against the filesystem in parallel using a
+//! lock-free work queue and rayon thread pool.
+
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Read;

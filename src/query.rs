@@ -1,3 +1,5 @@
+//! Graph queries: trace weight, import chains, cut points, and diffs.
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};

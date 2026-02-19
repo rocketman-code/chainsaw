@@ -1,3 +1,5 @@
+//! Error types for the chainsaw CLI.
+
 use std::path::PathBuf;
 
 /// Errors from entry validation, graph loading, and snapshot I/O.

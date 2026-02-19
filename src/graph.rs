@@ -1,3 +1,9 @@
+//! Dependency graph data structures.
+//!
+//! A [`ModuleGraph`] is a directed graph of source files (modules) connected by
+//! import edges. Nodes are dense `u32`-indexed [`ModuleId`]s, edges carry an
+//! [`EdgeKind`] distinguishing static, dynamic, and type-only imports.
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
