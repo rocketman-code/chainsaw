@@ -8,22 +8,29 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
+/// Dense index into [`ModuleGraph::modules`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct ModuleId(pub u32);
 
+/// Dense index into [`ModuleGraph::edges`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct EdgeId(pub u32);
 
+/// How an import was classified during parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EdgeKind {
+    /// Top-level `import`/`require`/`from ... import` that runs at module load.
     Static,
+    /// `import()` expression, `importlib.import_module`, or import inside a function body.
     Dynamic,
+    /// TypeScript `import type` or Python import inside `if TYPE_CHECKING`.
     TypeOnly,
 }
 
+/// A single source file in the dependency graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
     pub id: ModuleId,
@@ -33,6 +40,7 @@ pub struct Module {
     pub package: Option<String>,
 }
 
+/// A directed import edge between two modules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub id: EdgeId,
@@ -43,6 +51,7 @@ pub struct Edge {
     pub specifier: String,
 }
 
+/// Aggregated size and file count for a third-party package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageInfo {
     pub name: String,
@@ -51,6 +60,7 @@ pub struct PackageInfo {
     pub total_reachable_files: u32,
 }
 
+/// A directed graph of modules connected by import edges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleGraph {
     pub modules: Vec<Module>,

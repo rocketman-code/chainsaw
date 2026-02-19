@@ -34,18 +34,21 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// A single import extracted from source code before resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawImport {
     pub specifier: String,
     pub kind: EdgeKind,
 }
 
+/// All imports extracted from a single source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParseResult {
     pub imports: Vec<RawImport>,
     pub unresolvable_dynamic: usize,
 }
 
+/// Language-specific import parsing and specifier resolution.
 pub trait LanguageSupport: Send + Sync {
     fn extensions(&self) -> &'static [&'static str];
     fn parse(&self, path: &Path, source: &str) -> Result<ParseResult, ParseError>;
@@ -54,6 +57,7 @@ pub trait LanguageSupport: Send + Sync {
     fn workspace_package_name(&self, file_path: &Path, project_root: &Path) -> Option<String>;
 }
 
+/// Which language ecosystem a project belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProjectKind {

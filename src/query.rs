@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph::{EdgeKind, ModuleGraph, ModuleId};
 
+/// Results of tracing transitive import weight from an entry module.
 #[derive(Debug)]
 pub struct TraceResult {
     /// Total file size reachable via static imports
@@ -26,6 +27,7 @@ pub struct TraceResult {
     pub dynamic_packages: HashMap<String, u64>,
 }
 
+/// A third-party package with its reachable size and shortest import chain.
 #[derive(Debug)]
 pub struct HeavyPackage {
     pub name: String,
@@ -35,12 +37,14 @@ pub struct HeavyPackage {
     pub chain: Vec<ModuleId>,
 }
 
+/// A module with its exclusive weight (bytes only it contributes to the graph).
 #[derive(Debug, Clone, Copy)]
 pub struct ModuleCost {
     pub module_id: ModuleId,
     pub exclusive_size: u64,
 }
 
+/// Options controlling which edges to follow and how many results to return.
 #[derive(Debug)]
 pub struct TraceOptions {
     pub include_dynamic: bool,
@@ -58,10 +62,13 @@ impl Default for TraceOptions {
     }
 }
 
+/// Target for `--chain`/`--cut` queries: a package name or a specific module.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ChainTarget {
+    /// Match any module belonging to this third-party package.
     Package(String),
+    /// Match a specific module by its graph id.
     Module(ModuleId),
 }
 
@@ -587,6 +594,7 @@ fn all_shortest_chains(
     all_chains
 }
 
+/// A module whose dynamic conversion would sever one or more import chains.
 #[derive(Debug, Clone, Copy)]
 pub struct CutModule {
     pub module_id: ModuleId,
