@@ -69,7 +69,7 @@ impl PythonResolver {
             .source_roots
             .iter()
             .chain(&self.site_packages_dirs)
-            .map(|p| p.as_path())
+            .map(PathBuf::as_path)
             .collect();
 
         // For dotted imports, resolve component-by-component matching Python's
@@ -211,10 +211,10 @@ fn try_resolve_module(base: &Path, dotted_name: &str, allow_namespace: bool) -> 
 }
 
 fn find_c_extension(base: &Path, rel_path: &str) -> Option<PathBuf> {
-    let (parent, leaf) = match rel_path.rfind('/') {
-        Some(i) => (base.join(&rel_path[..i]), &rel_path[i + 1..]),
-        None => (base.to_path_buf(), rel_path),
-    };
+    let (parent, leaf) = rel_path.rfind('/').map_or_else(
+        || (base.to_path_buf(), rel_path),
+        |i| (base.join(&rel_path[..i]), &rel_path[i + 1..]),
+    );
     let prefix = format!("{leaf}.");
     for entry in std::fs::read_dir(&parent).ok()?.flatten() {
         let file_name = entry.file_name();

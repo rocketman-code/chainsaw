@@ -175,10 +175,9 @@ fn compute_exclusive_weights(
             let mut new_idom: Option<u32> = None;
             for &p in &preds[idx] {
                 if idom[p as usize] != u32::MAX {
-                    new_idom = Some(match new_idom {
-                        None => p,
-                        Some(current) => intersect_idom(&idom, &rpo_num, current, p),
-                    });
+                    new_idom = Some(new_idom.map_or(p, |current| {
+                        intersect_idom(&idom, &rpo_num, current, p)
+                    }));
                 }
             }
             if let Some(ni) = new_idom
@@ -456,11 +455,7 @@ fn dedup_chains_by_package(
             .iter()
             .map(|&mid| {
                 let m = graph.module(mid);
-                if let Some(ref pkg) = m.package {
-                    pkg.clone()
-                } else {
-                    m.path.to_string_lossy().into_owned()
-                }
+                m.package.clone().unwrap_or_else(|| m.path.to_string_lossy().into_owned())
             })
             .collect();
 
@@ -647,10 +642,7 @@ pub fn find_cut_modules(
     let mut seen_packages: HashSet<String> = HashSet::new();
     cuts.retain(|c| {
         let m = graph.module(c.module_id);
-        match m.package {
-            Some(ref pkg) => seen_packages.insert(pkg.clone()),
-            None => true,
-        }
+        m.package.as_ref().is_none_or(|pkg| seen_packages.insert(pkg.clone()))
     });
 
     // Single chain: sort ascending (most surgical cut first).

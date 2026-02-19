@@ -115,10 +115,7 @@ pub fn relative_path(path: &Path, root: &Path) -> String {
 
 fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
     let m = graph.module(mid);
-    match m.package {
-        Some(ref pkg) => pkg.clone(),
-        None => relative_path(&m.path, root),
-    }
+    m.package.clone().unwrap_or_else(|| relative_path(&m.path, root))
 }
 
 /// Path relative to the package directory (e.g. `dateutil/__init__.py`).
