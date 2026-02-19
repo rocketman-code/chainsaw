@@ -10,6 +10,7 @@ pub const TRIM_FRACTION: f64 = 0.10;
 /// Minimum between-run environmental noise (empirical floor).
 pub const NOISE_FLOOR_MIN: f64 = 0.01;
 
+#[must_use]
 pub fn format_time(nanos: f64) -> String {
     if nanos < 1_000.0 {
         format!("{nanos:.0}ns")
@@ -22,6 +23,10 @@ pub fn format_time(nanos: f64) -> String {
     }
 }
 
+/// # Panics
+///
+/// Panics if any element is NaN.
+#[must_use]
 pub fn median(data: &[f64]) -> f64 {
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -35,6 +40,7 @@ pub fn median(data: &[f64]) -> f64 {
 
 /// Median absolute deviation: median of |x_i - median(x)|.
 /// Robust measure of spread with 50% breakdown point.
+#[must_use]
 pub fn mad(data: &[f64]) -> f64 {
     let med = median(data);
     let deviations: Vec<f64> = data.iter().map(|x| (x - med).abs()).collect();
@@ -49,6 +55,7 @@ const MIN_BENCHMARKS_FOR_BIAS: usize = 3;
 /// Uses MAD * 1.4826 (consistency factor for normal distributions) as the
 /// sigma estimate. Returns max(estimate, min_floor). With fewer than 3
 /// benchmarks, returns min_floor directly.
+#[must_use]
 pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
     if adjusted_changes.len() < MIN_BENCHMARKS_FOR_BIAS {
         return min_floor;
@@ -61,6 +68,7 @@ pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
 /// noise_floor_frac is the environmental sigma as a fraction of the baseline
 /// mean. The environmental SE is added in quadrature with the sampling SE,
 /// inflating the denominator to absorb between-run variance.
+#[must_use]
 pub fn noise_aware_welch_t_test(
     baseline: &[f64],
     candidate: &[f64],
@@ -94,6 +102,7 @@ pub fn noise_aware_welch_t_test(
 /// Subtract estimated session-level bias from per-benchmark change percentages.
 /// Returns (adjusted_changes, estimated_drift). If fewer than 3 benchmarks,
 /// returns the original changes unchanged with drift = 0.
+#[must_use]
 pub fn session_bias_adjust(change_pcts: &[f64]) -> (Vec<f64>, f64) {
     if change_pcts.len() < MIN_BENCHMARKS_FOR_BIAS {
         return (change_pcts.to_vec(), 0.0);
@@ -103,22 +112,30 @@ pub fn session_bias_adjust(change_pcts: &[f64]) -> (Vec<f64>, f64) {
     (adjusted, drift)
 }
 
+#[must_use]
 pub fn mean(data: &[f64]) -> f64 {
     data.iter().sum::<f64>() / data.len() as f64
 }
 
+#[must_use]
 pub fn variance(data: &[f64]) -> f64 {
     let m = mean(data);
     data.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (data.len() - 1) as f64
 }
 
 /// Coefficient of variation: std_dev / mean.
+#[must_use]
 pub fn cv(data: &[f64]) -> f64 {
     variance(data).sqrt() / mean(data)
 }
 
 /// Trim the bottom and top `fraction` of values from a sorted copy of data.
 /// Returns the middle portion. Used for robust statistics (Yuen's test).
+///
+/// # Panics
+///
+/// Panics if any element is NaN.
+#[must_use]
 pub fn trim(data: &[f64], fraction: f64) -> Vec<f64> {
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -128,12 +145,14 @@ pub fn trim(data: &[f64], fraction: f64) -> Vec<f64> {
 
 /// Trimmed mean: sort data, discard the bottom and top `fraction` of values,
 /// return the mean of the remaining middle portion. Robust to outliers.
+#[must_use]
 pub fn trimmed_mean(data: &[f64], fraction: f64) -> f64 {
     mean(&trim(data, fraction))
 }
 
 /// Welch's t-test for two independent samples with unequal variance.
 /// Returns two-tailed p-value.
+#[must_use]
 pub fn welch_t_test(baseline: &[f64], candidate: &[f64]) -> f64 {
     let n1 = baseline.len() as f64;
     let n2 = candidate.len() as f64;
