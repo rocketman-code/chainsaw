@@ -1,3 +1,10 @@
+//! Three-tier disk cache for dependency graphs.
+//!
+//! Tier 1 caches the entire graph with file mtimes for a stat-only fast path.
+//! Tier 1.5 incrementally re-parses only changed files when imports are stable.
+//! Tier 2 caches per-file parse and resolve results so single-file edits skip
+//! the resolver entirely.
+
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

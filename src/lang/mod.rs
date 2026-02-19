@@ -1,3 +1,8 @@
+//! Language-specific parsing and resolution behind a common trait.
+//!
+//! Each supported language implements [`LanguageSupport`] to parse import
+//! statements and resolve specifiers to filesystem paths.
+
 pub mod python;
 pub mod typescript;
 

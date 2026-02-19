@@ -1,3 +1,5 @@
+//! TypeScript/JavaScript support: OXC parser with `node_modules` resolution.
+
 mod parser;
 mod resolver;
 

@@ -1,3 +1,5 @@
+//! Python support: tree-sitter parser with source-root and virtualenv resolution.
+
 mod parser;
 mod resolver;
 
