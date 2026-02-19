@@ -773,8 +773,8 @@ mod tests {
     use std::path::PathBuf;
 
     /// Build a small graph from declarative specs.
-    /// `nodes`: (path, size_bytes, package_name)
-    /// `edges`: (from_index, to_index, kind)
+    /// `nodes`: `(path, size_bytes, package_name)`
+    /// `edges`: `(from_index, to_index, kind)`
     fn make_graph(
         nodes: &[(&str, u64, Option<&str>)],
         edges: &[(usize, usize, EdgeKind)],
@@ -784,10 +784,11 @@ mod tests {
             graph.add_module(
                 PathBuf::from(path),
                 size,
-                pkg.map(|s| s.to_string()),
+                pkg.map(str::to_string),
             );
         }
         for &(from, to, kind) in edges {
+            #[allow(clippy::cast_possible_truncation)]
             graph.add_edge(
                 ModuleId(from as u32),
                 ModuleId(to as u32),

@@ -275,7 +275,7 @@ mod tests {
         )
         .unwrap();
 
-        fs::write(root.join("broken.ts"), &[0xFF, 0xFE, 0x00, 0x01]).unwrap();
+        fs::write(root.join("broken.ts"), [0xFF, 0xFE, 0x00, 0x01]).unwrap();
 
         let lang = TypeScriptSupport::new(&root);
         let mut cache = ParseCache::new();

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,11 +9,11 @@ const CORPUS_VERSION: u32 = 1;
 struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    const fn new(seed: u64) -> Self {
         Self(seed)
     }
 
-    fn next_u64(&mut self) -> u64 {
+    const fn next_u64(&mut self) -> u64 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -20,20 +21,23 @@ impl Rng {
         self.0
     }
 
-    fn next_usize(&mut self, max: usize) -> usize {
-        (self.next_u64() % max as u64) as usize
+    const fn next_usize(&mut self, max: usize) -> usize {
+        #[allow(clippy::cast_possible_truncation)]
+        let result = (self.next_u64() % max as u64) as usize;
+        result
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn next_f64(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
     /// Average of two random draws from `low..=high` (triangular-ish distribution).
-    fn triangular(&mut self, low: usize, high: usize) -> usize {
+    const fn triangular(&mut self, low: usize, high: usize) -> usize {
         let span = high - low + 1;
         let a = low + self.next_usize(span);
         let b = low + self.next_usize(span);
-        (a + b) / 2
+        a.midpoint(b)
     }
 }
 
@@ -43,10 +47,8 @@ fn corpus_root() -> PathBuf {
 
 fn is_cached(sub: &str) -> bool {
     let version_file = corpus_root().join(sub).join(".version");
-    match fs::read_to_string(&version_file) {
-        Ok(content) => content.trim().parse::<u32>().ok() == Some(CORPUS_VERSION),
-        Err(_) => false,
-    }
+    fs::read_to_string(&version_file)
+        .is_ok_and(|content| content.trim().parse::<u32>().ok() == Some(CORPUS_VERSION))
 }
 
 fn mark_cached(sub: &str) {
@@ -67,7 +69,7 @@ fn split_dir(dir: &str) -> Vec<&str> {
 }
 
 /// Pick a weighted random import count: 2-5, avg ~3.3.
-fn pick_import_count(rng: &mut Rng) -> usize {
+const fn pick_import_count(rng: &mut Rng) -> usize {
     match rng.next_usize(10) {
         0 => 2,
         1..=4 => 3,
@@ -181,6 +183,14 @@ struct TsModule {
     bfs_level: usize,
 }
 
+/// An edge in the TS corpus dependency graph.
+struct TsEdge {
+    from: usize,
+    to: Option<usize>, // None for bare specifier edges
+    kind: EdgeKind,
+    bare_specifier: Option<String>,
+}
+
 /// Compute the relative import path from `from_dir` to `to_dir/to_name` (no extension).
 fn relative_specifier(from_dir: &str, to_dir: &str, to_name: &str) -> String {
     let from_parts = split_dir(from_dir);
@@ -209,79 +219,72 @@ fn relative_specifier(from_dir: &str, to_dir: &str, to_name: &str) -> String {
     rel
 }
 
-fn generate_ts_corpus(root: &Path) {
-    let mut rng = Rng::new(TS_SEED);
-
-    // --- 1. Create directory structure ---
-    let src = root.join("src");
-    fs::create_dir_all(&src).expect("failed to create src/");
-    for dir in TS_DIRS {
-        fs::create_dir_all(src.join(dir)).expect("failed to create src subdir");
+fn ts_module_name(idx: usize) -> String {
+    if idx == 0 {
+        "index".to_string()
+    } else {
+        format!("gen_{idx:04}")
     }
-    let nm = root.join("node_modules");
-    fs::create_dir_all(&nm).expect("failed to create node_modules/");
+}
 
-    // --- 2. Assign modules to directories and BFS levels ---
-    let mut modules: Vec<TsModule> = Vec::with_capacity(TS_MODULE_COUNT);
-
-    // Module 0 = entry point (src/index.ts), BFS level 0, dir = "" (src root)
-    modules.push(TsModule {
-        dir_idx: usize::MAX, // sentinel: lives in src/ root
-        bfs_level: 0,
-    });
-
-    // Modules 1..=SPINE_DEPTH form the spine chain (BFS levels 1..=15)
-    for level in 1..=TS_SPINE_DEPTH {
-        modules.push(TsModule {
-            dir_idx: rng.next_usize(TS_DIRS.len()),
-            bfs_level: level,
-        });
+fn ts_module_dir(modules: &[TsModule], idx: usize) -> &'static str {
+    if idx == 0 || modules[idx].dir_idx == usize::MAX {
+        "" // src/ root
+    } else {
+        TS_DIRS[modules[idx].dir_idx]
     }
+}
 
-    // Remaining modules distributed across BFS levels 1..=14
-    for _ in (TS_SPINE_DEPTH + 1)..TS_MODULE_COUNT {
-        let level = rng.triangular(1, TS_SPINE_DEPTH - 1);
-        modules.push(TsModule {
-            dir_idx: rng.next_usize(TS_DIRS.len()),
-            bfs_level: level,
-        });
-    }
-
-    // --- 3. Designate hub modules ---
-    // Hubs are at BFS levels 3-8, imported by 10+ other modules.
-    let hub_candidates: Vec<usize> = (0..TS_MODULE_COUNT)
-        .filter(|&i| (3..=8).contains(&modules[i].bfs_level))
-        .collect();
-    let mut hubs: Vec<usize> = Vec::with_capacity(TS_HUB_COUNT);
-    let mut hub_set = vec![false; TS_MODULE_COUNT];
-    {
-        let mut candidates = hub_candidates;
-        // Fisher-Yates partial shuffle
-        let pick_count = TS_HUB_COUNT.min(candidates.len());
-        for i in 0..pick_count {
-            let j = i + rng.next_usize(candidates.len() - i);
-            candidates.swap(i, j);
-        }
-        for &idx in &candidates[..pick_count] {
-            hubs.push(idx);
-            hub_set[idx] = true;
+/// Ensure each hub module has at least 10 importers by adding extra static edges.
+fn boost_hub_fan_in(
+    rng: &mut Rng,
+    edges: &mut Vec<TsEdge>,
+    modules: &[TsModule],
+    by_level: &[Vec<usize>],
+    hubs: &[usize],
+    hub_set: &[bool],
+) {
+    let mut hub_fan_in = vec![0usize; TS_MODULE_COUNT];
+    for e in edges.iter() {
+        if let Some(to) = e.to {
+            if hub_set[to] {
+                hub_fan_in[to] += 1;
+            }
         }
     }
-
-    // --- 4. Build index of modules by BFS level ---
-    let mut by_level: Vec<Vec<usize>> = vec![Vec::new(); TS_SPINE_DEPTH + 1];
-    for (i, m) in modules.iter().enumerate() {
-        by_level[m.bfs_level].push(i);
+    for &hub_idx in hubs {
+        while hub_fan_in[hub_idx] < 10 {
+            let hub_level = modules[hub_idx].bfs_level;
+            let max_level = hub_level.saturating_sub(1).max(1);
+            let source_level = rng.next_usize(max_level + 1);
+            let candidates = &by_level[source_level];
+            if candidates.is_empty() {
+                break;
+            }
+            let source = candidates[rng.next_usize(candidates.len())];
+            if source == hub_idx {
+                continue;
+            }
+            edges.push(TsEdge {
+                from: source,
+                to: Some(hub_idx),
+                kind: EdgeKind::Static,
+                bare_specifier: None,
+            });
+            hub_fan_in[hub_idx] += 1;
+        }
     }
+}
 
-    // --- 5. Generate edges ---
-    struct TsEdge {
-        from: usize,
-        to: Option<usize>, // None for bare specifier edges
-        kind: EdgeKind,
-        bare_specifier: Option<String>,
-    }
-
+/// Generate edges for the TS corpus: spine chain, reachability, random imports,
+/// bare specifiers, and hub fan-in boosting.
+fn generate_ts_edges(
+    rng: &mut Rng,
+    modules: &[TsModule],
+    by_level: &[Vec<usize>],
+    hubs: &[usize],
+    hub_set: &[bool],
+) -> Vec<TsEdge> {
     let pkg_names: Vec<String> = (0..TS_PKG_COUNT).map(|i| format!("pkg-{i:02}")).collect();
     let phantom_names: Vec<String> = (0..TS_PHANTOM_COUNT)
         .map(|i| format!("phantom-{i:02}"))
@@ -329,9 +332,9 @@ fn generate_ts_corpus(root: &Path) {
     // For each module, add random edges up to the target import count (2-5, avg ~3.3)
     for from_idx in 0..TS_MODULE_COUNT {
         let from_level = modules[from_idx].bfs_level;
-        let new_edges = pick_import_count(&mut rng).saturating_sub(edge_count[from_idx]);
+        let new_edge_count = pick_import_count(rng).saturating_sub(edge_count[from_idx]);
 
-        for _ in 0..new_edges {
+        for _ in 0..new_edge_count {
             // Edge kind: 85% Static, 10% TypeOnly, 5% Dynamic
             let kind_roll = rng.next_f64();
             let kind = if kind_roll < 0.85 {
@@ -366,7 +369,7 @@ fn generate_ts_corpus(root: &Path) {
                     let target_level =
                         min_level + rng.next_usize(max_level - min_level + 1);
                     pick_non_self(
-                        &mut rng,
+                        rng,
                         &by_level[target_level],
                         from_idx,
                         TS_MODULE_COUNT,
@@ -382,65 +385,27 @@ fn generate_ts_corpus(root: &Path) {
         }
     }
 
-    // --- 6. Ensure hubs get enough fan-in (at least 10 importers each) ---
-    let mut hub_fan_in = vec![0usize; TS_MODULE_COUNT];
-    for e in &edges {
-        if let Some(to) = e.to {
-            if hub_set[to] {
-                hub_fan_in[to] += 1;
-            }
-        }
-    }
-    for &hub_idx in &hubs {
-        while hub_fan_in[hub_idx] < 10 {
-            let hub_level = modules[hub_idx].bfs_level;
-            let max_level = hub_level.saturating_sub(1).max(1);
-            let source_level = rng.next_usize(max_level + 1);
-            let candidates = &by_level[source_level];
-            if candidates.is_empty() {
-                break;
-            }
-            let source = candidates[rng.next_usize(candidates.len())];
-            if source == hub_idx {
-                continue;
-            }
-            edges.push(TsEdge {
-                from: source,
-                to: Some(hub_idx),
-                kind: EdgeKind::Static,
-                bare_specifier: None,
-            });
-            hub_fan_in[hub_idx] += 1;
-        }
-    }
+    boost_hub_fan_in(rng, &mut edges, modules, by_level, hubs, hub_set);
 
-    // --- 7. Group edges by source module ---
+    edges
+}
+
+/// Write all TS module source files under `src/`.
+fn write_ts_module_files(
+    rng: &mut Rng,
+    src: &Path,
+    modules: &[TsModule],
+    edges: &[TsEdge],
+) {
     let mut edges_by_module: Vec<Vec<&TsEdge>> = vec![Vec::new(); TS_MODULE_COUNT];
-    for edge in &edges {
+    for edge in edges {
         edges_by_module[edge.from].push(edge);
     }
 
-    // --- 8. Generate module files ---
-    let module_name = |idx: usize| -> String {
-        if idx == 0 {
-            "index".to_string()
-        } else {
-            format!("gen_{idx:04}")
-        }
-    };
-
-    let module_dir = |idx: usize| -> &str {
-        if idx == 0 || modules[idx].dir_idx == usize::MAX {
-            "" // src/ root
-        } else {
-            TS_DIRS[modules[idx].dir_idx]
-        }
-    };
-
     for (idx, my_edges) in edges_by_module.iter().enumerate() {
-        let dir = module_dir(idx);
-        let name = module_name(idx);
-        let file_path = join_subdir(&src, dir, format!("{name}.ts"));
+        let dir = ts_module_dir(modules, idx);
+        let name = ts_module_name(idx);
+        let file_path = join_subdir(src, dir, format!("{name}.ts"));
 
         let target_bytes = rng.triangular(500, 4000);
         let mut content = String::with_capacity(target_bytes + 256);
@@ -450,7 +415,7 @@ fn generate_ts_corpus(root: &Path) {
             let specifier = if let Some(ref bare) = edge.bare_specifier {
                 bare.clone()
             } else if let Some(to) = edge.to {
-                relative_specifier(dir, module_dir(to), &module_name(to))
+                relative_specifier(dir, ts_module_dir(modules, to), &ts_module_name(to))
             } else {
                 continue;
             };
@@ -462,38 +427,47 @@ fn generate_ts_corpus(root: &Path) {
 
             match edge.kind {
                 EdgeKind::Static => {
-                    content.push_str(&format!(
-                        "import {{ {binding_name} }} from \"{specifier}\";\n"
-                    ));
+                    let _ = writeln!(
+                        content,
+                        "import {{ {binding_name} }} from \"{specifier}\";"
+                    );
                 }
                 EdgeKind::TypeOnly => {
-                    content.push_str(&format!(
-                        "import type {{ {binding_name} }} from \"{specifier}\";\n"
-                    ));
+                    let _ = writeln!(
+                        content,
+                        "import type {{ {binding_name} }} from \"{specifier}\";"
+                    );
                 }
                 EdgeKind::Dynamic => {
-                    content.push_str(&format!(
-                        "const _{binding_name} = await import(\"{specifier}\");\n"
-                    ));
+                    let _ = writeln!(
+                        content,
+                        "const _{binding_name} = await import(\"{specifier}\");"
+                    );
                 }
                 _ => unreachable!("corpus generator only produces Static/TypeOnly/Dynamic edges"),
             }
         }
 
-        content.push_str(&format!(
+        let _ = write!(
+            content,
             "\nexport interface State_{idx} {{\n    value: string;\n    count: number;\n}}\n\n"
-        ));
-        content.push_str(&format!(
+        );
+        let _ = write!(
+            content,
             "export function process_{idx}(input: State_{idx}): State_{idx} {{\n    return {{ ...input, count: input.count + 1 }};\n}}\n\n"
-        ));
+        );
 
         fill_padding(&mut content, idx, target_bytes, 48, ts_padding_line);
 
         fs::write(&file_path, &content)
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", file_path.display()));
     }
+}
 
-    // --- 9. Generate node_modules packages ---
+/// Generate `node_modules/` packages with optional internal submodules.
+fn write_ts_packages(rng: &mut Rng, nm: &Path) {
+    let pkg_names: Vec<String> = (0..TS_PKG_COUNT).map(|i| format!("pkg-{i:02}")).collect();
+
     for (i, pkg_name) in pkg_names.iter().enumerate() {
         let pkg_dir = nm.join(pkg_name);
         fs::create_dir_all(&pkg_dir).expect("failed to create package dir");
@@ -508,9 +482,10 @@ fn generate_ts_corpus(root: &Path) {
         if i < TS_PKG_WITH_INTERNALS {
             let internal_count = 3 + rng.next_usize(8);
             for j in 0..internal_count {
-                index_content.push_str(&format!(
-                    "export {{ internal_{j} }} from \"./internal_{j}\";\n"
-                ));
+                let _ = writeln!(
+                    index_content,
+                    "export {{ internal_{j} }} from \"./internal_{j}\";"
+                );
                 let internal_content = format!(
                     "export function internal_{j}() {{ return \"{pkg_name}/internal_{j}\"; }}\n\
                      export const DATA_{j} = {{ name: \"{pkg_name}\", index: {j} }};\n"
@@ -519,14 +494,89 @@ fn generate_ts_corpus(root: &Path) {
                     .expect("failed to write internal file");
             }
         }
-        index_content.push_str(&format!(
-            "export function init_{i}() {{ return \"{pkg_name}\"; }}\n"
-        ));
+        let _ = writeln!(
+            index_content,
+            "export function init_{i}() {{ return \"{pkg_name}\"; }}"
+        );
         fs::write(pkg_dir.join("index.ts"), index_content)
             .expect("failed to write package index.ts");
     }
+}
 
-    // --- 10. Root package.json ---
+fn generate_ts_corpus(root: &Path) {
+    let mut rng = Rng::new(TS_SEED);
+
+    // --- 1. Create directory structure ---
+    let src = root.join("src");
+    fs::create_dir_all(&src).expect("failed to create src/");
+    for dir in TS_DIRS {
+        fs::create_dir_all(src.join(dir)).expect("failed to create src subdir");
+    }
+    let nm = root.join("node_modules");
+    fs::create_dir_all(&nm).expect("failed to create node_modules/");
+
+    // --- 2. Assign modules to directories and BFS levels ---
+    let mut modules: Vec<TsModule> = Vec::with_capacity(TS_MODULE_COUNT);
+
+    // Module 0 = entry point (src/index.ts), BFS level 0, dir = "" (src root)
+    modules.push(TsModule {
+        dir_idx: usize::MAX, // sentinel: lives in src/ root
+        bfs_level: 0,
+    });
+
+    // Modules 1..=SPINE_DEPTH form the spine chain (BFS levels 1..=15)
+    for level in 1..=TS_SPINE_DEPTH {
+        modules.push(TsModule {
+            dir_idx: rng.next_usize(TS_DIRS.len()),
+            bfs_level: level,
+        });
+    }
+
+    // Remaining modules distributed across BFS levels 1..=14
+    for _ in (TS_SPINE_DEPTH + 1)..TS_MODULE_COUNT {
+        let level = rng.triangular(1, TS_SPINE_DEPTH - 1);
+        modules.push(TsModule {
+            dir_idx: rng.next_usize(TS_DIRS.len()),
+            bfs_level: level,
+        });
+    }
+
+    // --- 3. Designate hub modules ---
+    let hub_candidates: Vec<usize> = (0..TS_MODULE_COUNT)
+        .filter(|&i| (3..=8).contains(&modules[i].bfs_level))
+        .collect();
+    let mut hubs: Vec<usize> = Vec::with_capacity(TS_HUB_COUNT);
+    let mut hub_set = vec![false; TS_MODULE_COUNT];
+    {
+        let mut candidates = hub_candidates;
+        // Fisher-Yates partial shuffle
+        let pick_count = TS_HUB_COUNT.min(candidates.len());
+        for i in 0..pick_count {
+            let j = i + rng.next_usize(candidates.len() - i);
+            candidates.swap(i, j);
+        }
+        for &idx in &candidates[..pick_count] {
+            hubs.push(idx);
+            hub_set[idx] = true;
+        }
+    }
+
+    // --- 4. Build index of modules by BFS level ---
+    let mut by_level: Vec<Vec<usize>> = vec![Vec::new(); TS_SPINE_DEPTH + 1];
+    for (i, m) in modules.iter().enumerate() {
+        by_level[m.bfs_level].push(i);
+    }
+
+    // --- 5. Generate edges ---
+    let edges = generate_ts_edges(&mut rng, &modules, &by_level, &hubs, &hub_set);
+
+    // --- 6. Write module files ---
+    write_ts_module_files(&mut rng, &src, &modules, &edges);
+
+    // --- 7. Generate node_modules packages ---
+    write_ts_packages(&mut rng, &nm);
+
+    // --- 8. Root package.json ---
     fs::write(
         root.join("package.json"),
         "{\"name\":\"bench-corpus\",\"private\":true}",
@@ -564,6 +614,12 @@ const PY_DIRS: &[&str] = &[
 struct PyModule {
     dir_idx: usize,
     bfs_level: usize,
+}
+
+/// An edge in the PY corpus dependency graph.
+struct PyEdge {
+    from: usize,
+    to: usize,
 }
 
 /// Compute a Python relative import specifier from `from_dir` to `to_dir/to_name`.
@@ -604,6 +660,158 @@ fn py_absolute_specifier(to_dir: &str, to_name: &str) -> String {
     spec.push('.');
     spec.push_str(to_name);
     spec
+}
+
+fn py_module_name(idx: usize) -> String {
+    if idx == 0 {
+        "__init__".to_string()
+    } else {
+        format!("gen_{idx:04}")
+    }
+}
+
+fn py_module_dir(modules: &[PyModule], idx: usize) -> &'static str {
+    if idx == 0 || modules[idx].dir_idx == usize::MAX {
+        "" // app/ root
+    } else {
+        PY_DIRS[modules[idx].dir_idx]
+    }
+}
+
+/// Generate edges for the PY corpus: spine chain, reachability, random imports.
+fn generate_py_edges(
+    rng: &mut Rng,
+    modules: &[PyModule],
+    by_level: &[Vec<usize>],
+) -> Vec<PyEdge> {
+    let mut edges: Vec<PyEdge> = Vec::with_capacity(PY_MODULE_COUNT * 4);
+
+    // Spine chain: module 0 -> 1 -> 2 -> ... -> 10
+    for i in 0..PY_SPINE_DEPTH {
+        edges.push(PyEdge {
+            from: i,
+            to: i + 1,
+        });
+    }
+
+    // Reachability guarantee
+    for level in 1..=PY_SPINE_DEPTH {
+        let parents = &by_level[level - 1];
+        if parents.is_empty() {
+            continue;
+        }
+        for &child in &by_level[level] {
+            if child <= PY_SPINE_DEPTH {
+                continue;
+            }
+            let parent = parents[rng.next_usize(parents.len())];
+            edges.push(PyEdge {
+                from: parent,
+                to: child,
+            });
+        }
+    }
+
+    // Track how many edges each module already has
+    let mut edge_count = vec![0usize; PY_MODULE_COUNT];
+    for e in &edges {
+        edge_count[e.from] += 1;
+    }
+
+    // For each module, add random edges up to target count (2-5, avg ~3.3)
+    for from_idx in 0..PY_MODULE_COUNT {
+        let from_level = modules[from_idx].bfs_level;
+        let new_edge_count = pick_import_count(rng).saturating_sub(edge_count[from_idx]);
+
+        for _ in 0..new_edge_count {
+            let min_level = from_level.saturating_sub(1);
+            let max_level = (from_level + 3).min(PY_SPINE_DEPTH);
+            let target_level = min_level + rng.next_usize(max_level - min_level + 1);
+            let target = pick_non_self(
+                rng,
+                &by_level[target_level],
+                from_idx,
+                PY_MODULE_COUNT,
+            );
+            edges.push(PyEdge {
+                from: from_idx,
+                to: target,
+            });
+        }
+    }
+
+    edges
+}
+
+/// Write all PY module source files under `app/`.
+fn write_py_module_files(
+    rng: &mut Rng,
+    app: &Path,
+    modules: &[PyModule],
+    edges: &[PyEdge],
+) {
+    let mut edges_by_module: Vec<Vec<&PyEdge>> = vec![Vec::new(); PY_MODULE_COUNT];
+    for edge in edges {
+        edges_by_module[edge.from].push(edge);
+    }
+
+    for (idx, my_edges) in edges_by_module.iter().enumerate() {
+        let dir = py_module_dir(modules, idx);
+        let name = py_module_name(idx);
+        let file_path = join_subdir(app, dir, format!("{name}.py"));
+
+        let target_bytes = rng.triangular(
+            PY_MEDIAN_SIZE.saturating_sub(600),
+            PY_MEDIAN_SIZE + 600,
+        );
+        let mut content = String::with_capacity(target_bytes + 256);
+
+        // Write import statements
+        for edge in my_edges {
+            if edge.to == 0 {
+                content.push_str("from app import __init__ as _app_init\n");
+                continue;
+            }
+
+            let to_dir = py_module_dir(modules, edge.to);
+            let to_name = py_module_name(edge.to);
+
+            let binding = if to_name == "__init__" {
+                format!("init_{}", edge.to)
+            } else {
+                format!("process_{}", edge.to)
+            };
+
+            // Decide between relative (60%) and absolute (40%) imports
+            let specifier = if rng.next_f64() < 0.60 {
+                py_relative_specifier(dir, to_dir, &to_name)
+            } else {
+                py_absolute_specifier(to_dir, &to_name)
+            };
+
+            let _ = writeln!(content, "from {specifier} import {binding}");
+        }
+
+        let _ = write!(
+            content,
+            "\n\nclass State_{idx}:\n    \
+             def __init__(self, value: str, count: int) -> None:\n        \
+             self.value = value\n        \
+             self.count = count\n\n    \
+             def process(self) -> \"State_{idx}\":\n        \
+             return State_{idx}(self.value, self.count + 1)\n\n"
+        );
+
+        let _ = writeln!(
+            content,
+            "def process_{idx}(x: int) -> int:\n    return x + 1\n"
+        );
+
+        fill_padding(&mut content, idx, target_bytes, 35, py_padding_line);
+
+        fs::write(&file_path, &content)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", file_path.display()));
+    }
 }
 
 fn generate_py_corpus(root: &Path) {
@@ -656,91 +864,9 @@ fn generate_py_corpus(root: &Path) {
     }
 
     // --- 5. Generate edges ---
-    struct PyEdge {
-        from: usize,
-        to: usize,
-    }
+    let edges = generate_py_edges(&mut rng, &modules, &by_level);
 
-    let mut edges: Vec<PyEdge> = Vec::with_capacity(PY_MODULE_COUNT * 4);
-
-    // Spine chain: module 0 -> 1 -> 2 -> ... -> 10
-    for i in 0..PY_SPINE_DEPTH {
-        edges.push(PyEdge {
-            from: i,
-            to: i + 1,
-        });
-    }
-
-    // Reachability guarantee
-    for level in 1..=PY_SPINE_DEPTH {
-        let parents = &by_level[level - 1];
-        if parents.is_empty() {
-            continue;
-        }
-        for &child in &by_level[level] {
-            if child <= PY_SPINE_DEPTH {
-                continue;
-            }
-            let parent = parents[rng.next_usize(parents.len())];
-            edges.push(PyEdge {
-                from: parent,
-                to: child,
-            });
-        }
-    }
-
-    // Track how many edges each module already has
-    let mut edge_count = vec![0usize; PY_MODULE_COUNT];
-    for e in &edges {
-        edge_count[e.from] += 1;
-    }
-
-    // For each module, add random edges up to target count (2-5, avg ~3.3)
-    for from_idx in 0..PY_MODULE_COUNT {
-        let from_level = modules[from_idx].bfs_level;
-        let new_edges = pick_import_count(&mut rng).saturating_sub(edge_count[from_idx]);
-
-        for _ in 0..new_edges {
-            let min_level = from_level.saturating_sub(1);
-            let max_level = (from_level + 3).min(PY_SPINE_DEPTH);
-            let target_level = min_level + rng.next_usize(max_level - min_level + 1);
-            let target = pick_non_self(
-                &mut rng,
-                &by_level[target_level],
-                from_idx,
-                PY_MODULE_COUNT,
-            );
-            edges.push(PyEdge {
-                from: from_idx,
-                to: target,
-            });
-        }
-    }
-
-    // --- 6. Group edges by source module ---
-    let mut edges_by_module: Vec<Vec<&PyEdge>> = vec![Vec::new(); PY_MODULE_COUNT];
-    for edge in &edges {
-        edges_by_module[edge.from].push(edge);
-    }
-
-    // --- 7. Helpers for module names and directories ---
-    let module_name = |idx: usize| -> String {
-        if idx == 0 {
-            "__init__".to_string()
-        } else {
-            format!("gen_{idx:04}")
-        }
-    };
-
-    let module_dir = |idx: usize| -> &str {
-        if idx == 0 || modules[idx].dir_idx == usize::MAX {
-            "" // app/ root
-        } else {
-            PY_DIRS[modules[idx].dir_idx]
-        }
-    };
-
-    // --- 8. Write __init__.py for every directory ---
+    // --- 6. Write __init__.py for every directory ---
     for dir in PY_DIRS {
         let parts: Vec<&str> = dir.split('/').collect();
         for depth in 0..parts.len() {
@@ -752,62 +878,8 @@ fn generate_py_corpus(root: &Path) {
         }
     }
 
-    // --- 9. Generate module files ---
-    for (idx, my_edges) in edges_by_module.iter().enumerate() {
-        let dir = module_dir(idx);
-        let name = module_name(idx);
-        let file_path = join_subdir(&app, dir, format!("{name}.py"));
-
-        let target_bytes = rng.triangular(
-            PY_MEDIAN_SIZE.saturating_sub(600),
-            PY_MEDIAN_SIZE + 600,
-        );
-        let mut content = String::with_capacity(target_bytes + 256);
-
-        // Write import statements
-        for edge in my_edges {
-            if edge.to == 0 {
-                content.push_str("from app import __init__ as _app_init\n");
-                continue;
-            }
-
-            let to_dir = module_dir(edge.to);
-            let to_name = module_name(edge.to);
-
-            let binding = if to_name == "__init__" {
-                format!("init_{}", edge.to)
-            } else {
-                format!("process_{}", edge.to)
-            };
-
-            // Decide between relative (60%) and absolute (40%) imports
-            let specifier = if rng.next_f64() < 0.60 {
-                py_relative_specifier(dir, to_dir, &to_name)
-            } else {
-                py_absolute_specifier(to_dir, &to_name)
-            };
-
-            content.push_str(&format!("from {specifier} import {binding}\n"));
-        }
-
-        content.push_str(&format!(
-            "\n\nclass State_{idx}:\n    \
-             def __init__(self, value: str, count: int) -> None:\n        \
-             self.value = value\n        \
-             self.count = count\n\n    \
-             def process(self) -> \"State_{idx}\":\n        \
-             return State_{idx}(self.value, self.count + 1)\n\n"
-        ));
-
-        content.push_str(&format!(
-            "def process_{idx}(x: int) -> int:\n    return x + 1\n\n"
-        ));
-
-        fill_padding(&mut content, idx, target_bytes, 35, py_padding_line);
-
-        fs::write(&file_path, &content)
-            .unwrap_or_else(|e| panic!("failed to write {}: {e}", file_path.display()));
-    }
+    // --- 7. Write module files ---
+    write_py_module_files(&mut rng, &app, &modules, &edges);
 }
 
 pub fn ts_corpus() -> (PathBuf, PathBuf) {

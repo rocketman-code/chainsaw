@@ -847,12 +847,12 @@ mod tests {
         let sp = PathBuf::from("/fake/site-packages");
         // Top-level C extension like ciso8601
         let path = sp.join("ciso8601.cpython-314-darwin.so");
-        let result = package_name_from_path(&path, &[sp.clone()]);
+        let result = package_name_from_path(&path, std::slice::from_ref(&sp));
         assert_eq!(result, Some("ciso8601".to_string()));
 
         // Top-level C extension with underscores
         let path = sp.join("_cffi_backend.cpython-314-darwin.so");
-        let result = package_name_from_path(&path, &[sp.clone()]);
+        let result = package_name_from_path(&path, std::slice::from_ref(&sp));
         assert_eq!(result, Some("_cffi_backend".to_string()));
 
         // .pyd on Windows
@@ -879,7 +879,7 @@ mod tests {
 
         let resolver = make_resolver(&root);
         let result = resolver.resolve(&root, "mynamespace");
-        assert_eq!(result, Some(ns_pkg.clone()));
+        assert_eq!(result, Some(ns_pkg));
     }
 
     #[test]
@@ -1054,11 +1054,11 @@ mod tests {
 
         let result = resolver.resolve(&root, "yaml._yaml");
         assert!(result.is_some(), "should resolve C extension module");
-        let resolved = result.unwrap();
+        let found = result.unwrap();
         assert!(
-            resolved.to_string_lossy().contains("_yaml.cpython-312-darwin.so"),
+            found.to_string_lossy().contains("_yaml.cpython-312-darwin.so"),
             "should resolve to the .so file, got: {}",
-            resolved.display()
+            found.display()
         );
     }
 
@@ -1080,11 +1080,11 @@ mod tests {
         };
 
         let result = resolver.resolve(&root, "pkg.mod");
-        let resolved = result.unwrap();
+        let found = result.unwrap();
         assert!(
-            resolved.to_string_lossy().contains("mod.cpython-312-darwin.so"),
+            found.to_string_lossy().contains("mod.cpython-312-darwin.so"),
             "expected .so, got: {}",
-            resolved.display()
+            found.display()
         );
     }
 
@@ -1108,11 +1108,11 @@ mod tests {
         };
 
         let result = resolver.resolve(&root, "cmod");
-        let resolved = result.unwrap();
+        let found = result.unwrap();
         assert!(
-            resolved.to_string_lossy().contains("cmod.cpython-312-darwin.so"),
+            found.to_string_lossy().contains("cmod.cpython-312-darwin.so"),
             "expected .so over namespace dir, got: {}",
-            resolved.display()
+            found.display()
         );
     }
 
@@ -1246,12 +1246,12 @@ if __vendor_site__ not in sys.path:
         let conftest = conftest_dir.join("conftest.py");
         fs::write(
             &conftest,
-            r#"
+            r"
 import os
 import sys
 test_lib = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'lib')
 sys.path.insert(0, test_lib)
-"#,
+",
         )
         .unwrap();
 
@@ -1289,11 +1289,11 @@ sys.path.insert(0, test_lib)
         fs::create_dir_all(&conftest_dir).unwrap();
         fs::write(
             conftest_dir.join("conftest.py"),
-            r#"
+            r"
 import os, sys
 test_lib = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib')
 sys.path.insert(0, test_lib)
-"#,
+",
         )
         .unwrap();
 
@@ -1357,7 +1357,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
         .unwrap();
 
         // Build resolver: vendor dirs are appended after site-packages
-        let mut site_packages_dirs = vec![sp.clone()];
+        let mut site_packages_dirs = vec![sp];
         let vendor_dirs = scan_site_packages_paths(&site_packages_dirs);
         site_packages_dirs.extend(vendor_dirs);
 
