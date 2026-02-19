@@ -327,9 +327,11 @@ mod tests {
         let mut rng = 12345_u64;
         (0..n)
             .map(|_| {
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                #[allow(clippy::cast_precision_loss)]
                 let uniform = (rng >> 33) as f64 / (1u64 << 31) as f64;
-                mean_ns + (uniform - 0.5) * 2.0 * noise
+                #[allow(clippy::suboptimal_flops)]
+                { mean_ns + (uniform - 0.5) * 2.0 * noise }
             })
             .collect()
     }
@@ -343,6 +345,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn identical_samples_p_is_one() {
         let data = synthetic_samples(100.0, 0.0, 30);
         let p = welch_t_test(&data, &data);
@@ -424,7 +427,7 @@ mod tests {
         assert!((ln_gamma(1.0)).abs() < 1e-10);
         assert!((ln_gamma(2.0)).abs() < 1e-10);
         assert!((ln_gamma(5.0) - 24.0_f64.ln()).abs() < 1e-10);
-        assert!((ln_gamma(0.5) - 0.5 * std::f64::consts::PI.ln()).abs() < 1e-10);
+        assert!(0.5f64.mul_add(-std::f64::consts::PI.ln(), ln_gamma(0.5)).abs() < 1e-10);
     }
 
     #[test]
@@ -465,6 +468,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn cv_of_constant_data_is_zero() {
         let data = vec![100.0; 10];
         assert_eq!(cv(&data), 0.0);
@@ -511,6 +515,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn session_bias_too_few_benchmarks() {
         // With only 2 benchmarks, can't reliably estimate session bias.
         let changes = vec![0.03, 0.05];
@@ -520,16 +525,19 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn median_odd_count() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn median_even_count() {
         assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn median_single_element() {
         assert_eq!(median(&[42.0]), 42.0);
     }
@@ -548,6 +556,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn mad_constant_data() {
         assert_eq!(mad(&[5.0, 5.0, 5.0, 5.0, 5.0]), 0.0);
     }
@@ -576,13 +585,14 @@ mod tests {
         let adj = vec![-0.04, 0.05, -0.03, 0.02, -0.05, 0.04, -0.02, 0.03, 0.06];
         let floor = noise_floor(&adj, 0.01);
         assert!(
-            (floor - 0.059304).abs() < 0.001,
+            (floor - 0.059_304).abs() < 0.001,
             "expected ~5.9%, got {:.1}%",
             floor * 100.0
         );
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn noise_floor_too_few() {
         let adj = vec![0.03, 0.05];
         let floor = noise_floor(&adj, 0.01);
