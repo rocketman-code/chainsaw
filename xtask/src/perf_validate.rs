@@ -85,9 +85,9 @@ pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
         eprintln!("Missing criterion data:");
         for (bench, has_baseline, has_candidate) in &missing {
             let what = match (has_baseline, has_candidate) {
-                (false, false) => format!("no baseline or candidate"),
+                (false, false) => "no baseline or candidate".to_string(),
                 (false, true) => format!("no baseline (run --save-baseline {baseline_name})"),
-                (true, false) => format!("no candidate (run cargo bench)"),
+                (true, false) => "no candidate (run cargo bench)".to_string(),
                 _ => unreachable!(),
             };
             eprintln!("  - {bench}: {what}");

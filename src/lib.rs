@@ -5,6 +5,8 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::module_name_repetitions)]
+// compact_str 0.8 (oxc_span) + 0.9 (oxc_resolver) — transitive, out of our control.
+#![allow(clippy::multiple_crate_versions)]
 
 pub mod cache;
 pub mod error;

@@ -176,8 +176,8 @@ pub fn print_results(results: &[BenchResult]) {
         return;
     }
     println!(
-        "{:<35} {:>12} {:>12} {:>8} {:>8} {:>8}  {}",
-        "Benchmark", "Baseline", "Candidate", "Adj", "Raw", "p-value", "Verdict"
+        "{:<35} {:>12} {:>12} {:>8} {:>8} {:>8}  Verdict",
+        "Benchmark", "Baseline", "Candidate", "Adj", "Raw", "p-value"
     );
     println!("{}", "-".repeat(95));
     for r in results {

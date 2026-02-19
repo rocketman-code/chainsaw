@@ -1,3 +1,6 @@
+// compact_str 0.8 (oxc_span) + 0.9 (oxc_resolver) — transitive, out of our control.
+#![allow(clippy::multiple_crate_versions)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
