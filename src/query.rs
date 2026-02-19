@@ -425,6 +425,7 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
 }
 
 /// Find ALL shortest chains from entry to a specific target (package or module).
+///
 /// Returns up to `max_chains` distinct shortest paths (all same hop count),
 /// deduplicated at the package-name level so chains that differ only by
 /// internal file paths are collapsed into one.
@@ -592,6 +593,7 @@ pub struct CutModule {
 }
 
 /// Find modules that appear in all chains from entry to a package.
+///
 /// Removing any one of these severs every import path to the target.
 /// Sorted by exclusive weight descending (highest-impact first),
 /// truncated to `top_n`.
