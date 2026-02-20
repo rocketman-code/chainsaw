@@ -12,7 +12,7 @@ repository = "https://github.com/rocketman-code/chainsaw"
 keywords = ["typescript", "python", "imports", "dependencies"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
-exclude = ["Justfile", "perf.toml", "scripts/", "docs/", "benches/", "tests/", ".cargo/", "xtask/", "stats/"]
+exclude = ["Justfile", "perf.toml", "scripts/", "docs/", ".cargo/", "xtask/", "stats/"]
 autobenches = false
 
 [dependencies]
