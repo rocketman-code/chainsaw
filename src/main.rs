@@ -378,7 +378,7 @@ fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: report::
     for w in &loaded.file_warnings {
         eprintln!("{} {w}", sc.warning("warning:"));
     }
-    if loaded.unresolvable_dynamic_count > 0 && !loaded.from_cache {
+    if loaded.unresolvable_dynamic_count > 0 {
         let count = loaded.unresolvable_dynamic_count;
         eprintln!(
             "{} {count} dynamic import{} with non-literal argument{} could not be traced:",
@@ -386,7 +386,9 @@ fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: report::
             if count == 1 { "" } else { "s" },
             if count == 1 { "" } else { "s" },
         );
-        for (path, file_count) in &loaded.unresolvable_dynamic_files {
+        let mut files = loaded.unresolvable_dynamic_files.clone();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, file_count) in &files {
             let rel = report::relative_path(path, &loaded.root);
             eprintln!("  {rel} ({file_count})");
         }

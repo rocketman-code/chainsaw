@@ -106,6 +106,7 @@ fn build_or_load(
             cache::GraphCacheResult::Hit {
                 graph,
                 unresolvable_dynamic,
+                unresolvable_dynamic_files,
                 unresolved_specifiers,
                 needs_resave,
             } => {
@@ -116,6 +117,7 @@ fn build_or_load(
                         &graph,
                         unresolved_specifiers,
                         unresolvable_dynamic,
+                        unresolvable_dynamic_files.clone(),
                     )
                 } else {
                     CacheWriteHandle::none()
@@ -124,7 +126,7 @@ fn build_or_load(
                     BuildResult {
                         graph,
                         unresolvable_dynamic_count: unresolvable_dynamic,
-                        unresolvable_dynamic_files: Vec::new(),
+                        unresolvable_dynamic_files,
                         file_warnings: Vec::new(),
                         from_cache: true,
                     },
@@ -134,6 +136,7 @@ fn build_or_load(
             cache::GraphCacheResult::Stale {
                 mut graph,
                 unresolvable_dynamic,
+                unresolvable_dynamic_files,
                 changed_files,
             } => {
                 // Tier 1.5: incremental update — re-parse only changed files,
@@ -143,6 +146,7 @@ fn build_or_load(
                     &mut graph,
                     &changed_files,
                     unresolvable_dynamic,
+                    unresolvable_dynamic_files,
                     lang,
                 ) {
                     graph.compute_package_info();
@@ -152,12 +156,13 @@ fn build_or_load(
                         &graph,
                         &changed_files,
                         result.unresolvable_dynamic,
+                        result.unresolvable_dynamic_files.clone(),
                     );
                     return (
                         BuildResult {
                             graph,
                             unresolvable_dynamic_count: result.unresolvable_dynamic,
-                            unresolvable_dynamic_files: Vec::new(),
+                            unresolvable_dynamic_files: result.unresolvable_dynamic_files,
                             file_warnings: Vec::new(),
                             from_cache: true,
                         },
@@ -179,6 +184,7 @@ fn build_or_load(
         &result.graph,
         result.unresolved_specifiers,
         unresolvable_count,
+        result.unresolvable_dynamic.clone(),
     );
     (
         BuildResult {
@@ -194,6 +200,7 @@ fn build_or_load(
 
 struct IncrementalResult {
     unresolvable_dynamic: usize,
+    unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
 }
 
 /// Try to incrementally update the cached graph when only a few files changed.
@@ -205,6 +212,7 @@ fn try_incremental_update(
     graph: &mut ModuleGraph,
     changed_files: &[PathBuf],
     old_unresolvable_total: usize,
+    mut unresolvable_files: Vec<(PathBuf, usize)>,
     lang: &dyn LanguageSupport,
 ) -> Option<IncrementalResult> {
     let mut unresolvable_delta: isize = 0;
@@ -236,6 +244,12 @@ fn try_incremental_update(
         // Track unresolvable dynamic count changes
         unresolvable_delta += new_result.unresolvable_dynamic as isize - old_unresolvable as isize;
 
+        // Update per-file unresolvable list
+        unresolvable_files.retain(|(p, _)| p != path);
+        if new_result.unresolvable_dynamic > 0 {
+            unresolvable_files.push((path.clone(), new_result.unresolvable_dynamic));
+        }
+
         // Update file size in graph
         let mid = *graph.path_to_id.get(path)?;
         let new_size = source.len() as u64;
@@ -262,7 +276,13 @@ fn try_incremental_update(
     }
 
     let new_total = (old_unresolvable_total as isize + unresolvable_delta).max(0) as usize;
+    debug_assert_eq!(
+        new_total,
+        unresolvable_files.iter().map(|(_, c)| c).sum::<usize>(),
+        "unresolvable_dynamic total drifted from per-file sum"
+    );
     Some(IncrementalResult {
         unresolvable_dynamic: new_total,
+        unresolvable_dynamic_files: unresolvable_files,
     })
 }

@@ -402,6 +402,7 @@ fn register_benchmarks() -> Vec<Benchmark> {
             &result.graph,
             result.unresolved_specifiers,
             unresolvable_count,
+            result.unresolvable_dynamic,
         );
         benches.push(Benchmark {
             name: "cache_load_validate_ts",

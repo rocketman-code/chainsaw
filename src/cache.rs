@@ -18,7 +18,7 @@ use crate::graph::ModuleGraph;
 use crate::lang::ParseResult;
 
 const CACHE_FILE: &str = ".chainsaw.cache";
-const CACHE_VERSION: u32 = 7;
+const CACHE_VERSION: u32 = 8;
 // 16-byte header: magic (4) + version (4) + graph_len (8)
 const CACHE_MAGIC: u32 = 0x4348_5357; // "CHSW"
 const HEADER_SIZE: usize = 16;
@@ -59,6 +59,8 @@ struct CachedGraph {
     file_mtimes: HashMap<PathBuf, CachedMtime>,
     unresolved_specifiers: Vec<String>,
     unresolvable_dynamic: usize,
+    /// Per-file counts of unresolvable dynamic imports.
+    unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
     /// Lockfile mtimes — if unchanged, skip re-resolving unresolved specifiers.
     dep_sentinels: Vec<(PathBuf, u128)>,
 }
@@ -105,6 +107,7 @@ pub enum GraphCacheResult {
     Hit {
         graph: ModuleGraph,
         unresolvable_dynamic: usize,
+        unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
         unresolved_specifiers: Vec<String>,
         /// True if the graph is valid but sentinel mtimes need updating.
         needs_resave: bool,
@@ -113,6 +116,7 @@ pub enum GraphCacheResult {
     Stale {
         graph: ModuleGraph,
         unresolvable_dynamic: usize,
+        unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
         changed_files: Vec<PathBuf>,
     },
     /// Cache miss — wrong entry, no cache, file deleted, or new imports resolve.
@@ -288,6 +292,7 @@ impl ParseCache {
             return GraphCacheResult::Hit {
                 graph: cached.graph,
                 unresolvable_dynamic: cached.unresolvable_dynamic,
+                unresolvable_dynamic_files: cached.unresolvable_dynamic_files,
                 unresolved_specifiers: cached.unresolved_specifiers,
                 needs_resave: !sentinels_unchanged,
             };
@@ -300,6 +305,7 @@ impl ParseCache {
         GraphCacheResult::Stale {
             graph: cached.graph,
             unresolvable_dynamic: cached.unresolvable_dynamic,
+            unresolvable_dynamic_files: cached.unresolvable_dynamic_files,
             changed_files,
         }
     }
@@ -322,6 +328,7 @@ impl ParseCache {
         graph: &ModuleGraph,
         changed_files: &[PathBuf],
         unresolvable_dynamic: usize,
+        unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
     ) -> CacheWriteHandle {
         let Some(mut file_mtimes) = self.stale_file_mtimes.take() else {
             return CacheWriteHandle::none();
@@ -355,6 +362,7 @@ impl ParseCache {
                 file_mtimes,
                 unresolved_specifiers,
                 unresolvable_dynamic,
+                unresolvable_dynamic_files,
                 dep_sentinels,
             );
         })))
@@ -369,6 +377,7 @@ impl ParseCache {
         graph: &ModuleGraph,
         unresolved_specifiers: Vec<String>,
         unresolvable_dynamic: usize,
+        unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
     ) -> CacheWriteHandle {
         self.ensure_entries();
         let entries = std::mem::take(&mut self.entries);
@@ -403,6 +412,7 @@ impl ParseCache {
                 file_mtimes,
                 unresolved_specifiers,
                 unresolvable_dynamic,
+                unresolvable_dynamic_files,
                 dep_sentinels,
             );
         })))
@@ -451,6 +461,7 @@ fn write_cache_to_disk(
     file_mtimes: HashMap<PathBuf, CachedMtime>,
     unresolved_specifiers: Vec<String>,
     unresolvable_dynamic: usize,
+    unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
     dep_sentinels: Vec<(PathBuf, u128)>,
 ) {
     let graph_cache = CachedGraph {
@@ -459,6 +470,7 @@ fn write_cache_to_disk(
         file_mtimes,
         unresolved_specifiers,
         unresolvable_dynamic,
+        unresolvable_dynamic_files,
         dep_sentinels,
     };
 
@@ -573,7 +585,7 @@ mod tests {
         insert_with_stat(&mut cache, file.clone(), result, resolved);
 
         let graph = ModuleGraph::new();
-        drop(cache.save(&root, &file, &graph, vec![], 0));
+        drop(cache.save(&root, &file, &graph, vec![], 0, vec![]));
 
         let mut loaded = ParseCache::load(&root);
         let cached = loaded.lookup(&file);
@@ -598,7 +610,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        drop(cache.save(&root, &file, &graph, vec!["os".into()], 2));
+        drop(cache.save(&root, &file, &graph, vec!["os".into()], 2, vec![]));
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
@@ -616,6 +628,43 @@ mod tests {
     }
 
     #[test]
+    fn graph_cache_preserves_per_file_unresolvable_dynamic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let file_a = root.join("a.py");
+        let file_b = root.join("b.py");
+        fs::write(&file_a, "import x").unwrap();
+        fs::write(&file_b, "import y").unwrap();
+
+        let mut graph = ModuleGraph::new();
+        let size_a = fs::metadata(&file_a).unwrap().len();
+        let size_b = fs::metadata(&file_b).unwrap().len();
+        graph.add_module(file_a.clone(), size_a, None);
+        graph.add_module(file_b.clone(), size_b, None);
+
+        let dynamic_files = vec![(file_a.clone(), 3), (file_b.clone(), 2)];
+        let mut cache = ParseCache::new();
+        drop(cache.save(&root, &file_a, &graph, vec![], 5, dynamic_files));
+
+        let mut loaded = ParseCache::load(&root);
+        let resolve_fn = |_: &str| false;
+        let result = loaded.try_load_graph(&file_a, &resolve_fn);
+        if let GraphCacheResult::Hit {
+            unresolvable_dynamic,
+            unresolvable_dynamic_files,
+            ..
+        } = result
+        {
+            assert_eq!(unresolvable_dynamic, 5);
+            assert_eq!(unresolvable_dynamic_files.len(), 2);
+            assert!(unresolvable_dynamic_files.contains(&(file_a, 3)));
+            assert!(unresolvable_dynamic_files.contains(&(file_b, 2)));
+        } else {
+            panic!("expected Hit, got {result:?}");
+        }
+    }
+
+    #[test]
     fn graph_cache_stale_when_file_modified() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -627,7 +676,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        drop(cache.save(&root, &file, &graph, vec![], 0));
+        drop(cache.save(&root, &file, &graph, vec![], 0, vec![]));
 
         fs::write(&file, "x = 2; y = 3").unwrap();
 
@@ -653,7 +702,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        drop(cache.save(&root, &file, &graph, vec!["foo".into()], 0));
+        drop(cache.save(&root, &file, &graph, vec!["foo".into()], 0, vec![]));
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |spec: &str| spec == "foo";
@@ -677,7 +726,7 @@ mod tests {
         graph.add_module(file_a.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        drop(cache.save(&root, &file_a, &graph, vec![], 0));
+        drop(cache.save(&root, &file_a, &graph, vec![], 0, vec![]));
 
         let mut loaded = ParseCache::load(&root);
         let resolve_fn = |_: &str| false;
@@ -699,7 +748,7 @@ mod tests {
         graph.add_module(file.clone(), size, None);
 
         let mut cache = ParseCache::new();
-        drop(cache.save(&root, &file, &graph, vec![], 0));
+        drop(cache.save(&root, &file, &graph, vec![], 0, vec![]));
 
         // Modify the file — bump mtime by 2s to guarantee a different
         // timestamp on filesystems with coarse granularity (e.g. ext4 on CI).
@@ -718,7 +767,7 @@ mod tests {
         } = result
         {
             // Incremental save with updated mtimes
-            drop(loaded.save_incremental(&root, &file, &graph, &changed_files, 0));
+            drop(loaded.save_incremental(&root, &file, &graph, &changed_files, 0, vec![]));
 
             // Reload — should now be a Hit
             let mut reloaded = ParseCache::load(&root);
@@ -727,6 +776,74 @@ mod tests {
                 matches!(result, GraphCacheResult::Hit { .. }),
                 "expected Hit after incremental save"
             );
+        }
+    }
+
+    #[test]
+    fn incremental_save_preserves_per_file_unresolvable_dynamic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let file_a = root.join("a.py");
+        let file_b = root.join("b.py");
+        fs::write(&file_a, "x = 1").unwrap();
+        fs::write(&file_b, "y = 2").unwrap();
+
+        let mut graph = ModuleGraph::new();
+        let size_a = fs::metadata(&file_a).unwrap().len();
+        let size_b = fs::metadata(&file_b).unwrap().len();
+        graph.add_module(file_a.clone(), size_a, None);
+        graph.add_module(file_b.clone(), size_b, None);
+
+        let dynamic_files = vec![(file_a.clone(), 3), (file_b.clone(), 2)];
+        let mut cache = ParseCache::new();
+        drop(cache.save(&root, &file_a, &graph, vec![], 5, dynamic_files));
+
+        // Modify one file to trigger Stale
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(&file_b, "y = 2; z = 3").unwrap();
+
+        let mut loaded = ParseCache::load(&root);
+        let resolve_fn = |_: &str| false;
+        let result = loaded.try_load_graph(&file_a, &resolve_fn);
+
+        if let GraphCacheResult::Stale {
+            graph,
+            unresolvable_dynamic_files,
+            changed_files,
+            ..
+        } = result
+        {
+            // Per-file data survives into Stale
+            assert_eq!(unresolvable_dynamic_files.len(), 2);
+
+            // Incremental save with same per-file data
+            drop(loaded.save_incremental(
+                &root,
+                &file_a,
+                &graph,
+                &changed_files,
+                5,
+                unresolvable_dynamic_files,
+            ));
+
+            // Reload — Hit should have per-file data intact
+            let mut reloaded = ParseCache::load(&root);
+            let result = reloaded.try_load_graph(&file_a, &resolve_fn);
+            if let GraphCacheResult::Hit {
+                unresolvable_dynamic,
+                unresolvable_dynamic_files,
+                ..
+            } = result
+            {
+                assert_eq!(unresolvable_dynamic, 5);
+                assert_eq!(unresolvable_dynamic_files.len(), 2);
+                assert!(unresolvable_dynamic_files.contains(&(file_a, 3)));
+                assert!(unresolvable_dynamic_files.contains(&(file_b, 2)));
+            } else {
+                panic!("expected Hit after incremental save, got {result:?}");
+            }
+        } else {
+            panic!("expected Stale, got {result:?}");
         }
     }
 
@@ -748,7 +865,7 @@ mod tests {
 
         // Save with package root — should find pnpm-lock.yaml via walk-up
         let mut cache = ParseCache::new();
-        drop(cache.save(&pkg, &file, &graph, vec![], 0));
+        drop(cache.save(&pkg, &file, &graph, vec![], 0, vec![]));
 
         // First load: sentinels should be present → no resave needed
         let mut loaded = ParseCache::load(&pkg);
