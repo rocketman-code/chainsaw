@@ -2,21 +2,30 @@ use crate::registry::Registry;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Env vars that git sets during hook execution. Cleared from all
+/// subprocesses (git helpers, cargo xtask check, check::run() children)
+/// to prevent interference with tests that create their own repos.
+pub const GIT_HOOK_ENV_VARS: &[&str] = &["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"];
+
 /// Pre-commit hook: run checks on feature branches, perf attestation gate on main.
 /// Returns exit code.
 pub fn pre_commit() -> i32 {
     let root = project_root();
 
-    let branch = current_branch(&root);
-    if branch.is_empty() {
+    let Some(branch) = current_branch(&root) else {
         // Detached HEAD (rebase, bisect, CI checkout) — skip checks.
         return 0;
-    }
+    };
     if branch != "main" {
         // Feature branch: run fmt + clippy + test.
-        let status = Command::new("cargo")
-            .args(["xtask", "check"])
-            .current_dir(&root)
+        // Defense-in-depth: clear hook env vars here even though check::run()
+        // also clears them on each child subprocess.
+        let mut cmd = Command::new("cargo");
+        cmd.args(["xtask", "check"]).current_dir(&root);
+        for var in GIT_HOOK_ENV_VARS {
+            cmd.env_remove(var);
+        }
+        let status = cmd
             .status()
             .unwrap_or_else(|e| panic!("failed to run cargo xtask check: {e}"));
         return if status.success() { 0 } else { 1 };
@@ -42,7 +51,7 @@ pub fn pre_commit() -> i32 {
     if !attestation_path.exists() {
         blocked(
             "Perf-sensitive files staged but no attestation found.",
-            &root,
+            "git commit --no-verify",
         );
         return 1;
     }
@@ -73,7 +82,7 @@ pub fn pre_push() -> i32 {
     if !attestation_path.exists() {
         blocked(
             "Perf-sensitive files changed but no attestation found.",
-            &root,
+            "git push --no-verify",
         );
         return 1;
     }
@@ -148,40 +157,56 @@ fn is_our_hook(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn blocked(reason: &str, root: &Path) {
-    let _ = root;
+fn blocked(reason: &str, bypass: &str) {
     eprintln!();
     eprintln!("BLOCKED: {reason}");
     eprintln!();
     eprintln!("Run: cargo xtask perf-validate");
     eprintln!();
-    eprintln!("Or bypass with: git push --no-verify");
+    eprintln!("Or bypass with: {bypass}");
+}
+
+fn git_in(root: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(root);
+    for var in GIT_HOOK_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
 }
 
 fn project_root() -> PathBuf {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .expect("failed to run git");
+    // Can't use git_in() — we don't know root yet.
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--show-toplevel"]);
+    for var in GIT_HOOK_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    let output = cmd.output().expect("failed to run git");
+    assert!(
+        output.status.success(),
+        "git rev-parse --show-toplevel failed (not in a git repo?)"
+    );
     PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
 }
 
-fn current_branch(root: &Path) -> String {
-    let output = Command::new("git")
-        .args(["symbolic-ref", "--short", "HEAD"])
-        .current_dir(root)
+fn current_branch(root: &Path) -> Option<String> {
+    let output = git_in(root, &["symbolic-ref", "--short", "HEAD"])
         .output()
         .unwrap_or_else(|e| panic!("failed to run git: {e}"));
-    String::from_utf8(output.stdout)
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8(output.stdout)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    )
 }
 
 fn staged_files(root: &Path) -> Vec<String> {
-    let output = Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
-        .current_dir(root)
+    let output = git_in(root, &["diff", "--cached", "--name-only"])
         .output()
         .unwrap_or_else(|e| panic!("failed to run git: {e}"));
     String::from_utf8_lossy(&output.stdout)
@@ -192,9 +217,7 @@ fn staged_files(root: &Path) -> Vec<String> {
 }
 
 fn files_since_main(root: &Path) -> Vec<String> {
-    let output = Command::new("git")
-        .args(["diff", "--name-only", "origin/main...HEAD"])
-        .current_dir(root)
+    let output = git_in(root, &["diff", "--name-only", "origin/main...HEAD"])
         .output()
         .unwrap_or_else(|e| panic!("failed to run git: {e}"));
     String::from_utf8_lossy(&output.stdout)
@@ -205,9 +228,7 @@ fn files_since_main(root: &Path) -> Vec<String> {
 }
 
 fn head_commit_sha(root: &Path) -> String {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(root)
+    let output = git_in(root, &["rev-parse", "HEAD"])
         .output()
         .unwrap_or_else(|e| panic!("failed to run git: {e}"));
     String::from_utf8(output.stdout)
