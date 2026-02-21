@@ -110,10 +110,13 @@ impl PythonResolver {
                 if pkg_init.exists() {
                     return Some(pkg_init);
                 }
-                if self.site_packages_dirs.iter().any(|sp| sp.as_path() == root) {
-                    if let Some(ext) = find_c_extension(root, &rel_path) {
-                        return Some(ext);
-                    }
+                if self
+                    .site_packages_dirs
+                    .iter()
+                    .any(|sp| sp.as_path() == root)
+                    && let Some(ext) = find_c_extension(root, &rel_path)
+                {
+                    return Some(ext);
                 }
                 let module_file = root.join(format!("{rel_path}.py"));
                 if module_file.exists() {
@@ -245,7 +248,9 @@ pub fn package_name_from_path(path: &Path, site_packages: &[PathBuf]) -> Option<
                 continue;
             }
             // Strip C extension platform suffix: ciso8601.cpython-314-darwin.so -> ciso8601
-            let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str());
+            let ext = std::path::Path::new(name)
+                .extension()
+                .and_then(|e| e.to_str());
             let stem = if matches!(ext, Some("so" | "pyd")) {
                 // split_once always succeeds here since name ends with .so/.pyd
                 name.split_once('.').unwrap().0
@@ -271,12 +276,12 @@ fn discover_site_packages_from_cfg(root: &Path) -> Option<Vec<PathBuf>> {
     for name in VENV_NAMES {
         let venv_dir = root.join(name);
         let cfg_path = venv_dir.join("pyvenv.cfg");
-        if let Ok(contents) = std::fs::read_to_string(&cfg_path) {
-            if let Some(version) = parse_python_version(&contents) {
-                let sp = venv_dir.join(format!("lib/python{version}/site-packages"));
-                if sp.is_dir() {
-                    return Some(vec![sp]);
-                }
+        if let Ok(contents) = std::fs::read_to_string(&cfg_path)
+            && let Some(version) = parse_python_version(&contents)
+        {
+            let sp = venv_dir.join(format!("lib/python{version}/site-packages"));
+            if sp.is_dir() {
+                return Some(vec![sp]);
             }
         }
     }
@@ -308,7 +313,10 @@ fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
     // Fallback: shell out to python
     let python = find_python(root);
     let output = Command::new(&python)
-        .args(["-c", "import site; print('\\n'.join(site.getsitepackages()))"])
+        .args([
+            "-c",
+            "import site; print('\\n'.join(site.getsitepackages()))",
+        ])
         .output();
 
     match output {
@@ -410,9 +418,7 @@ fn scan_site_packages_paths(site_packages: &[PathBuf]) -> Vec<PathBuf> {
                 continue;
             }
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "__pycache__"
-                || name.ends_with(".dist-info")
-                || name.ends_with(".egg-info")
+            if name == "__pycache__" || name.ends_with(".dist-info") || name.ends_with(".egg-info")
             {
                 continue;
             }
@@ -499,15 +505,17 @@ fn collect_assignments_recursive<'a>(
     map: &mut HashMap<String, tree_sitter::Node<'a>>,
 ) {
     let is_assignment = node.kind() == "expression_statement"
-        && node.named_child(0).is_some_and(|n| n.kind() == "assignment");
+        && node
+            .named_child(0)
+            .is_some_and(|n| n.kind() == "assignment");
     if is_assignment {
         let expr = node.named_child(0).unwrap();
         let left = expr.child_by_field_name("left");
         let right = expr.child_by_field_name("right");
-        if let (Some(l), Some(r)) = (left, right) {
-            if l.kind() == "identifier" {
-                map.insert(node_text(l, src).to_string(), r);
-            }
+        if let (Some(l), Some(r)) = (left, right)
+            && l.kind() == "identifier"
+        {
+            map.insert(node_text(l, src).to_string(), r);
         }
     }
     let mut cursor = node.walk();
@@ -523,10 +531,10 @@ fn find_sys_path_calls(
     assignments: &HashMap<String, tree_sitter::Node>,
     paths: &mut Vec<PathBuf>,
 ) {
-    if node.kind() == "call" {
-        if let Some(path) = try_extract_sys_path_arg(node, src, file_path, assignments) {
-            paths.push(path);
-        }
+    if node.kind() == "call"
+        && let Some(path) = try_extract_sys_path_arg(node, src, file_path, assignments)
+    {
+        paths.push(path);
     }
 
     let mut cursor = node.walk();
@@ -644,7 +652,10 @@ fn node_text<'a>(node: tree_sitter::Node, src: &'a [u8]) -> &'a str {
 
 fn extract_string_content(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
-    if let Some(child) = node.children(&mut cursor).find(|c| c.kind() == "string_content") {
+    if let Some(child) = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "string_content")
+    {
         return Some(node_text(child, src).to_string());
     }
     let text = node_text(node, src);
@@ -1056,7 +1067,9 @@ mod tests {
         assert!(result.is_some(), "should resolve C extension module");
         let found = result.unwrap();
         assert!(
-            found.to_string_lossy().contains("_yaml.cpython-312-darwin.so"),
+            found
+                .to_string_lossy()
+                .contains("_yaml.cpython-312-darwin.so"),
             "should resolve to the .so file, got: {}",
             found.display()
         );
@@ -1082,7 +1095,9 @@ mod tests {
         let result = resolver.resolve(&root, "pkg.mod");
         let found = result.unwrap();
         assert!(
-            found.to_string_lossy().contains("mod.cpython-312-darwin.so"),
+            found
+                .to_string_lossy()
+                .contains("mod.cpython-312-darwin.so"),
             "expected .so, got: {}",
             found.display()
         );
@@ -1110,7 +1125,9 @@ mod tests {
         let result = resolver.resolve(&root, "cmod");
         let found = result.unwrap();
         assert!(
-            found.to_string_lossy().contains("cmod.cpython-312-darwin.so"),
+            found
+                .to_string_lossy()
+                .contains("cmod.cpython-312-darwin.so"),
             "expected .so over namespace dir, got: {}",
             found.display()
         );
@@ -1131,7 +1148,10 @@ mod tests {
 
         // Non-dotted "ext" in source root: try_resolve_module skips C extensions
         let non_dotted = resolver.resolve(&root, "ext");
-        assert_eq!(non_dotted, None, "non-dotted should not find C ext in source root");
+        assert_eq!(
+            non_dotted, None,
+            "non-dotted should not find C ext in source root"
+        );
 
         // Dotted "mypkg.ext" should be consistent: also skip C extensions
         let dotted = resolver.resolve(&root, "mypkg.ext");
@@ -1166,7 +1186,10 @@ mod tests {
 
         // foo.extras only exists in site-packages, but foo is owned by source root
         let result = resolver.resolve(&root, "foo.extras");
-        assert_eq!(result, None, "should not leak sub-modules from shadowed site-packages");
+        assert_eq!(
+            result, None,
+            "should not leak sub-modules from shadowed site-packages"
+        );
     }
 
     #[test]
@@ -1196,7 +1219,10 @@ mod tests {
         // ns.pkg is regular in root_a (locks __path__)
         // ns.pkg.other only in root_b — Python would NOT find it
         let result = resolver.resolve(&root, "ns.pkg.other");
-        assert_eq!(result, None, "intermediate regular package should lock resolution");
+        assert_eq!(
+            result, None,
+            "intermediate regular package should lock resolution"
+        );
 
         // ns.pkg.mod is in root_a — should still be found
         let result = resolver.resolve(&root, "ns.pkg.mod");
@@ -1401,6 +1427,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
 
     // CPython: SingleNamespacePackage (paths = ['portion1'])
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_single_namespace_package() {
         let (resolver, root) = cpython_resolver(&["portion1"]);
         // foo.one resolves
@@ -1413,6 +1440,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
 
     // CPython: CombinedNamespacePackages (paths = ['both_portions'])
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_combined_namespace_packages() {
         let (resolver, root) = cpython_resolver(&["both_portions"]);
         let result = resolver.resolve(&root, "foo.one");
@@ -1423,6 +1451,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
 
     // CPython: SeparatedNamespacePackages (paths = ['portion1', 'portion2'])
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_separated_namespace_packages() {
         let (resolver, root) = cpython_resolver(&["portion1", "portion2"]);
         let result = resolver.resolve(&root, "foo.one");
@@ -1435,6 +1464,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
     // "first path wins" — portion1 has foo/one.py, both_portions also has foo/one.py,
     // but portion1 is searched first.
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_separated_overlapping_first_path_wins() {
         let (resolver, root) = cpython_resolver(&["portion1", "both_portions"]);
         let result = resolver.resolve(&root, "foo.one");
@@ -1448,9 +1478,14 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
     // foo.one resolves within not_a_namespace_pkg, foo.two does NOT resolve because
     // __init__.py locks __path__ to not_a_namespace_pkg only.
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_legacy_regular_package_takes_precedence() {
-        let (resolver, root) =
-            cpython_resolver(&["not_a_namespace_pkg", "portion1", "portion2", "both_portions"]);
+        let (resolver, root) = cpython_resolver(&[
+            "not_a_namespace_pkg",
+            "portion1",
+            "portion2",
+            "both_portions",
+        ]);
         let result = resolver.resolve(&root, "foo.one");
         assert_eq!(result, Some(root.join("not_a_namespace_pkg/foo/one.py")));
         // foo.two is NOT importable because foo is a regular package (has __init__.py)
@@ -1462,6 +1497,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
     // CPython: DynamicPathCalculation (paths = ['project1', 'project2'])
     // Nested namespace packages: parent and parent.child are both namespaces
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_dynamic_path_nested_namespaces() {
         let (resolver, root) = cpython_resolver(&["project1", "project2"]);
         let result = resolver.resolve(&root, "parent.child.one");
@@ -1475,6 +1511,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
 
     // CPython: DynamicPathCalculation with project3 added
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_dynamic_path_three_projects() {
         let (resolver, root) = cpython_resolver(&["project1", "project2", "project3"]);
         let result = resolver.resolve(&root, "parent.child.one");
@@ -1488,6 +1525,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
     // CPython: ModuleAndNamespacePackageInSameDir (paths = ['module_and_namespace_package'])
     // Module a_test.py should be found in preference to namespace dir a_test/
     #[test]
+    #[ignore = "requires local CPython clone at ~/dev/python/cpython"]
     fn cpython_module_preferred_over_namespace_dir() {
         let (resolver, root) = cpython_resolver(&["module_and_namespace_package"]);
         let result = resolver.resolve(&root, "a_test");
