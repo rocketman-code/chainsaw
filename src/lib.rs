@@ -18,6 +18,7 @@
 
 pub mod cache;
 pub mod error;
+pub mod git;
 pub mod graph;
 pub mod lang;
 pub mod loader;
@@ -50,5 +51,6 @@ mod auto_trait_tests {
         is_normal::<crate::lang::RawImport>();
         is_normal::<crate::lang::ParseResult>();
         is_normal::<crate::lang::ProjectKind>();
+        is_normal::<crate::git::DiffArg>();
     }
 }
