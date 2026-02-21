@@ -460,11 +460,11 @@ pub fn print_chains(
     let c = C::new(no_color);
     if chains.is_empty() {
         if target_exists {
-            println!(
+            eprintln!(
                 "\"{target_label}\" exists in the graph but is not reachable from this entry point."
             );
         } else {
-            println!(
+            eprintln!(
                 "\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed."
             );
         }
@@ -529,11 +529,11 @@ pub fn print_cut(
     let c = C::new(no_color);
     if chains.is_empty() {
         if target_exists {
-            println!(
+            eprintln!(
                 "\"{target_label}\" exists in the graph but is not reachable from this entry point."
             );
         } else {
-            println!(
+            eprintln!(
                 "\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed."
             );
         }
