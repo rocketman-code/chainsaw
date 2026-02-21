@@ -24,8 +24,8 @@ impl Registry {
     pub fn load(project_root: &Path) -> Option<Self> {
         let path = project_root.join("perf.toml");
         let content = std::fs::read_to_string(&path).ok()?;
-        let parsed: PerfToml = toml::from_str(&content)
-            .unwrap_or_else(|e| panic!("failed to parse perf.toml: {e}"));
+        let parsed: PerfToml =
+            toml::from_str(&content).unwrap_or_else(|e| panic!("failed to parse perf.toml: {e}"));
         Some(Self {
             entries: parsed
                 .entry
@@ -88,10 +88,8 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let registry = Registry::load(root).unwrap();
 
-        let benchmarks = registry.required_benchmarks(&[
-            "src/main.rs".to_string(),
-            "src/report.rs".to_string(),
-        ]);
+        let benchmarks =
+            registry.required_benchmarks(&["src/main.rs".to_string(), "src/report.rs".to_string()]);
         assert!(benchmarks.is_empty());
     }
 

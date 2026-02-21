@@ -74,8 +74,8 @@ fn io_sensitive_benchmarks_run_before_io_heavy() {
 }
 
 fn extract_benchmark_names_ordered() -> Vec<String> {
-    let content = fs::read_to_string("benches/benchmarks.rs")
-        .expect("Failed to read benches/benchmarks.rs");
+    let content =
+        fs::read_to_string("benches/benchmarks.rs").expect("Failed to read benches/benchmarks.rs");
 
     let mut names = Vec::new();
 
@@ -94,8 +94,8 @@ fn extract_benchmark_names_ordered() -> Vec<String> {
 }
 
 fn extract_benchmark_names() -> HashSet<String> {
-    let content = fs::read_to_string("benches/benchmarks.rs")
-        .expect("Failed to read benches/benchmarks.rs");
+    let content =
+        fs::read_to_string("benches/benchmarks.rs").expect("Failed to read benches/benchmarks.rs");
 
     let mut names = HashSet::new();
 
@@ -116,8 +116,7 @@ fn extract_benchmark_names() -> HashSet<String> {
 }
 
 fn parse_perf_toml() -> (HashSet<String>, HashSet<String>) {
-    let content = fs::read_to_string("perf.toml")
-        .expect("Failed to read perf.toml");
+    let content = fs::read_to_string("perf.toml").expect("Failed to read perf.toml");
 
     let mut benchmarks = HashSet::new();
     let mut files = HashSet::new();

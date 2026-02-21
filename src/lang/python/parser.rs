@@ -21,8 +21,18 @@ fn parse_source(source: &str) -> Result<ParseResult, ParseError> {
 
     let mut imports = Vec::new();
     let mut unresolvable_dynamic = 0;
-    collect_imports(tree.root_node(), source.as_bytes(), &mut imports, &mut unresolvable_dynamic, false, false);
-    Ok(ParseResult { imports, unresolvable_dynamic })
+    collect_imports(
+        tree.root_node(),
+        source.as_bytes(),
+        &mut imports,
+        &mut unresolvable_dynamic,
+        false,
+        false,
+    );
+    Ok(ParseResult {
+        imports,
+        unresolvable_dynamic,
+    })
 }
 
 /// Recursively walk the tree-sitter AST, collecting import statements.
@@ -90,7 +100,14 @@ fn collect_imports(
 
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i) {
-                    collect_imports(child, source, imports, unresolvable, propagated, in_function);
+                    collect_imports(
+                        child,
+                        source,
+                        imports,
+                        unresolvable,
+                        propagated,
+                        in_function,
+                    );
                 }
             }
             return;
@@ -127,7 +144,14 @@ fn collect_imports(
     // Generic recursion: visit all named children
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            collect_imports(child, source, imports, unresolvable, in_type_checking, in_function);
+            collect_imports(
+                child,
+                source,
+                imports,
+                unresolvable,
+                in_type_checking,
+                in_function,
+            );
         }
     }
 }
@@ -204,8 +228,7 @@ fn extract_from_module(node: tree_sitter::Node, source: &[u8]) -> (String, Strin
             "relative_import" => {
                 // Relative: `from ..foo import bar` or `from . import foo`
                 let dot_prefix = extract_dot_prefix(module_node, source);
-                let module_name = extract_module_name(module_node, source)
-                    .unwrap_or_default();
+                let module_name = extract_module_name(module_node, source).unwrap_or_default();
                 return (dot_prefix, module_name);
             }
             _ => {}
@@ -486,7 +509,8 @@ mod tests {
 
     #[test]
     fn import_inside_nested_function_is_dynamic() {
-        let imports = parse_py("def outer():\n    def inner():\n        import foo\n    import bar");
+        let imports =
+            parse_py("def outer():\n    def inner():\n        import foo\n    import bar");
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].kind, EdgeKind::Dynamic);
         assert_eq!(imports[1].kind, EdgeKind::Dynamic);

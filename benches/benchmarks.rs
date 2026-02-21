@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chainsaw::cache::ParseCache;
+use chainsaw::lang::LanguageSupport;
 use chainsaw::lang::python::PythonSupport;
 use chainsaw::lang::typescript::TypeScriptSupport;
-use chainsaw::lang::LanguageSupport;
 use chainsaw::query;
 use clap::Parser;
 use stats::{
-    cv, format_time, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim,
-    trimmed_mean, NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P,
+    NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P, cv, format_time, mean,
+    noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim, trimmed_mean,
 };
 
 mod corpus;
@@ -136,19 +136,17 @@ fn sample(
         // First comparison runs to MAX_SAMPLES to establish sigma_env.
         // Uses noise_aware_welch_t_test so environmental shifts don't trigger
         // false early stops. Only catches strong signals (p < 0.001).
-        if let (Some(base), Some(sigma)) = (baseline, sigma_env) {
-            if samples.len() >= MIN_SAMPLES {
-                let per_iter: Vec<f64> =
-                    samples.iter().map(|(b, t)| t / *b as f64).collect();
-                let base_trimmed = trim(base, TRIM_FRACTION);
-                let sample_trimmed = trim(&per_iter, TRIM_FRACTION);
-                let p = noise_aware_welch_t_test(&base_trimmed, &sample_trimmed, sigma);
-                let change_pct =
-                    (mean(&sample_trimmed) - mean(&base_trimmed)) / mean(&base_trimmed);
+        if let (Some(base), Some(sigma)) = (baseline, sigma_env)
+            && samples.len() >= MIN_SAMPLES
+        {
+            let per_iter: Vec<f64> = samples.iter().map(|(b, t)| t / *b as f64).collect();
+            let base_trimmed = trim(base, TRIM_FRACTION);
+            let sample_trimmed = trim(&per_iter, TRIM_FRACTION);
+            let p = noise_aware_welch_t_test(&base_trimmed, &sample_trimmed, sigma);
+            let change_pct = (mean(&sample_trimmed) - mean(&base_trimmed)) / mean(&base_trimmed);
 
-                if p < EARLY_STOP_P && change_pct.abs() > REGRESSION_THRESHOLD {
-                    return (samples, StopReason::EarlyStop);
-                }
+            if p < EARLY_STOP_P && change_pct.abs() > REGRESSION_THRESHOLD {
+                return (samples, StopReason::EarlyStop);
             }
         }
 
@@ -326,7 +324,10 @@ fn register_benchmarks() -> Vec<Benchmark> {
                 }),
             });
         }
-        Err(_) => eprintln!("Skipping ts_parse_file: {} not found", ts_entry_path.display()),
+        Err(_) => eprintln!(
+            "Skipping ts_parse_file: {} not found",
+            ts_entry_path.display()
+        ),
     }
 
     // py_parse_file
@@ -341,7 +342,10 @@ fn register_benchmarks() -> Vec<Benchmark> {
                 }),
             });
         }
-        Err(_) => eprintln!("Skipping py_parse_file: {} not found", py_entry_path.display()),
+        Err(_) => eprintln!(
+            "Skipping py_parse_file: {} not found",
+            py_entry_path.display()
+        ),
     }
 
     // ts_resolve
@@ -391,8 +395,7 @@ fn register_benchmarks() -> Vec<Benchmark> {
         let entry = ts_entry_path.clone();
         let mut cache = ParseCache::new();
         let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
-        let unresolvable_count: usize =
-            result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
+        let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
         cache.save(
             &root,
             &entry,
@@ -460,7 +463,11 @@ fn register_benchmarks() -> Vec<Benchmark> {
         benches.push(Benchmark {
             name: "query_trace_ts",
             run: Box::new(move || {
-                black_box(query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)));
+                black_box(query::trace(
+                    black_box(&graph),
+                    black_box(entry_id),
+                    black_box(&opts),
+                ));
             }),
         });
     }
@@ -477,7 +484,11 @@ fn register_benchmarks() -> Vec<Benchmark> {
         benches.push(Benchmark {
             name: "query_trace_py",
             run: Box::new(move || {
-                black_box(query::trace(black_box(&graph), black_box(entry_id), black_box(&opts)));
+                black_box(query::trace(
+                    black_box(&graph),
+                    black_box(entry_id),
+                    black_box(&opts),
+                ));
             }),
         });
     }
@@ -629,8 +640,11 @@ fn main() {
             |base| {
                 // Subtract session drift from candidate samples (doesn't change variance)
                 let drift_ns = session_drift * mean(base);
-                let adjusted_candidate: Vec<f64> =
-                    result.current_trimmed.iter().map(|x| x - drift_ns).collect();
+                let adjusted_candidate: Vec<f64> = result
+                    .current_trimmed
+                    .iter()
+                    .map(|x| x - drift_ns)
+                    .collect();
                 let p = noise_aware_welch_t_test(base, &adjusted_candidate, effective_sigma);
                 let adjusted_change = (mean(&adjusted_candidate) - mean(base)) / mean(base);
                 let raw_change = (mean(&result.current_trimmed) - mean(base)) / mean(base);

@@ -246,10 +246,10 @@ fn boost_hub_fan_in(
 ) {
     let mut hub_fan_in = vec![0usize; TS_MODULE_COUNT];
     for e in edges.iter() {
-        if let Some(to) = e.to {
-            if hub_set[to] {
-                hub_fan_in[to] += 1;
-            }
+        if let Some(to) = e.to
+            && hub_set[to]
+        {
+            hub_fan_in[to] += 1;
         }
     }
     for &hub_idx in hubs {
@@ -366,14 +366,8 @@ fn generate_ts_edges(
                 } else {
                     let min_level = from_level.saturating_sub(1);
                     let max_level = (from_level + 3).min(TS_SPINE_DEPTH);
-                    let target_level =
-                        min_level + rng.next_usize(max_level - min_level + 1);
-                    pick_non_self(
-                        rng,
-                        &by_level[target_level],
-                        from_idx,
-                        TS_MODULE_COUNT,
-                    )
+                    let target_level = min_level + rng.next_usize(max_level - min_level + 1);
+                    pick_non_self(rng, &by_level[target_level], from_idx, TS_MODULE_COUNT)
                 };
                 edges.push(TsEdge {
                     from: from_idx,
@@ -391,12 +385,7 @@ fn generate_ts_edges(
 }
 
 /// Write all TS module source files under `src/`.
-fn write_ts_module_files(
-    rng: &mut Rng,
-    src: &Path,
-    modules: &[TsModule],
-    edges: &[TsEdge],
-) {
+fn write_ts_module_files(rng: &mut Rng, src: &Path, modules: &[TsModule], edges: &[TsEdge]) {
     let mut edges_by_module: Vec<Vec<&TsEdge>> = vec![Vec::new(); TS_MODULE_COUNT];
     for edge in edges {
         edges_by_module[edge.from].push(edge);
@@ -427,10 +416,7 @@ fn write_ts_module_files(
 
             match edge.kind {
                 EdgeKind::Static => {
-                    let _ = writeln!(
-                        content,
-                        "import {{ {binding_name} }} from \"{specifier}\";"
-                    );
+                    let _ = writeln!(content, "import {{ {binding_name} }} from \"{specifier}\";");
                 }
                 EdgeKind::TypeOnly => {
                     let _ = writeln!(
@@ -679,19 +665,12 @@ fn py_module_dir(modules: &[PyModule], idx: usize) -> &'static str {
 }
 
 /// Generate edges for the PY corpus: spine chain, reachability, random imports.
-fn generate_py_edges(
-    rng: &mut Rng,
-    modules: &[PyModule],
-    by_level: &[Vec<usize>],
-) -> Vec<PyEdge> {
+fn generate_py_edges(rng: &mut Rng, modules: &[PyModule], by_level: &[Vec<usize>]) -> Vec<PyEdge> {
     let mut edges: Vec<PyEdge> = Vec::with_capacity(PY_MODULE_COUNT * 4);
 
     // Spine chain: module 0 -> 1 -> 2 -> ... -> 10
     for i in 0..PY_SPINE_DEPTH {
-        edges.push(PyEdge {
-            from: i,
-            to: i + 1,
-        });
+        edges.push(PyEdge { from: i, to: i + 1 });
     }
 
     // Reachability guarantee
@@ -727,12 +706,7 @@ fn generate_py_edges(
             let min_level = from_level.saturating_sub(1);
             let max_level = (from_level + 3).min(PY_SPINE_DEPTH);
             let target_level = min_level + rng.next_usize(max_level - min_level + 1);
-            let target = pick_non_self(
-                rng,
-                &by_level[target_level],
-                from_idx,
-                PY_MODULE_COUNT,
-            );
+            let target = pick_non_self(rng, &by_level[target_level], from_idx, PY_MODULE_COUNT);
             edges.push(PyEdge {
                 from: from_idx,
                 to: target,
@@ -744,12 +718,7 @@ fn generate_py_edges(
 }
 
 /// Write all PY module source files under `app/`.
-fn write_py_module_files(
-    rng: &mut Rng,
-    app: &Path,
-    modules: &[PyModule],
-    edges: &[PyEdge],
-) {
+fn write_py_module_files(rng: &mut Rng, app: &Path, modules: &[PyModule], edges: &[PyEdge]) {
     let mut edges_by_module: Vec<Vec<&PyEdge>> = vec![Vec::new(); PY_MODULE_COUNT];
     for edge in edges {
         edges_by_module[edge.from].push(edge);
@@ -760,10 +729,7 @@ fn write_py_module_files(
         let name = py_module_name(idx);
         let file_path = join_subdir(app, dir, format!("{name}.py"));
 
-        let target_bytes = rng.triangular(
-            PY_MEDIAN_SIZE.saturating_sub(600),
-            PY_MEDIAN_SIZE + 600,
-        );
+        let target_bytes = rng.triangular(PY_MEDIAN_SIZE.saturating_sub(600), PY_MEDIAN_SIZE + 600);
         let mut content = String::with_capacity(target_bytes + 256);
 
         // Write import statements

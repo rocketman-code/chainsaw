@@ -202,9 +202,13 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
     match command {
         Commands::Trace(args) => run_trace(args, no_color, sc),
 
-        Commands::Diff { a, b, entry, limit, quiet } => {
-            run_diff(a, b, entry, limit, quiet, no_color, sc)
-        }
+        Commands::Diff {
+            a,
+            b,
+            entry,
+            limit,
+            quiet,
+        } => run_diff(a, b, entry, limit, quiet, no_color, sc),
 
         Commands::Packages(ref args) => run_packages(args, no_color, sc),
 
@@ -263,13 +267,28 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
 
     // Handle --chain/--cut/--diff-from/--diff modes
     if let Some(ref chain_arg) = args.chain {
-        if !handle_chain(&loaded, entry_id, chain_arg, args.include_dynamic, args.json, no_color)? {
+        if !handle_chain(
+            &loaded,
+            entry_id,
+            chain_arg,
+            args.include_dynamic,
+            args.json,
+            no_color,
+        )? {
             std::process::exit(1);
         }
         return Ok(());
     }
     if let Some(ref cut_arg) = args.cut {
-        if !handle_cut(&loaded, entry_id, cut_arg, args.top, args.include_dynamic, args.json, no_color)? {
+        if !handle_cut(
+            &loaded,
+            entry_id,
+            cut_arg,
+            args.top,
+            args.include_dynamic,
+            args.json,
+            no_color,
+        )? {
             std::process::exit(1);
         }
         return Ok(());
@@ -279,7 +298,17 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
         return Ok(());
     }
     if let Some(ref diff_path) = args.diff {
-        return handle_diff(diff_path, &loaded, &result, &entry_rel, &opts, args.no_cache, args.limit, no_color, sc);
+        return handle_diff(
+            diff_path,
+            &loaded,
+            &result,
+            &entry_rel,
+            &opts,
+            args.no_cache,
+            args.limit,
+            no_color,
+            sc,
+        );
     }
 
     // Normal trace output
@@ -361,46 +390,39 @@ fn save_snapshot(
 ) -> Result<(), Error> {
     let snapshot = result.to_snapshot(entry_rel);
     let data = serde_json::to_string_pretty(&snapshot).unwrap();
-    std::fs::write(path, &data)
-        .map_err(|e| Error::SnapshotWrite(path.to_path_buf(), e))?;
+    std::fs::write(path, &data).map_err(|e| Error::SnapshotWrite(path.to_path_buf(), e))?;
     if !quiet {
-        eprintln!(
-            "{} to {}",
-            sc.status("Snapshot saved"),
-            path.display()
-        );
+        eprintln!("{} to {}", sc.status("Snapshot saved"), path.display());
     }
     Ok(())
 }
 
 fn load_snapshot(path: &Path) -> Result<query::TraceSnapshot, Error> {
-    let data = std::fs::read_to_string(path)
-        .map_err(|e| Error::SnapshotRead(path.to_path_buf(), e))?;
-    serde_json::from_str(&data)
-        .map_err(|e| Error::SnapshotParse(path.to_path_buf(), e))
+    let data =
+        std::fs::read_to_string(path).map_err(|e| Error::SnapshotRead(path.to_path_buf(), e))?;
+    serde_json::from_str(&data).map_err(|e| Error::SnapshotParse(path.to_path_buf(), e))
 }
 
 fn resolve_target(arg: &str, loaded: &loader::LoadedGraph) -> ResolvedTarget {
-    if looks_like_path(arg, loaded.valid_extensions) {
-        if let Ok(target_path) = loaded.root.join(arg).canonicalize() {
-            if let Some(&id) = loaded.graph.path_to_id.get(&target_path) {
-                let p = &loaded.graph.module(id).path;
-                let label = p
-                    .strip_prefix(&loaded.root)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .into_owned();
-                return ResolvedTarget {
-                    target: query::ChainTarget::Module(id),
-                    label,
-                    exists: true,
-                };
-            }
-        }
-        // File doesn't exist or isn't in the graph — fall through to
-        // package name lookup. Handles packages like "six.py" or
-        // "highlight.js" whose names match file extensions.
+    if looks_like_path(arg, loaded.valid_extensions)
+        && let Ok(target_path) = loaded.root.join(arg).canonicalize()
+        && let Some(&id) = loaded.graph.path_to_id.get(&target_path)
+    {
+        let p = &loaded.graph.module(id).path;
+        let label = p
+            .strip_prefix(&loaded.root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .into_owned();
+        return ResolvedTarget {
+            target: query::ChainTarget::Module(id),
+            label,
+            exists: true,
+        };
     }
+    // File doesn't exist or isn't in the graph — fall through to
+    // package name lookup. Handles packages like "six.py" or
+    // "highlight.js" whose names match file extensions.
     let name = arg.to_string();
     let exists = loaded.graph.package_map.contains_key(arg);
     ResolvedTarget {
@@ -431,12 +453,7 @@ fn handle_chain(
 ) -> Result<bool, Error> {
     let resolved = resolve_target(chain_arg, loaded);
     check_entry_target(&resolved, entry_id, "--chain")?;
-    let chains = query::find_all_chains(
-        &loaded.graph,
-        entry_id,
-        &resolved.target,
-        include_dynamic,
-    );
+    let chains = query::find_all_chains(&loaded.graph, entry_id, &resolved.target, include_dynamic);
     if json {
         report::print_chains_json(
             &loaded.graph,
@@ -470,12 +487,7 @@ fn handle_cut(
 ) -> Result<bool, Error> {
     let resolved = resolve_target(cut_arg, loaded);
     check_entry_target(&resolved, entry_id, "--cut")?;
-    let chains = query::find_all_chains(
-        &loaded.graph,
-        entry_id,
-        &resolved.target,
-        include_dynamic,
-    );
+    let chains = query::find_all_chains(&loaded.graph, entry_id, &resolved.target, include_dynamic);
     let cuts = query::find_cut_modules(
         &loaded.graph,
         &chains,
@@ -515,15 +527,8 @@ fn handle_diff_from(
     no_color: bool,
 ) -> Result<(), Error> {
     let saved = load_snapshot(snapshot_path)?;
-    let diff_output =
-        query::diff_snapshots(&saved, &result.to_snapshot(entry_rel));
-    report::print_diff(
-        &diff_output,
-        &saved.entry,
-        entry_rel,
-        limit,
-        no_color,
-    );
+    let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(entry_rel));
+    report::print_diff(&diff_output, &saved.entry, entry_rel, limit, no_color);
     Ok(())
 }
 
@@ -549,27 +554,21 @@ fn handle_diff(
         );
     }
 
-    let diff_snapshot =
-        if let Some(&diff_id) = loaded.graph.path_to_id.get(&diff_entry) {
-            // Same graph — trace directly
-            let diff_rel = entry_label(&diff_entry, &loaded.root);
-            query::trace(&loaded.graph, diff_id, opts).to_snapshot(&diff_rel)
-        } else {
-            // Different project — build second graph
-            let (diff_loaded, _diff_cache_write) =
-                loader::load_graph(&diff_entry, no_cache)?;
-            let Some(&diff_id) =
-                diff_loaded.graph.path_to_id.get(&diff_loaded.entry)
-            else {
-                return Err(Error::EntryNotInGraph(diff_loaded.entry));
-            };
-            let diff_rel = entry_label(&diff_loaded.entry, &diff_loaded.root);
-            query::trace(&diff_loaded.graph, diff_id, opts)
-                .to_snapshot(&diff_rel)
+    let diff_snapshot = if let Some(&diff_id) = loaded.graph.path_to_id.get(&diff_entry) {
+        // Same graph — trace directly
+        let diff_rel = entry_label(&diff_entry, &loaded.root);
+        query::trace(&loaded.graph, diff_id, opts).to_snapshot(&diff_rel)
+    } else {
+        // Different project — build second graph
+        let (diff_loaded, _diff_cache_write) = loader::load_graph(&diff_entry, no_cache)?;
+        let Some(&diff_id) = diff_loaded.graph.path_to_id.get(&diff_loaded.entry) else {
+            return Err(Error::EntryNotInGraph(diff_loaded.entry));
         };
+        let diff_rel = entry_label(&diff_loaded.entry, &diff_loaded.root);
+        query::trace(&diff_loaded.graph, diff_id, opts).to_snapshot(&diff_rel)
+    };
 
-    let diff_output =
-        query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
+    let diff_output = query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
     report::print_diff(
         &diff_output,
         entry_rel,
@@ -623,8 +622,8 @@ fn run_diff(
     let arg_a = git::classify_diff_arg(&a, root)?;
     let arg_b = b.map(|s| git::classify_diff_arg(&s, root)).transpose()?;
 
-    let has_ref = matches!(arg_a, git::DiffArg::GitRef(_))
-        || matches!(&arg_b, Some(git::DiffArg::GitRef(_)));
+    let has_ref =
+        matches!(arg_a, git::DiffArg::GitRef(_)) || matches!(&arg_b, Some(git::DiffArg::GitRef(_)));
 
     // --entry is required when any side is a git ref or when the working
     // tree is an implicit side (one-arg form).
@@ -645,11 +644,15 @@ fn run_diff(
             let entry_path = entry.as_ref().ok_or(Error::EntryRequired)?;
             let wt_snap = build_snapshot_from_working_tree(entry_path, quiet, sc)?;
             let wt_label = wt_snap.entry.clone();
-            return finish_diff(&snap_a, &label_a, &wt_snap, &wt_label, limit, no_color, start, quiet, sc);
+            return finish_diff(
+                &snap_a, &label_a, &wt_snap, &wt_label, limit, no_color, start, quiet, sc,
+            );
         }
     };
 
-    finish_diff(&snap_a, &label_a, &snap_b, &label_b, limit, no_color, start, quiet, sc)
+    finish_diff(
+        &snap_a, &label_a, &snap_b, &label_b, limit, no_color, start, quiet, sc,
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // private dispatch, called from one site
@@ -776,7 +779,9 @@ fn looks_like_path(arg: &str, extensions: &[&str]) -> bool {
     !arg.starts_with('@')
         && (arg.contains('/')
             || arg.contains(std::path::MAIN_SEPARATOR)
-            || arg.rsplit_once('.').is_some_and(|(_, suffix)| extensions.contains(&suffix)))
+            || arg
+                .rsplit_once('.')
+                .is_some_and(|(_, suffix)| extensions.contains(&suffix)))
 }
 
 #[cfg(test)]
@@ -818,7 +823,7 @@ mod tests {
 
     #[test]
     fn resolve_target_falls_back_to_package_for_extension_named_package() {
-        use chainsaw::graph::{ModuleGraph, PackageInfo, ModuleId};
+        use chainsaw::graph::{ModuleGraph, ModuleId, PackageInfo};
 
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
@@ -850,7 +855,10 @@ mod tests {
         // "six.py" looks like a path (.py extension) but no such file exists.
         // Should fall back to package lookup, not exit(1).
         let resolved = resolve_target("six.py", &loaded);
-        assert_eq!(resolved.target, query::ChainTarget::Package("six.py".to_string()));
+        assert_eq!(
+            resolved.target,
+            query::ChainTarget::Package("six.py".to_string())
+        );
         assert!(resolved.exists);
     }
 

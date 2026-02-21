@@ -172,7 +172,11 @@ fn resolver_conformance() {
     let files = find_python_files(&root);
 
     // Parse and collect all (file, specifier) pairs
-    let source_roots: Vec<&Path> = support.source_roots().iter().map(PathBuf::as_path).collect();
+    let source_roots: Vec<&Path> = support
+        .source_roots()
+        .iter()
+        .map(PathBuf::as_path)
+        .collect();
     let mut imports: Vec<(PathBuf, String)> = Vec::new();
     for file in &files {
         let Ok(source) = std::fs::read_to_string(file) else {
@@ -194,7 +198,11 @@ fn resolver_conformance() {
 
     let python = find_python(&root);
     eprintln!("Python: {}", python.display());
-    eprintln!("Parsed {} files, found {} imports", files.len(), imports.len());
+    eprintln!(
+        "Parsed {} files, found {} imports",
+        files.len(),
+        imports.len()
+    );
 
     // Resolve each with our resolver
     let our_results: Vec<Option<PathBuf>> = imports
@@ -207,7 +215,11 @@ fn resolver_conformance() {
 
     // Ask Python oracle
     let python_results = run_oracle(&root, &source_roots, &imports);
-    assert_eq!(imports.len(), python_results.len(), "oracle returned wrong count");
+    assert_eq!(
+        imports.len(),
+        python_results.len(),
+        "oracle returned wrong count"
+    );
 
     // Compare and categorize
     let mut matches = 0u32;

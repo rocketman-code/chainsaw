@@ -68,7 +68,9 @@ pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
 
     for bench in &required {
         let bench_dir = criterion_dir.join(bench);
-        let has_baseline = bench_dir.join(format!("{baseline_name}/sample.json")).exists();
+        let has_baseline = bench_dir
+            .join(format!("{baseline_name}/sample.json"))
+            .exists();
         let has_candidate = bench_dir.join("new/sample.json").exists();
 
         if !has_baseline || !has_candidate {
@@ -232,10 +234,7 @@ fn commit_sha(root: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-fn write_attestation(
-    root: &Path,
-    required_benchmarks: &BTreeSet<String>,
-) -> Result<(), String> {
+fn write_attestation(root: &Path, required_benchmarks: &BTreeSet<String>) -> Result<(), String> {
     let attestation = Attestation {
         commit_sha: commit_sha(root),
         timestamp: now_utc(),

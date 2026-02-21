@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use stats::{
-    format_time, mean, noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim,
-    NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P,
+    NOISE_FLOOR_MIN, REGRESSION_THRESHOLD, TRIM_FRACTION, VERDICT_P, format_time, mean,
+    noise_aware_welch_t_test, noise_floor, session_bias_adjust, trim,
 };
 use std::path::Path;
 
@@ -117,7 +117,11 @@ pub fn judge(dirs: &[String], baseline_name: &str, criterion_dir: &Path) -> Vec<
             "Session drift: {:+.1}%, noise floor: {:.1}% (sigma_env {})",
             drift * 100.0,
             effective_sigma * 100.0,
-            if stored_sigma.is_some() { "stored" } else { "calibrated" },
+            if stored_sigma.is_some() {
+                "stored"
+            } else {
+                "calibrated"
+            },
         );
     }
 
@@ -127,11 +131,8 @@ pub fn judge(dirs: &[String], baseline_name: &str, criterion_dir: &Path) -> Vec<
         let drift_ns = drift * l.baseline_mean;
         let adjusted_candidate: Vec<f64> =
             l.candidate_trimmed.iter().map(|x| x - drift_ns).collect();
-        let p_value = noise_aware_welch_t_test(
-            &l.baseline_trimmed,
-            &adjusted_candidate,
-            effective_sigma,
-        );
+        let p_value =
+            noise_aware_welch_t_test(&l.baseline_trimmed, &adjusted_candidate, effective_sigma);
         let adjusted_change = adjusted_changes[i];
 
         let verdict = if p_value < VERDICT_P && adjusted_change > REGRESSION_THRESHOLD {
@@ -194,16 +195,23 @@ pub fn print_results(results: &[BenchResult]) {
 fn extract_bench_name(path: &Path) -> String {
     let s = path.to_string_lossy();
     s.find("criterion/").map_or_else(
-        || path.file_name().map_or_else(|| s.to_string(), |f| f.to_string_lossy().to_string()),
-        |pos| s[pos + "criterion/".len()..].trim_end_matches('/').to_string(),
+        || {
+            path.file_name()
+                .map_or_else(|| s.to_string(), |f| f.to_string_lossy().to_string())
+        },
+        |pos| {
+            s[pos + "criterion/".len()..]
+                .trim_end_matches('/')
+                .to_string()
+        },
     )
 }
 
 fn load_samples(path: &Path) -> Result<Vec<f64>, String> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let sample: CriterionSample =
-        serde_json::from_str(&content).map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let sample: CriterionSample = serde_json::from_str(&content)
+        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
 
     if sample.iters.len() != sample.times.len() {
         return Err(format!(
@@ -220,7 +228,6 @@ fn load_samples(path: &Path) -> Result<Vec<f64>, String> {
         .map(|(iters, time)| time / iters)
         .collect())
 }
-
 
 #[cfg(test)]
 mod tests {

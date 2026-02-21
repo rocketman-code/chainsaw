@@ -392,18 +392,19 @@ mod tests {
 
         // Build snapshots from each ref via worktrees
         let entry = std::path::Path::new("index.ts");
-        let opts =
-            crate::query::TraceOptions { include_dynamic: false, top_n: 0, ignore: vec![] };
+        let opts = crate::query::TraceOptions {
+            include_dynamic: false,
+            top_n: 0,
+            ignore: vec![],
+        };
 
         let wt1 = create_worktree(dir, &sha1).unwrap();
-        let (loaded1, _cw1) =
-            crate::loader::load_graph(&wt1.path().join(entry), true).unwrap();
+        let (loaded1, _cw1) = crate::loader::load_graph(&wt1.path().join(entry), true).unwrap();
         let eid1 = *loaded1.graph.path_to_id.get(&loaded1.entry).unwrap();
         let snap1 = crate::query::trace(&loaded1.graph, eid1, &opts).to_snapshot("v1");
 
         let wt2 = create_worktree(dir, &sha2).unwrap();
-        let (loaded2, _cw2) =
-            crate::loader::load_graph(&wt2.path().join(entry), true).unwrap();
+        let (loaded2, _cw2) = crate::loader::load_graph(&wt2.path().join(entry), true).unwrap();
         let eid2 = *loaded2.graph.path_to_id.get(&loaded2.entry).unwrap();
         let snap2 = crate::query::trace(&loaded2.graph, eid2, &opts).to_snapshot("v2");
 

@@ -50,4 +50,3 @@ impl LanguageSupport for PythonSupport {
         None
     }
 }
-

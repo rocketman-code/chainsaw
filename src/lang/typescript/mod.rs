@@ -9,7 +9,7 @@ use dashmap::DashMap;
 
 use crate::lang::{LanguageSupport, ParseError, ParseResult};
 
-use self::resolver::{package_name_from_path, ImportResolver};
+use self::resolver::{ImportResolver, package_name_from_path};
 
 const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 #[derive(Debug)]
@@ -246,10 +246,7 @@ mod tests {
         );
         // File at intermediate depth in lib-b (should also hit cache)
         assert_eq!(
-            support.workspace_package_name(
-                &root.join("packages/lib-b/src/shallow.ts"),
-                &root
-            ),
+            support.workspace_package_name(&root.join("packages/lib-b/src/shallow.ts"), &root),
             Some("@org/lib-b".to_string())
         );
         // First-party file at root level — should be None

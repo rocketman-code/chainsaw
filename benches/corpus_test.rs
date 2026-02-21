@@ -59,11 +59,7 @@ fn py_corpus_builds_successfully() {
     );
 
     // Bounds derived from spec: 600 modules, ~2K edges
-    assert_eq!(
-        g.module_count(),
-        600,
-        "expected exactly 600 modules"
-    );
+    assert_eq!(g.module_count(), 600, "expected exactly 600 modules");
     assert!(
         g.edges.len() >= 1800,
         "expected 1800+ edges, got {}",
