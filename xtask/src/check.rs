@@ -1,3 +1,4 @@
+use crate::hooks::GIT_HOOK_ENV_VARS;
 use std::process::Command;
 
 /// Run all local CI checks: format, lint, test.
@@ -33,7 +34,12 @@ pub fn run() -> i32 {
     // cargo's colored output streams directly to the user.
     for (label, args, failure_msg) in steps {
         eprintln!("\n{label}");
-        let status = match Command::new(args[0]).args(&args[1..]).status() {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..]);
+        for var in GIT_HOOK_ENV_VARS {
+            cmd.env_remove(var);
+        }
+        let status = match cmd.status() {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to run {}: {e}", args[0]);
