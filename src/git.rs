@@ -313,4 +313,106 @@ mod tests {
         // Cleanup should not panic
         drop(wt);
     }
+
+    #[test]
+    fn integration_diff_two_refs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // Init repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        // Commit 1: index.ts imports one file
+        std::fs::write(dir.join("index.ts"), "import './a';\n").unwrap();
+        std::fs::write(dir.join("a.ts"), "export const a = 1;\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "v1"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let sha1 = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // Commit 2: index.ts imports two files (more weight)
+        std::fs::write(dir.join("index.ts"), "import './a';\nimport './b';\n").unwrap();
+        std::fs::write(
+            dir.join("b.ts"),
+            "export const b = 'hello world this is extra weight';\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "v2"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let sha2 = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // Build snapshots from each ref via worktrees
+        let entry = std::path::Path::new("index.ts");
+        let opts =
+            crate::query::TraceOptions { include_dynamic: false, top_n: 0, ignore: vec![] };
+
+        let wt1 = create_worktree(dir, &sha1).unwrap();
+        let (loaded1, _cw1) =
+            crate::loader::load_graph(&wt1.path().join(entry), true).unwrap();
+        let eid1 = *loaded1.graph.path_to_id.get(&loaded1.entry).unwrap();
+        let snap1 = crate::query::trace(&loaded1.graph, eid1, &opts).to_snapshot("v1");
+
+        let wt2 = create_worktree(dir, &sha2).unwrap();
+        let (loaded2, _cw2) =
+            crate::loader::load_graph(&wt2.path().join(entry), true).unwrap();
+        let eid2 = *loaded2.graph.path_to_id.get(&loaded2.entry).unwrap();
+        let snap2 = crate::query::trace(&loaded2.graph, eid2, &opts).to_snapshot("v2");
+
+        // Diff: v2 should be heavier than v1 (added b.ts)
+        let diff = crate::query::diff_snapshots(&snap1, &snap2);
+        assert!(
+            diff.weight_delta > 0,
+            "v2 should be heavier than v1, delta={}",
+            diff.weight_delta
+        );
+    }
 }
