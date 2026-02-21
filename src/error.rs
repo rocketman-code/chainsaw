@@ -34,6 +34,8 @@ pub enum Error {
     DiffFileNotFound(String),
     /// Git command failed.
     GitError(String),
+    /// --top or --limit value is invalid (must be >= -1).
+    InvalidTopValue(&'static str, i32),
 }
 
 impl Error {
@@ -105,6 +107,9 @@ impl std::fmt::Display for Error {
             }
             Self::DiffFileNotFound(arg) => write!(f, "file not found: {arg}"),
             Self::GitError(msg) => write!(f, "git: {msg}"),
+            Self::InvalidTopValue(flag, n) => {
+                write!(f, "invalid value {n} for {flag}: must be -1 (all) or 0+")
+            }
         }
     }
 }

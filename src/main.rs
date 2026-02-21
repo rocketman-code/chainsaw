@@ -157,7 +157,9 @@ fn parse_size(s: &str) -> Result<u64, String> {
         .or_else(|| s.strip_suffix("KB").map(|n| (n.trim(), 1_000.0)))
         .or_else(|| s.strip_suffix("B").map(|n| (n.trim(), 1.0)))
         .unwrap_or((s, 1.0));
-    let value: f64 = num_str.parse().map_err(|_| format!("invalid size: {s}"))?;
+    let value: f64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid size: {s}\nhint: valid formats: 5MB, 500KB, 100B"))?;
     Ok((value * multiplier) as u64)
 }
 
@@ -239,6 +241,16 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
     .collect();
     if query_flags.len() > 1 {
         return Err(Error::MutuallyExclusiveFlags(query_flags.join(" and ")));
+    }
+
+    if args.top < -1 {
+        return Err(Error::InvalidTopValue("--top", args.top));
+    }
+    if args.top_modules < -1 {
+        return Err(Error::InvalidTopValue("--top-modules", args.top_modules));
+    }
+    if args.limit < -1 {
+        return Err(Error::InvalidTopValue("--limit", args.limit));
     }
 
     // Load or build graph
@@ -580,6 +592,9 @@ fn handle_diff(
 }
 
 fn run_packages(args: &PackagesArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
+    if args.top < -1 {
+        return Err(Error::InvalidTopValue("--top", args.top));
+    }
     let start = Instant::now();
     let (loaded, _cache_write) = loader::load_graph(&args.entry, args.no_cache)?;
     if !args.quiet {
@@ -608,6 +623,9 @@ fn run_diff(
     no_color: bool,
     sc: report::StderrColor,
 ) -> Result<(), Error> {
+    if limit < -1 {
+        return Err(Error::InvalidTopValue("--limit", limit));
+    }
     let start = Instant::now();
 
     // Determine repo root (needed for git ref detection and worktrees).
@@ -870,5 +888,33 @@ mod tests {
         assert_eq!(parse_size("1234").unwrap(), 1234);
         assert_eq!(parse_size("1.5MB").unwrap(), 1_500_000);
         assert!(parse_size("abc").is_err());
+    }
+
+    #[test]
+    fn parse_size_error_includes_hint() {
+        let err = parse_size("abc").unwrap_err();
+        assert!(err.contains("hint:"), "expected hint in error: {err}");
+        assert!(
+            err.contains("MB"),
+            "expected format examples in error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_top_value_includes_flag_name() {
+        let err = Error::InvalidTopValue("--top", -5);
+        let msg = err.to_string();
+        assert!(msg.contains("--top"), "expected flag name in error: {msg}");
+        assert!(msg.contains("-5"), "expected value in error: {msg}");
+    }
+
+    #[test]
+    fn invalid_limit_value_includes_flag_name() {
+        let err = Error::InvalidTopValue("--limit", -3);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--limit"),
+            "expected flag name in error: {msg}"
+        );
     }
 }
