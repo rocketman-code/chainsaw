@@ -28,7 +28,11 @@ pub fn pre_commit() -> i32 {
         let status = cmd
             .status()
             .unwrap_or_else(|e| panic!("failed to run cargo xtask check: {e}"));
-        return if status.success() { 0 } else { 1 };
+        if !status.success() {
+            return 1;
+        }
+        warn_unpushed_branch(&root, &branch);
+        return 0;
     }
 
     let Some(registry) = Registry::load(&root) else {
@@ -155,6 +159,39 @@ fn is_our_hook(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .map(|c| c.contains("cargo xtask"))
         .unwrap_or(false)
+}
+
+/// Warn when commits are accumulating on a branch with no remote tracking ref.
+/// Does not block the commit — just makes it impossible to miss.
+fn warn_unpushed_branch(root: &Path, branch: &str) {
+    // Check if this branch has a remote tracking branch.
+    let upstream = git_in(root, &["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    if upstream.is_some() {
+        return; // Already tracking a remote branch.
+    }
+
+    // Count commits ahead of origin/main.
+    let output = git_in(root, &["rev-list", "--count", "origin/main..HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let Some(output) = output else { return };
+    let count: usize = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    if count == 0 {
+        return;
+    }
+
+    let s = if count == 1 { "" } else { "s" };
+    eprintln!();
+    eprintln!("WARNING: {count} commit{s} on '{branch}' with no remote tracking branch.");
+    eprintln!("         Push to avoid losing work: git push -u origin {branch}");
+    eprintln!();
 }
 
 fn blocked(reason: &str, bypass: &str) {

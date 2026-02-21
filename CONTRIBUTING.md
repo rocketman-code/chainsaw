@@ -112,6 +112,17 @@ Merge strategy is rebase only (linear history). Individual commits are preserved
 
 During PR iteration: add new commits on top, never amend or force-push. Each fix is a separate commit describing what it addresses.
 
+### Push early
+
+Always push feature branches to origin after the first commit. An unpushed branch is an unrecoverable branch -- if it gets deleted locally or garbage collected, the code is gone. A draft PR costs nothing and creates a paper trail.
+
+```
+git push -u origin feat/my-feature
+gh pr create --draft
+```
+
+The pre-commit hook warns when it detects commits accumulating on a branch with no remote tracking ref. Don't ignore this warning.
+
 ## Pull requests
 
 One `type(scope)` per PR. If you can't describe the PR with a single conventional commit prefix, split it. A PR can contain multiple commits, but they should all serve the same `type(scope)`.
