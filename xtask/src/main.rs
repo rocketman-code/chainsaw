@@ -25,7 +25,7 @@ enum Command {
         /// Specific benchmark names to check (only with --baseline)
         benchmarks: Vec<String>,
     },
-    /// Pre-commit hook: block commits to main without perf attestation
+    /// Pre-commit hook: run checks on feature branches, perf attestation gate on main
     PreCommit,
     /// Pre-push hook: block pushes without perf attestation
     PrePush {
