@@ -68,6 +68,7 @@ files = [
     "src/lang/python/conformance.rs",
     "benches/corpus_test.rs",
     "xtask/src/main.rs",
+    "xtask/src/check.rs",
     "xtask/src/hooks.rs",
     "xtask/src/registry.rs",
     "xtask/src/perf_validate.rs",

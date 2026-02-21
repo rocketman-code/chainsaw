@@ -1,3 +1,4 @@
+mod check;
 mod hooks;
 mod perf_judge;
 mod perf_validate;
@@ -37,6 +38,8 @@ enum Command {
     },
     /// Install git hooks
     InstallHooks,
+    /// Run all local CI checks (fmt, clippy, test)
+    Check,
 }
 
 fn main() {
@@ -56,6 +59,9 @@ fn main() {
         }
         Command::InstallHooks => {
             std::process::exit(hooks::install_hooks());
+        }
+        Command::Check => {
+            std::process::exit(check::run());
         }
     }
 }
