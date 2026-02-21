@@ -51,6 +51,86 @@ pub fn classify_diff_arg(arg: &str, repo_root: &Path) -> Result<DiffArg, crate::
     Err(crate::error::Error::NotSnapshotOrRef(arg.to_string()))
 }
 
+/// A temporary git worktree that cleans up on drop.
+pub struct TempWorktree {
+    dir: tempfile::TempDir,
+    repo_root: std::path::PathBuf,
+}
+
+impl TempWorktree {
+    /// Path to the worktree checkout.
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
+impl Drop for TempWorktree {
+    fn drop(&mut self) {
+        // Best-effort cleanup: remove worktree from git's tracking.
+        // If this fails, `git worktree prune` will clean it up later.
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(self.dir.path())
+            .current_dir(&self.repo_root)
+            .output();
+    }
+}
+
+/// Create a temporary worktree checked out at the given git ref.
+pub fn create_worktree(
+    repo_root: &Path,
+    git_ref: &str,
+) -> Result<TempWorktree, crate::error::Error> {
+    let dir = tempfile::tempdir()
+        .map_err(|e| crate::error::Error::GitError(format!("failed to create temp dir: {e}")))?;
+
+    let output = std::process::Command::new("git")
+        .args(["worktree", "add", "--detach"])
+        .arg(dir.path())
+        .arg(git_ref)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| crate::error::Error::GitError(format!("failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(crate::error::Error::GitError(format!(
+            "git worktree add failed: {}",
+            stderr.trim(),
+        )));
+    }
+
+    Ok(TempWorktree {
+        dir,
+        repo_root: repo_root.to_path_buf(),
+    })
+}
+
+/// Check whether the given path is inside a git repository.
+pub fn is_git_repo(path: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(path)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Find the git repository root from any path inside it.
+pub fn repo_root(path: &Path) -> Result<std::path::PathBuf, crate::error::Error> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| crate::error::Error::GitError(format!("failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(crate::error::Error::NotAGitRepo);
+    }
+
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(std::path::PathBuf::from(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +289,28 @@ mod tests {
             .unwrap();
         let result = classify_diff_arg("v1.0.0", tmp.path());
         assert_eq!(result.unwrap(), DiffArg::GitRef("v1.0.0".to_string()));
+    }
+
+    #[test]
+    fn worktree_roundtrip() {
+        let (tmp, sha) = git_repo();
+        std::fs::write(tmp.path().join("marker.txt"), "original").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "marker"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+
+        let wt = create_worktree(tmp.path(), &sha).unwrap();
+        // Worktree should have file.txt from the first commit but NOT marker.txt
+        assert!(wt.path().join("file.txt").exists());
+        assert!(!wt.path().join("marker.txt").exists());
+        // Cleanup should not panic
+        drop(wt);
     }
 }
