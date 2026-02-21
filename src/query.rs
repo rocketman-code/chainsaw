@@ -1091,7 +1091,10 @@ mod tests {
         TraceSnapshot {
             entry: entry.to_string(),
             static_weight,
-            packages: packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            packages: packages
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), *v))
+                .collect(),
             dynamic_weight: 0,
             dynamic_packages: HashMap::new(),
         }
@@ -1107,11 +1110,14 @@ mod tests {
         TraceSnapshot {
             entry: entry.to_string(),
             static_weight,
-            packages: packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            packages: packages
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), *v))
+                .collect(),
             dynamic_weight,
             dynamic_packages: dynamic_packages
                 .iter()
-                .map(|(k, v)| (k.to_string(), *v))
+                .map(|(k, v)| ((*k).to_string(), *v))
                 .collect(),
         }
     }
