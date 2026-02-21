@@ -56,9 +56,7 @@ pub fn load_graph(entry: &Path, no_cache: bool) -> Result<(LoadedGraph, CacheWri
     })?;
 
     let lang_support: Box<dyn LanguageSupport> = match kind {
-        lang::ProjectKind::TypeScript => {
-            Box::new(lang::typescript::TypeScriptSupport::new(&root))
-        }
+        lang::ProjectKind::TypeScript => Box::new(lang::typescript::TypeScriptSupport::new(&root)),
         lang::ProjectKind::Python => Box::new(lang::python::PythonSupport::new(&root)),
     };
 
@@ -115,7 +113,13 @@ fn build_or_load(
                 needs_resave,
             } => {
                 let handle = if needs_resave {
-                    cache.save(root, entry, &graph, unresolved_specifiers, unresolvable_dynamic)
+                    cache.save(
+                        root,
+                        entry,
+                        &graph,
+                        unresolved_specifiers,
+                        unresolvable_dynamic,
+                    )
                 } else {
                     CacheWriteHandle::none()
                 };
@@ -225,20 +229,15 @@ fn try_incremental_update(
 
         // Compare import lists — if anything changed, bail out
         if new_result.imports.len() != old_import_count
-            || new_result
-                .imports
-                .iter()
-                .zip(old_imports.iter())
-                .any(|(new, &(old_spec, old_kind))| {
-                    new.specifier != old_spec || new.kind != old_kind
-                })
+            || new_result.imports.iter().zip(old_imports.iter()).any(
+                |(new, &(old_spec, old_kind))| new.specifier != old_spec || new.kind != old_kind,
+            )
         {
             return None;
         }
 
         // Track unresolvable dynamic count changes
-        unresolvable_delta +=
-            new_result.unresolvable_dynamic as isize - old_unresolvable as isize;
+        unresolvable_delta += new_result.unresolvable_dynamic as isize - old_unresolvable as isize;
 
         // Update file size in graph
         let mid = *graph.path_to_id.get(path)?;
@@ -254,7 +253,9 @@ fn try_incremental_update(
             .map(|imp| lang.resolve(dir, &imp.specifier))
             .collect();
         if let Ok(meta) = fs::metadata(path) {
-            let mtime = meta.modified().ok()
+            let mtime = meta
+                .modified()
+                .ok()
                 .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                 .map(|d: std::time::Duration| d.as_nanos());
             if let Some(mtime) = mtime {

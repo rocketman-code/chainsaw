@@ -242,16 +242,18 @@ impl ParseCache {
         let changed_files: Vec<PathBuf> = cached
             .file_mtimes
             .par_iter()
-            .filter_map(|(path, saved)| if let Ok(meta) = fs::metadata(path) {
-                let mtime = mtime_of(&meta)?;
-                if mtime != saved.mtime_nanos || meta.len() != saved.size {
-                    Some(path.clone())
+            .filter_map(|(path, saved)| {
+                if let Ok(meta) = fs::metadata(path) {
+                    let mtime = mtime_of(&meta)?;
+                    if mtime != saved.mtime_nanos || meta.len() != saved.size {
+                        Some(path.clone())
+                    } else {
+                        None
+                    }
                 } else {
+                    any_missing.store(true, Ordering::Relaxed);
                     None
                 }
-            } else {
-                any_missing.store(true, Ordering::Relaxed);
-                None
             })
             .collect();
 
@@ -345,7 +347,16 @@ impl ParseCache {
         let dep_sentinels = find_dep_sentinels(&root);
 
         CacheWriteHandle(Some(thread::spawn(move || {
-            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic, dep_sentinels);
+            write_cache_to_disk(
+                root,
+                entry,
+                graph,
+                entries,
+                file_mtimes,
+                unresolved_specifiers,
+                unresolvable_dynamic,
+                dep_sentinels,
+            );
         })))
     }
 
@@ -384,7 +395,16 @@ impl ParseCache {
                 })
                 .collect();
 
-            write_cache_to_disk(root, entry, graph, entries, file_mtimes, unresolved_specifiers, unresolvable_dynamic, dep_sentinels);
+            write_cache_to_disk(
+                root,
+                entry,
+                graph,
+                entries,
+                file_mtimes,
+                unresolved_specifiers,
+                unresolvable_dynamic,
+                dep_sentinels,
+            );
         })))
     }
 
@@ -584,7 +604,12 @@ mod tests {
         let resolve_fn = |_: &str| false;
         let result = loaded.try_load_graph(&file, &resolve_fn);
         assert!(matches!(result, GraphCacheResult::Hit { .. }));
-        if let GraphCacheResult::Hit { graph: g, unresolvable_dynamic: unresolvable, .. } = result {
+        if let GraphCacheResult::Hit {
+            graph: g,
+            unresolvable_dynamic: unresolvable,
+            ..
+        } = result
+        {
             assert_eq!(g.module_count(), 1);
             assert_eq!(unresolvable, 2);
         }
@@ -684,7 +709,12 @@ mod tests {
         let result = loaded.try_load_graph(&file, &resolve_fn);
         assert!(matches!(result, GraphCacheResult::Stale { .. }));
 
-        if let GraphCacheResult::Stale { graph, changed_files, .. } = result {
+        if let GraphCacheResult::Stale {
+            graph,
+            changed_files,
+            ..
+        } = result
+        {
             // Incremental save with updated mtimes
             drop(loaded.save_incremental(&root, &file, &graph, &changed_files, 0));
 

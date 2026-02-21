@@ -30,7 +30,10 @@ pub fn pre_commit() -> i32 {
     // Just check that an attestation exists — pre-push does the full verification.
     let attestation_path = root.join(".git/perf-attestation.json");
     if !attestation_path.exists() {
-        blocked("Perf-sensitive files staged but no attestation found.", &root);
+        blocked(
+            "Perf-sensitive files staged but no attestation found.",
+            &root,
+        );
         return 1;
     }
 
@@ -58,7 +61,10 @@ pub fn pre_push() -> i32 {
 
     let attestation_path = root.join(".git/perf-attestation.json");
     if !attestation_path.exists() {
-        blocked("Perf-sensitive files changed but no attestation found.", &root);
+        blocked(
+            "Perf-sensitive files changed but no attestation found.",
+            &root,
+        );
         return 1;
     }
 
@@ -200,7 +206,6 @@ fn head_commit_sha(root: &Path) -> String {
         .to_string()
 }
 
-
 /// Verify that an attestation file is valid for the given commit SHA and required benchmarks.
 /// Returns Ok(()) if valid, Err(reason) if not.
 fn verify_attestation(
@@ -267,8 +272,10 @@ mod tests {
 
     #[test]
     fn verify_attestation_valid() {
-        let required: BTreeSet<String> =
-            ["ts_parse_file", "build_graph/ts_cold"].into_iter().map(String::from).collect();
+        let required: BTreeSet<String> = ["ts_parse_file", "build_graph/ts_cold"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let json = make_attestation("abc123", "pass", &["ts_parse_file", "build_graph/ts_cold"]);
 
         assert!(verify_attestation(&json, "abc123", &required).is_ok());
@@ -281,17 +288,25 @@ mod tests {
         let json = make_attestation("abc123", "pass", &["ts_parse_file"]);
 
         let err = verify_attestation(&json, "def456", &required).unwrap_err();
-        assert!(err.contains("commit"), "expected commit SHA error, got: {err}");
+        assert!(
+            err.contains("commit"),
+            "expected commit SHA error, got: {err}"
+        );
     }
 
     #[test]
     fn verify_attestation_missing_benchmark() {
-        let required: BTreeSet<String> =
-            ["ts_parse_file", "build_graph/ts_cold"].into_iter().map(String::from).collect();
+        let required: BTreeSet<String> = ["ts_parse_file", "build_graph/ts_cold"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let json = make_attestation("abc123", "pass", &["ts_parse_file"]);
 
         let err = verify_attestation(&json, "abc123", &required).unwrap_err();
-        assert!(err.contains("build_graph/ts_cold"), "expected missing benchmark error, got: {err}");
+        assert!(
+            err.contains("build_graph/ts_cold"),
+            "expected missing benchmark error, got: {err}"
+        );
     }
 
     #[test]
@@ -319,6 +334,9 @@ mod tests {
             std::iter::once("ts_parse_file").map(String::from).collect();
 
         let err = verify_attestation("not json", "abc123", &required).unwrap_err();
-        assert!(err.contains("parse") || err.contains("invalid"), "expected parse error, got: {err}");
+        assert!(
+            err.contains("parse") || err.contains("invalid"),
+            "expected parse error, got: {err}"
+        );
     }
 }

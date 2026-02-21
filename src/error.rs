@@ -49,9 +49,7 @@ impl Error {
             } else {
                 "--cut finds where to sever import chains to a dependency"
             }),
-            Self::EntryRequired => {
-                Some("use --entry to specify the entry point to trace")
-            }
+            Self::EntryRequired => Some("use --entry to specify the entry point to trace"),
             _ => None,
         }
     }
@@ -90,7 +88,10 @@ impl std::fmt::Display for Error {
                 write!(f, "{flag} target is the entry point itself")
             }
             Self::EntryRequired => {
-                write!(f, "--entry is required when diffing against a git ref or the working tree")
+                write!(
+                    f,
+                    "--entry is required when diffing against a git ref or the working tree"
+                )
             }
             Self::NotAGitRepo => write!(f, "not inside a git repository"),
             Self::NotSnapshotOrRef(arg) => {
@@ -106,9 +107,9 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::EntryNotFound(_, e)
-            | Self::SnapshotRead(_, e)
-            | Self::SnapshotWrite(_, e) => Some(e),
+            Self::EntryNotFound(_, e) | Self::SnapshotRead(_, e) | Self::SnapshotWrite(_, e) => {
+                Some(e)
+            }
             Self::SnapshotParse(_, e) => Some(e),
             _ => None,
         }

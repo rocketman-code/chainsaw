@@ -81,7 +81,10 @@ fn extract_all(source: &str, source_type: SourceType) -> ParseResult {
     // but sort is needed for interleaving)
     let imports = positioned.into_iter().map(|p| p.import).collect();
 
-    ParseResult { imports, unresolvable_dynamic }
+    ParseResult {
+        imports,
+        unresolvable_dynamic,
+    }
 }
 
 /// Process `ModuleRecord` `import_entries`, grouping by `module_request` to determine
@@ -99,7 +102,10 @@ fn extract_import_entries(
         let specifier = entry.module_request.name.as_str();
         let stmt_start = entry.statement_span.start;
 
-        if let Some(existing) = seen.iter_mut().find(|(s, spec, _)| *s == stmt_start && *spec == specifier) {
+        if let Some(existing) = seen
+            .iter_mut()
+            .find(|(s, spec, _)| *s == stmt_start && *spec == specifier)
+        {
             // Another binding from the same import statement — AND the is_type flags
             if !entry.is_type {
                 existing.2 = false;
@@ -110,7 +116,11 @@ fn extract_import_entries(
     }
 
     for (stmt_start, specifier, all_type) in seen {
-        let kind = if all_type { EdgeKind::TypeOnly } else { EdgeKind::Static };
+        let kind = if all_type {
+            EdgeKind::TypeOnly
+        } else {
+            EdgeKind::Static
+        };
         positioned.push(PositionedImport {
             offset: stmt_start,
             import: RawImport {
@@ -136,7 +146,10 @@ fn extract_export_entries(
         let specifier = module_request.name.as_str();
         let stmt_start = entry.statement_span.start;
 
-        if let Some(existing) = seen.iter_mut().find(|(s, spec, _)| *s == stmt_start && *spec == specifier) {
+        if let Some(existing) = seen
+            .iter_mut()
+            .find(|(s, spec, _)| *s == stmt_start && *spec == specifier)
+        {
             if !entry.is_type {
                 existing.2 = false;
             }
@@ -146,7 +159,11 @@ fn extract_export_entries(
     }
 
     for (stmt_start, specifier, all_type) in seen {
-        let kind = if all_type { EdgeKind::TypeOnly } else { EdgeKind::Static };
+        let kind = if all_type {
+            EdgeKind::TypeOnly
+        } else {
+            EdgeKind::Static
+        };
         positioned.push(PositionedImport {
             offset: stmt_start,
             import: RawImport {
@@ -344,7 +361,11 @@ fn walk_expr(expr: &Expression<'_>, imports: &mut Vec<PositionedImport>, unresol
     }
 }
 
-fn walk_argument(arg: &Argument<'_>, imports: &mut Vec<PositionedImport>, unresolvable: &mut usize) {
+fn walk_argument(
+    arg: &Argument<'_>,
+    imports: &mut Vec<PositionedImport>,
+    unresolvable: &mut usize,
+) {
     if let Some(expr) = arg.as_expression() {
         walk_expr(expr, imports, unresolvable);
     } else if let Argument::SpreadElement(spread) = arg {
@@ -477,9 +498,7 @@ mod tests {
 
     #[test]
     fn dynamic_import_in_try_catch() {
-        let imports = parse_ts(
-            r#"try { await import("bar"); } catch (e) { console.error(e); }"#,
-        );
+        let imports = parse_ts(r#"try { await import("bar"); } catch (e) { console.error(e); }"#);
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].specifier, "bar");
         assert_eq!(imports[0].kind, EdgeKind::Dynamic);
@@ -540,9 +559,8 @@ mod tests {
 
     #[test]
     fn require_in_switch_case() {
-        let imports = parse_ts(
-            r#"switch (env) { case "a": const x = require("switch-dep"); break; }"#,
-        );
+        let imports =
+            parse_ts(r#"switch (env) { case "a": const x = require("switch-dep"); break; }"#);
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].specifier, "switch-dep");
     }

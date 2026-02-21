@@ -51,19 +51,35 @@ impl C {
     }
 
     fn bold_green(self, s: &str) -> String {
-        if self.color { format!("\x1b[1;92m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[1;92m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 
     fn red(self, s: &str) -> String {
-        if self.color { format!("\x1b[31m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[31m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 
     fn green(self, s: &str) -> String {
-        if self.color { format!("\x1b[32m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[32m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 
     fn dim(self, s: &str) -> String {
-        if self.color { format!("\x1b[2m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[2m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 }
 
@@ -85,15 +101,27 @@ impl StderrColor {
     }
 
     pub fn error(self, s: &str) -> String {
-        if self.color { format!("\x1b[1;91m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[1;91m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 
     pub fn warning(self, s: &str) -> String {
-        if self.color { format!("\x1b[1;93m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[1;93m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 
     pub fn status(self, s: &str) -> String {
-        if self.color { format!("\x1b[1;92m{s}\x1b[0m") } else { s.to_string() }
+        if self.color {
+            format!("\x1b[1;92m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
     }
 }
 
@@ -117,7 +145,9 @@ pub fn relative_path(path: &Path, root: &Path) -> String {
 
 fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
     let m = graph.module(mid);
-    m.package.clone().unwrap_or_else(|| relative_path(&m.path, root))
+    m.package
+        .clone()
+        .unwrap_or_else(|| relative_path(&m.path, root))
 }
 
 /// Path relative to the package directory (e.g. `dateutil/__init__.py`).
@@ -132,7 +162,8 @@ fn package_relative_path(path: &Path, package_name: &str) -> String {
     if let Some((scope, name)) = package_name.split_once('/') {
         for (i, pair) in components.windows(2).enumerate().rev() {
             if let (Component::Normal(a), Component::Normal(b)) = (&pair[0], &pair[1])
-                && a.to_str() == Some(scope) && b.to_str() == Some(name)
+                && a.to_str() == Some(scope)
+                && b.to_str() == Some(name)
             {
                 let sub: PathBuf = components[i..].iter().collect();
                 return sub.to_string_lossy().into_owned();
@@ -166,7 +197,10 @@ pub struct DisplayOpts {
 /// Build display names for a chain, expanding duplicate package nodes
 /// to package-relative file paths for disambiguation.
 fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> Vec<String> {
-    let names: Vec<String> = chain.iter().map(|&mid| display_name(graph, mid, root)).collect();
+    let names: Vec<String> = chain
+        .iter()
+        .map(|&mid| display_name(graph, mid, root))
+        .collect();
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for name in &names {
         *counts.entry(name.as_str()).or_default() += 1;
@@ -187,7 +221,13 @@ fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> 
 }
 
 #[allow(clippy::cast_sign_loss)]
-pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path, root: &Path, opts: &DisplayOpts) {
+pub fn print_trace(
+    graph: &ModuleGraph,
+    result: &TraceResult,
+    entry_path: &Path,
+    root: &Path,
+    opts: &DisplayOpts,
+) {
     let c = C::new(opts.no_color);
     println!("{}", relative_path(entry_path, root));
     let (kind, suffix) = if opts.include_dynamic {
@@ -231,7 +271,11 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
 
     if opts.top != 0 {
         println!();
-        let deps_label = if opts.include_dynamic { "Heavy dependencies (static + dynamic):" } else { "Heavy dependencies (static):" };
+        let deps_label = if opts.include_dynamic {
+            "Heavy dependencies (static + dynamic):"
+        } else {
+            "Heavy dependencies (static):"
+        };
         println!("{}", c.bold_green(deps_label));
         if result.heavy_packages.is_empty() {
             println!("  (none \u{2014} all reachable modules are first-party)");
@@ -270,26 +314,21 @@ pub fn print_trace(graph: &ModuleGraph, result: &TraceResult, entry_path: &Path,
         }
         if result.modules_by_cost.len() > display_count {
             let remaining = result.modules_by_cost.len() - display_count;
-            println!("  ... and {remaining} more module{}", plural(remaining as u64));
+            println!(
+                "  ... and {remaining} more module{}",
+                plural(remaining as u64)
+            );
         }
     }
 }
 
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
 pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, no_color: bool) {
     let c = C::new(no_color);
     println!("Diff: {entry_a} vs {entry_b}");
     println!();
-    println!(
-        "  {:<40} {}",
-        entry_a,
-        format_size(diff.entry_a_weight)
-    );
-    println!(
-        "  {:<40} {}",
-        entry_b,
-        format_size(diff.entry_b_weight)
-    );
+    println!("  {:<40} {}", entry_a, format_size(diff.entry_a_weight));
+    println!("  {:<40} {}", entry_b, format_size(diff.entry_b_weight));
     let sign = if diff.weight_delta >= 0 { "+" } else { "-" };
     println!(
         "  {:<40} {sign}{}",
@@ -310,7 +349,11 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, n
             "Dynamic-only (after)",
             format_size(diff.dynamic_b_weight)
         );
-        let dyn_sign = if diff.dynamic_weight_delta >= 0 { "+" } else { "-" };
+        let dyn_sign = if diff.dynamic_weight_delta >= 0 {
+            "+"
+        } else {
+            "-"
+        };
         println!(
             "  {:<40} {dyn_sign}{}",
             "Dynamic delta",
@@ -321,10 +364,17 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, n
     println!();
 
     if !diff.only_in_a.is_empty() {
-        let show = if limit < 0 { diff.only_in_a.len() } else { diff.only_in_a.len().min(limit as usize) };
+        let show = if limit < 0 {
+            diff.only_in_a.len()
+        } else {
+            diff.only_in_a.len().min(limit as usize)
+        };
         println!("{}", c.red(&format!("Only in {entry_a}:")));
         for pkg in &diff.only_in_a[..show] {
-            println!("{}", c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size))));
+            println!(
+                "{}",
+                c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size)))
+            );
         }
         let remaining = diff.only_in_a.len() - show;
         if remaining > 0 {
@@ -332,10 +382,17 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, n
         }
     }
     if !diff.only_in_b.is_empty() {
-        let show = if limit < 0 { diff.only_in_b.len() } else { diff.only_in_b.len().min(limit as usize) };
+        let show = if limit < 0 {
+            diff.only_in_b.len()
+        } else {
+            diff.only_in_b.len().min(limit as usize)
+        };
         println!("{}", c.green(&format!("Only in {entry_b}:")));
         for pkg in &diff.only_in_b[..show] {
-            println!("{}", c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size))));
+            println!(
+                "{}",
+                c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size)))
+            );
         }
         let remaining = diff.only_in_b.len() - show;
         if remaining > 0 {
@@ -344,10 +401,17 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, n
     }
 
     if !diff.dynamic_only_in_a.is_empty() {
-        let show = if limit < 0 { diff.dynamic_only_in_a.len() } else { diff.dynamic_only_in_a.len().min(limit as usize) };
+        let show = if limit < 0 {
+            diff.dynamic_only_in_a.len()
+        } else {
+            diff.dynamic_only_in_a.len().min(limit as usize)
+        };
         println!("{}", c.red(&format!("Dynamic only in {entry_a}:")));
         for pkg in &diff.dynamic_only_in_a[..show] {
-            println!("{}", c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size))));
+            println!(
+                "{}",
+                c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size)))
+            );
         }
         let remaining = diff.dynamic_only_in_a.len() - show;
         if remaining > 0 {
@@ -355,10 +419,17 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, n
         }
     }
     if !diff.dynamic_only_in_b.is_empty() {
-        let show = if limit < 0 { diff.dynamic_only_in_b.len() } else { diff.dynamic_only_in_b.len().min(limit as usize) };
+        let show = if limit < 0 {
+            diff.dynamic_only_in_b.len()
+        } else {
+            diff.dynamic_only_in_b.len().min(limit as usize)
+        };
         println!("{}", c.green(&format!("Dynamic only in {entry_b}:")));
         for pkg in &diff.dynamic_only_in_b[..show] {
-            println!("{}", c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size))));
+            println!(
+                "{}",
+                c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size)))
+            );
         }
         let remaining = diff.dynamic_only_in_b.len() - show;
         if remaining > 0 {
@@ -368,7 +439,8 @@ pub fn print_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32, n
 
     if diff.shared_count > 0 {
         println!(
-            "{}", c.dim(&format!(
+            "{}",
+            c.dim(&format!(
                 "Shared: {} package{}",
                 diff.shared_count,
                 if diff.shared_count == 1 { "" } else { "s" }
@@ -388,9 +460,13 @@ pub fn print_chains(
     let c = C::new(no_color);
     if chains.is_empty() {
         if target_exists {
-            println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
+            println!(
+                "\"{target_label}\" exists in the graph but is not reachable from this entry point."
+            );
         } else {
-            println!("\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed.");
+            println!(
+                "\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed."
+            );
         }
         return;
     }
@@ -453,9 +529,13 @@ pub fn print_cut(
     let c = C::new(no_color);
     if chains.is_empty() {
         if target_exists {
-            println!("\"{target_label}\" exists in the graph but is not reachable from this entry point.");
+            println!(
+                "\"{target_label}\" exists in the graph but is not reachable from this entry point."
+            );
         } else {
-            println!("\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed.");
+            println!(
+                "\"{target_label}\" is not in the dependency graph. Check the spelling or verify it's installed."
+            );
         }
         return;
     }
@@ -554,9 +634,16 @@ pub fn print_packages(graph: &ModuleGraph, top: i32, no_color: bool) {
     }
 
     let total = packages.len();
-    let display_count = if top < 0 { total } else { total.min(top as usize) };
+    let display_count = if top < 0 {
+        total
+    } else {
+        total.min(top as usize)
+    };
 
-    println!("{}\n", c.bold_green(&format!("{} package{}:", total, plural(total as u64))));
+    println!(
+        "{}\n",
+        c.bold_green(&format!("{} package{}:", total, plural(total as u64)))
+    );
     for pkg in &packages[..display_count] {
         println!(
             "  {:<40} {:>8}  {} file{}",
@@ -568,7 +655,10 @@ pub fn print_packages(graph: &ModuleGraph, top: i32, no_color: bool) {
     }
     if total > display_count {
         let remaining = total - display_count;
-        println!("  ... and {remaining} more package{}", plural(remaining as u64));
+        println!(
+            "  ... and {remaining} more package{}",
+            plural(remaining as u64)
+        );
     }
 }
 
@@ -578,15 +668,21 @@ pub fn print_packages_json(graph: &ModuleGraph, top: i32) {
     packages.sort_by(|a, b| b.total_reachable_size.cmp(&a.total_reachable_size));
 
     let total = packages.len();
-    let display_count = if top < 0 { total } else { total.min(top as usize) };
+    let display_count = if top < 0 {
+        total
+    } else {
+        total.min(top as usize)
+    };
 
     let json_packages: Vec<serde_json::Value> = packages[..display_count]
         .iter()
-        .map(|pkg| serde_json::json!({
-            "name": pkg.name,
-            "size": pkg.total_reachable_size,
-            "files": pkg.total_reachable_files,
-        }))
+        .map(|pkg| {
+            serde_json::json!({
+                "name": pkg.name,
+                "size": pkg.total_reachable_size,
+                "files": pkg.total_reachable_files,
+            })
+        })
         .collect();
 
     let output = serde_json::json!({
@@ -732,7 +828,9 @@ mod tests {
     #[test]
     fn package_relative_path_pnpm_store() {
         // pnpm store path where workspace dir matches package name
-        let path = PathBuf::from("/dev/cloudflare/workers-sdk/node_modules/.pnpm/cloudflare@5.2.0/node_modules/cloudflare/index.js");
+        let path = PathBuf::from(
+            "/dev/cloudflare/workers-sdk/node_modules/.pnpm/cloudflare@5.2.0/node_modules/cloudflare/index.js",
+        );
         assert_eq!(
             package_relative_path(&path, "cloudflare"),
             "cloudflare/index.js"
@@ -741,7 +839,9 @@ mod tests {
 
     #[test]
     fn package_relative_path_scoped_pnpm() {
-        let path = PathBuf::from("/project/node_modules/.pnpm/@babel+parser@7.25.0/node_modules/@babel/parser/lib/index.js");
+        let path = PathBuf::from(
+            "/project/node_modules/.pnpm/@babel+parser@7.25.0/node_modules/@babel/parser/lib/index.js",
+        );
         assert_eq!(
             package_relative_path(&path, "@babel/parser"),
             "@babel/parser/lib/index.js"
@@ -752,9 +852,6 @@ mod tests {
     fn package_relative_path_simple() {
         // Non-pnpm: straightforward node_modules/pkg/file
         let path = PathBuf::from("/project/node_modules/lodash/fp/map.js");
-        assert_eq!(
-            package_relative_path(&path, "lodash"),
-            "lodash/fp/map.js"
-        );
+        assert_eq!(package_relative_path(&path, "lodash"), "lodash/fp/map.js");
     }
 }

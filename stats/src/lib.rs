@@ -72,11 +72,7 @@ pub fn noise_floor(adjusted_changes: &[f64], min_floor: f64) -> f64 {
 /// inflating the denominator to absorb between-run variance.
 #[allow(clippy::suboptimal_flops)]
 #[must_use]
-pub fn noise_aware_welch_t_test(
-    baseline: &[f64],
-    candidate: &[f64],
-    noise_floor_frac: f64,
-) -> f64 {
+pub fn noise_aware_welch_t_test(baseline: &[f64], candidate: &[f64], noise_floor_frac: f64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let n1 = baseline.len() as f64;
     #[allow(clippy::cast_precision_loss)]
@@ -99,7 +95,11 @@ pub fn noise_aware_welch_t_test(
     // Welch-Satterthwaite df (from sampling variance only)
     let num = (v1 / n1 + v2 / n2).powi(2);
     let den = (v1 / n1).powi(2) / (n1 - 1.0) + (v2 / n2).powi(2) / (n2 - 1.0);
-    let df = if den == 0.0 { 2.0 } else { (num / den).max(2.0) };
+    let df = if den == 0.0 {
+        2.0
+    } else {
+        (num / den).max(2.0)
+    };
 
     2.0 * student_t_cdf(-t.abs(), df)
 }
@@ -262,8 +262,7 @@ fn beta_cf(x: f64, a: f64, b: f64) -> f64 {
         f *= c * d;
 
         // Odd step: d_{2m+1}
-        let num_odd =
-            -(a + m) * (a + b + m) * x / ((a + 2.0 * m) * (a + 2.0 * m + 1.0));
+        let num_odd = -(a + m) * (a + b + m) * x / ((a + 2.0 * m) * (a + 2.0 * m + 1.0));
         d = 1.0 + num_odd * d;
         if d.abs() < TINY {
             d = TINY;
@@ -331,7 +330,9 @@ mod tests {
                 #[allow(clippy::cast_precision_loss)]
                 let uniform = (rng >> 33) as f64 / (1u64 << 31) as f64;
                 #[allow(clippy::suboptimal_flops)]
-                { mean_ns + (uniform - 0.5) * 2.0 * noise }
+                {
+                    mean_ns + (uniform - 0.5) * 2.0 * noise
+                }
             })
             .collect()
     }
@@ -385,7 +386,10 @@ mod tests {
         let candidate = synthetic_samples(103.0, 2.0, 50);
         let change_pct = (mean(&candidate) - mean(&baseline)) / mean(&baseline);
         let p = welch_t_test(&baseline, &candidate);
-        assert!(change_pct > 0.02, "change should exceed threshold: {change_pct}");
+        assert!(
+            change_pct > 0.02,
+            "change should exceed threshold: {change_pct}"
+        );
         assert!(
             p < 0.01,
             "3% regression with tight variance should be significant, got {p}"
@@ -427,7 +431,12 @@ mod tests {
         assert!((ln_gamma(1.0)).abs() < 1e-10);
         assert!((ln_gamma(2.0)).abs() < 1e-10);
         assert!((ln_gamma(5.0) - 24.0_f64.ln()).abs() < 1e-10);
-        assert!(0.5f64.mul_add(-std::f64::consts::PI.ln(), ln_gamma(0.5)).abs() < 1e-10);
+        assert!(
+            0.5f64
+                .mul_add(-std::f64::consts::PI.ln(), ln_gamma(0.5))
+                .abs()
+                < 1e-10
+        );
     }
 
     #[test]
@@ -567,7 +576,9 @@ mod tests {
         // adjusted = [-0.005, 0.003, -0.008, 0.005, -0.002, 0.006, -0.004, 0.003, 0.10]
         // |adjusted| = [0.005, 0.003, 0.008, 0.005, 0.002, 0.006, 0.004, 0.003, 0.10]
         // median(|adj|) = 0.005 → sigma_env = 1.4826 * 0.005 = 0.007413
-        let adj = vec![-0.005, 0.003, -0.008, 0.005, -0.002, 0.006, -0.004, 0.003, 0.10];
+        let adj = vec![
+            -0.005, 0.003, -0.008, 0.005, -0.002, 0.006, -0.004, 0.003, 0.10,
+        ];
         let floor = noise_floor(&adj, 0.01);
         // MAD = 0.005, 1.4826 * 0.005 = 0.007413, but min is 0.01
         assert!(
@@ -596,7 +607,10 @@ mod tests {
     fn noise_floor_too_few() {
         let adj = vec![0.03, 0.05];
         let floor = noise_floor(&adj, 0.01);
-        assert_eq!(floor, 0.01, "should return min_floor with too few benchmarks");
+        assert_eq!(
+            floor, 0.01,
+            "should return min_floor with too few benchmarks"
+        );
     }
 
     #[test]
@@ -654,6 +668,9 @@ mod tests {
         // data: [90, 100, 110] -> mean=100, std_dev=10, cv=0.1
         let data = vec![90.0, 100.0, 110.0];
         let result = cv(&data);
-        assert!((result - 0.1).abs() < 1e-10, "expected cv ~0.1, got {result}");
+        assert!(
+            (result - 0.1).abs() < 1e-10,
+            "expected cv ~0.1, got {result}"
+        );
     }
 }

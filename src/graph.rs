@@ -92,7 +92,12 @@ impl ModuleGraph {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub fn add_module(&mut self, path: PathBuf, size_bytes: u64, package: Option<String>) -> ModuleId {
+    pub fn add_module(
+        &mut self,
+        path: PathBuf,
+        size_bytes: u64,
+        package: Option<String>,
+    ) -> ModuleId {
         if let Some(&id) = self.path_to_id.get(&path) {
             return id;
         }
@@ -109,15 +114,18 @@ impl ModuleGraph {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub fn add_edge(&mut self, from: ModuleId, to: ModuleId, kind: EdgeKind, specifier: &str) -> EdgeId {
+    pub fn add_edge(
+        &mut self,
+        from: ModuleId,
+        to: ModuleId,
+        kind: EdgeKind,
+        specifier: &str,
+    ) -> EdgeId {
         // Deduplicate by (from, to, kind) — scan outgoing edges (typically <30)
-        if let Some(&existing) = self.forward_adj[from.0 as usize]
-            .iter()
-            .find(|&&eid| {
-                let e = &self.edges[eid.0 as usize];
-                e.to == to && e.kind == kind
-            })
-        {
+        if let Some(&existing) = self.forward_adj[from.0 as usize].iter().find(|&&eid| {
+            let e = &self.edges[eid.0 as usize];
+            e.to == to && e.kind == kind
+        }) {
             return existing;
         }
         let id = EdgeId(self.edges.len() as u32);
@@ -154,7 +162,10 @@ impl ModuleGraph {
         let mut package_entries: HashMap<String, Vec<ModuleId>> = HashMap::new();
         for module in &self.modules {
             if let Some(ref pkg) = module.package {
-                package_entries.entry(pkg.clone()).or_default().push(module.id);
+                package_entries
+                    .entry(pkg.clone())
+                    .or_default()
+                    .push(module.id);
             }
         }
 
@@ -232,6 +243,10 @@ mod tests {
         g.add_edge(a, b, EdgeKind::Static, "./b");
         g.add_edge(a, b, EdgeKind::Dynamic, "./b");
 
-        assert_eq!(g.edges.len(), 2, "different edge kinds should not be deduped");
+        assert_eq!(
+            g.edges.len(),
+            2,
+            "different edge kinds should not be deduped"
+        );
     }
 }

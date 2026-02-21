@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use crossbeam_queue::SegQueue;
@@ -45,11 +45,7 @@ struct DiscoverResult {
 /// Phase 1: Concurrent file discovery using a lock-free work queue.
 /// Returns all discovered files with their parsed imports and resolved paths.
 #[allow(clippy::too_many_lines)]
-fn concurrent_discover(
-    entry: &Path,
-    root: &Path,
-    lang: &dyn LanguageSupport,
-) -> DiscoverResult {
+fn concurrent_discover(entry: &Path, root: &Path, lang: &dyn LanguageSupport) -> DiscoverResult {
     let queue: SegQueue<PathBuf> = SegQueue::new();
     let seen: DashSet<PathBuf> = DashSet::new();
     let results: Mutex<Vec<FileResult>> = Mutex::new(Vec::new());
@@ -84,7 +80,9 @@ fn concurrent_discover(
                                 continue;
                             }
                         };
-                        let mtime_nanos = meta.modified().ok()
+                        let mtime_nanos = meta
+                            .modified()
+                            .ok()
                             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                             .map(|d| d.as_nanos());
                         let size = meta.len();
@@ -276,11 +274,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
 
-        fs::write(
-            root.join("entry.ts"),
-            r#"import { x } from "./broken";"#,
-        )
-        .unwrap();
+        fs::write(root.join("entry.ts"), r#"import { x } from "./broken";"#).unwrap();
 
         fs::write(root.join("broken.ts"), [0xFF, 0xFE, 0x00, 0x01]).unwrap();
 

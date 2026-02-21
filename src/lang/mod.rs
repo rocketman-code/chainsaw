@@ -149,5 +149,4 @@ mod tests {
         assert_eq!(kind, ProjectKind::Python);
         assert_eq!(detected_root, root);
     }
-
 }

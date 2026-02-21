@@ -187,9 +187,9 @@ fn compute_exclusive_weights(
             let mut new_idom: Option<u32> = None;
             for &p in &preds[idx] {
                 if idom[p as usize] != u32::MAX {
-                    new_idom = Some(new_idom.map_or(p, |current| {
-                        intersect_idom(&idom, &rpo_num, current, p)
-                    }));
+                    new_idom = Some(
+                        new_idom.map_or(p, |current| intersect_idom(&idom, &rpo_num, current, p)),
+                    );
                 }
             }
             if let Some(ni) = new_idom
@@ -242,10 +242,7 @@ struct BfsResult {
 
 /// BFS from entry point, collecting all reachable modules.
 /// Also records parent pointers during the static phase for chain reconstruction.
-fn bfs_reachable(
-    graph: &ModuleGraph,
-    entry: ModuleId,
-) -> BfsResult {
+fn bfs_reachable(graph: &ModuleGraph, entry: ModuleId) -> BfsResult {
     let n = graph.modules.len();
     let mut visited = vec![false; n];
     let mut parent = vec![u32::MAX; n];
@@ -291,9 +288,7 @@ fn bfs_reachable(
         for &edge_id in graph.outgoing_edges(mid) {
             let edge = graph.edge(edge_id);
             let idx = edge.to.0 as usize;
-            if (edge.kind == EdgeKind::Static || edge.kind == EdgeKind::Dynamic)
-                && !visited[idx]
-            {
+            if (edge.kind == EdgeKind::Static || edge.kind == EdgeKind::Dynamic) && !visited[idx] {
                 visited[idx] = true;
                 dynamic_set.push(edge.to);
                 dyn_queue.push_back(edge.to);
@@ -301,7 +296,11 @@ fn bfs_reachable(
         }
     }
 
-    BfsResult { static_set, dynamic_set, static_parent: parent }
+    BfsResult {
+        static_set,
+        dynamic_set,
+        static_parent: parent,
+    }
 }
 
 /// Reconstruct the shortest chain from entry to target using pre-computed
@@ -343,7 +342,10 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         reachable.extend_from_slice(&dynamic_only);
         (0, 0)
     } else {
-        let w: u64 = dynamic_only.iter().map(|&mid| graph.module(mid).size_bytes).sum();
+        let w: u64 = dynamic_only
+            .iter()
+            .map(|&mid| graph.module(mid).size_bytes)
+            .sum();
         (w, dynamic_only.len())
     };
 
@@ -366,8 +368,10 @@ pub fn trace(graph: &ModuleGraph, entry: ModuleId, opts: &TraceOptions) -> Trace
         }
     }
 
-    let all_packages: HashMap<String, u64> =
-        package_sizes.iter().map(|(k, (size, _))| (k.clone(), *size)).collect();
+    let all_packages: HashMap<String, u64> = package_sizes
+        .iter()
+        .map(|(k, (size, _))| (k.clone(), *size))
+        .collect();
 
     // Sort and truncate BEFORE computing chains (each chain is a full BFS)
     let mut sorted_packages: Vec<(String, u64, u32)> = package_sizes
@@ -456,10 +460,7 @@ pub fn find_all_chains(
 /// Two chains that differ only by which internal file within a package
 /// they pass through will have the same package-level key and only the
 /// first is kept.
-fn dedup_chains_by_package(
-    graph: &ModuleGraph,
-    chains: Vec<Vec<ModuleId>>,
-) -> Vec<Vec<ModuleId>> {
+fn dedup_chains_by_package(graph: &ModuleGraph, chains: Vec<Vec<ModuleId>>) -> Vec<Vec<ModuleId>> {
     let mut seen: HashSet<Vec<String>> = HashSet::new();
     let mut result = Vec::new();
 
@@ -468,7 +469,9 @@ fn dedup_chains_by_package(
             .iter()
             .map(|&mid| {
                 let m = graph.module(mid);
-                m.package.clone().unwrap_or_else(|| m.path.to_string_lossy().into_owned())
+                m.package
+                    .clone()
+                    .unwrap_or_else(|| m.path.to_string_lossy().into_owned())
             })
             .collect();
 
@@ -640,9 +643,7 @@ pub fn find_cut_modules(
         .enumerate()
         .filter(|&(idx, &count)| {
             let mid = ModuleId(idx as u32);
-            count == total
-                && mid != entry
-                && !target.matches(graph, mid)
+            count == total && mid != entry && !target.matches(graph, mid)
         })
         .map(|(idx, &count)| CutModule {
             module_id: ModuleId(idx as u32),
@@ -658,7 +659,9 @@ pub fn find_cut_modules(
     let mut seen_packages: HashSet<String> = HashSet::new();
     cuts.retain(|c| {
         let m = graph.module(c.module_id);
-        m.package.as_ref().is_none_or(|pkg| seen_packages.insert(pkg.clone()))
+        m.package
+            .as_ref()
+            .is_none_or(|pkg| seen_packages.insert(pkg.clone()))
     });
 
     // Single chain: sort ascending (most surgical cut first).
@@ -798,20 +801,11 @@ mod tests {
     ) -> ModuleGraph {
         let mut graph = ModuleGraph::new();
         for &(path, size, pkg) in nodes {
-            graph.add_module(
-                PathBuf::from(path),
-                size,
-                pkg.map(str::to_string),
-            );
+            graph.add_module(PathBuf::from(path), size, pkg.map(str::to_string));
         }
         for &(from, to, kind) in edges {
             #[allow(clippy::cast_possible_truncation)]
-            graph.add_edge(
-                ModuleId(from as u32),
-                ModuleId(to as u32),
-                kind,
-                "",
-            );
+            graph.add_edge(ModuleId(from as u32), ModuleId(to as u32), kind, "");
         }
         graph
     }
@@ -822,7 +816,11 @@ mod tests {
     fn trace_static_weight() {
         // A(100) -> B(200) -> C(300)
         let graph = make_graph(
-            &[("a.ts", 100, None), ("b.ts", 200, None), ("c.ts", 300, None)],
+            &[
+                ("a.ts", 100, None),
+                ("b.ts", 200, None),
+                ("c.ts", 300, None),
+            ],
             &[(0, 1, EdgeKind::Static), (1, 2, EdgeKind::Static)],
         );
         let result = trace(&graph, ModuleId(0), &TraceOptions::default());
@@ -834,7 +832,11 @@ mod tests {
     fn trace_dynamic_excluded_by_default() {
         // A(100) -static-> B(200), A -dynamic-> C(300)
         let graph = make_graph(
-            &[("a.ts", 100, None), ("b.ts", 200, None), ("c.ts", 300, None)],
+            &[
+                ("a.ts", 100, None),
+                ("b.ts", 200, None),
+                ("c.ts", 300, None),
+            ],
             &[(0, 1, EdgeKind::Static), (0, 2, EdgeKind::Dynamic)],
         );
         let result = trace(&graph, ModuleId(0), &TraceOptions::default());
@@ -857,7 +859,12 @@ mod tests {
         };
         let result = trace(&graph, ModuleId(0), &opts);
         // B should appear in modules_by_cost when include_dynamic is set
-        assert!(result.modules_by_cost.iter().any(|m| m.module_id == ModuleId(1)));
+        assert!(
+            result
+                .modules_by_cost
+                .iter()
+                .any(|m| m.module_id == ModuleId(1))
+        );
     }
 
     // --- Chain finding ---
@@ -878,9 +885,17 @@ mod tests {
                 (2, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
+        let chains = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            false,
+        );
         assert_eq!(chains.len(), 1);
-        assert_eq!(chains[0], vec![ModuleId(0), ModuleId(1), ModuleId(2), ModuleId(3)]);
+        assert_eq!(
+            chains[0],
+            vec![ModuleId(0), ModuleId(1), ModuleId(2), ModuleId(3)]
+        );
     }
 
     #[test]
@@ -902,7 +917,12 @@ mod tests {
                 (1, 3, EdgeKind::Static),
             ],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
+        let chains = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            false,
+        );
         assert_eq!(chains.len(), 1);
     }
 
@@ -917,7 +937,12 @@ mod tests {
             ],
             &[(0, 1, EdgeKind::Static)],
         );
-        let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
+        let chains = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            false,
+        );
         assert!(chains.is_empty());
     }
 
@@ -931,17 +956,27 @@ mod tests {
                 ("b.ts", 100, None),
                 ("node_modules/zod/index.js", 500, Some("zod")),
             ],
-            &[
-                (0, 1, EdgeKind::Dynamic),
-                (1, 2, EdgeKind::Static),
-            ],
+            &[(0, 1, EdgeKind::Dynamic), (1, 2, EdgeKind::Static)],
         );
-        let chains_static = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), false);
+        let chains_static = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            false,
+        );
         assert!(chains_static.is_empty());
 
-        let chains_dynamic = find_all_chains(&graph, ModuleId(0), &ChainTarget::Package("zod".to_string()), true);
+        let chains_dynamic = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            true,
+        );
         assert_eq!(chains_dynamic.len(), 1);
-        assert_eq!(chains_dynamic[0], vec![ModuleId(0), ModuleId(1), ModuleId(2)]);
+        assert_eq!(
+            chains_dynamic[0],
+            vec![ModuleId(0), ModuleId(1), ModuleId(2)]
+        );
     }
 
     // --- Cut points ---
@@ -1074,13 +1109,20 @@ mod tests {
             static_weight,
             packages: packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             dynamic_weight,
-            dynamic_packages: dynamic_packages.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            dynamic_packages: dynamic_packages
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
         }
     }
 
     #[test]
     fn diff_snapshots_computes_sets() {
-        let a = snap("a.ts", 1000, &[("zod", 500), ("chalk", 200), ("tslog", 300)]);
+        let a = snap(
+            "a.ts",
+            1000,
+            &[("zod", 500), ("chalk", 200), ("tslog", 300)],
+        );
         let b = snap("b.ts", 800, &[("chalk", 200), ("tslog", 300), ("ajv", 100)]);
         let diff = diff_snapshots(&a, &b);
 
@@ -1098,7 +1140,11 @@ mod tests {
 
     #[test]
     fn diff_snapshots_sorted_by_size_descending() {
-        let a = snap("a.ts", 1000, &[("small", 10), ("big", 500), ("medium", 100)]);
+        let a = snap(
+            "a.ts",
+            1000,
+            &[("small", 10), ("big", 500), ("medium", 100)],
+        );
         let b = snap("b.ts", 0, &[]);
         let diff = diff_snapshots(&a, &b);
 
@@ -1130,7 +1176,11 @@ mod tests {
         // Entry(100) -> A(200) -> B(300)
         // No sharing: exclusive == full subtree
         let graph = make_graph(
-            &[("entry.ts", 100, None), ("a.ts", 200, None), ("b.ts", 300, None)],
+            &[
+                ("entry.ts", 100, None),
+                ("a.ts", 200, None),
+                ("b.ts", 300, None),
+            ],
             &[(0, 1, EdgeKind::Static), (1, 2, EdgeKind::Static)],
         );
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
@@ -1146,19 +1196,23 @@ mod tests {
         // D is shared: not in A's or B's exclusive subtree
         let graph = make_graph(
             &[
-                ("entry.ts", 100, None), ("a.ts", 200, None),
-                ("b.ts", 300, None), ("d.ts", 500, None),
+                ("entry.ts", 100, None),
+                ("a.ts", 200, None),
+                ("b.ts", 300, None),
+                ("d.ts", 500, None),
             ],
             &[
-                (0, 1, EdgeKind::Static), (0, 2, EdgeKind::Static),
-                (1, 3, EdgeKind::Static), (2, 3, EdgeKind::Static),
+                (0, 1, EdgeKind::Static),
+                (0, 2, EdgeKind::Static),
+                (1, 3, EdgeKind::Static),
+                (2, 3, EdgeKind::Static),
             ],
         );
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
         assert_eq!(weights[0], 1100); // entry: everything
-        assert_eq!(weights[1], 200);  // a: only itself (D shared)
-        assert_eq!(weights[2], 300);  // b: only itself (D shared)
-        assert_eq!(weights[3], 500);  // d: only itself
+        assert_eq!(weights[1], 200); // a: only itself (D shared)
+        assert_eq!(weights[2], 300); // b: only itself (D shared)
+        assert_eq!(weights[3], 500); // d: only itself
     }
 
     #[test]
@@ -1168,22 +1222,26 @@ mod tests {
         // A(200) -> E(600)  -- E only reachable through A
         let graph = make_graph(
             &[
-                ("entry.ts", 100, None), ("a.ts", 200, None),
-                ("b.ts", 300, None), ("d.ts", 500, None),
+                ("entry.ts", 100, None),
+                ("a.ts", 200, None),
+                ("b.ts", 300, None),
+                ("d.ts", 500, None),
                 ("e.ts", 600, None),
             ],
             &[
-                (0, 1, EdgeKind::Static), (0, 2, EdgeKind::Static),
-                (1, 3, EdgeKind::Static), (2, 3, EdgeKind::Static),
+                (0, 1, EdgeKind::Static),
+                (0, 2, EdgeKind::Static),
+                (1, 3, EdgeKind::Static),
+                (2, 3, EdgeKind::Static),
                 (1, 4, EdgeKind::Static),
             ],
         );
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
         assert_eq!(weights[0], 1700); // entry: everything
-        assert_eq!(weights[1], 800);  // a: a(200) + e(600), not d
-        assert_eq!(weights[2], 300);  // b: only itself
-        assert_eq!(weights[3], 500);  // d: only itself (shared)
-        assert_eq!(weights[4], 600);  // e: only itself
+        assert_eq!(weights[1], 800); // a: a(200) + e(600), not d
+        assert_eq!(weights[2], 300); // b: only itself
+        assert_eq!(weights[3], 500); // d: only itself (shared)
+        assert_eq!(weights[4], 600); // e: only itself
     }
 
     #[test]
@@ -1194,12 +1252,16 @@ mod tests {
         // With dynamic: C shared between A and B
         let graph = make_graph(
             &[
-                ("entry.ts", 100, None), ("a.ts", 200, None),
-                ("b.ts", 300, None), ("c.ts", 400, None),
+                ("entry.ts", 100, None),
+                ("a.ts", 200, None),
+                ("b.ts", 300, None),
+                ("c.ts", 400, None),
             ],
             &[
-                (0, 1, EdgeKind::Static), (0, 2, EdgeKind::Dynamic),
-                (1, 3, EdgeKind::Static), (2, 3, EdgeKind::Static),
+                (0, 1, EdgeKind::Static),
+                (0, 2, EdgeKind::Dynamic),
+                (1, 3, EdgeKind::Static),
+                (2, 3, EdgeKind::Static),
             ],
         );
         // Static only: B unreachable, C exclusively through A
@@ -1235,7 +1297,11 @@ mod tests {
             ignore: vec!["pkg-c".to_string()],
         };
         let result = trace(&graph, ModuleId(0), &opts);
-        let names: Vec<&str> = result.heavy_packages.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = result
+            .heavy_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         assert!(names.contains(&"pkg-a"));
         assert!(names.contains(&"pkg-b"));
         assert!(!names.contains(&"pkg-c"));
@@ -1244,13 +1310,8 @@ mod tests {
     #[test]
     fn trace_ignore_does_not_affect_total_weight() {
         let graph = make_graph(
-            &[
-                ("entry.ts", 100, None),
-                ("a.ts", 500, Some("big-pkg")),
-            ],
-            &[
-                (0, 1, EdgeKind::Static),
-            ],
+            &[("entry.ts", 100, None), ("a.ts", 500, Some("big-pkg"))],
+            &[(0, 1, EdgeKind::Static)],
         );
         let opts = TraceOptions {
             include_dynamic: false,
@@ -1272,10 +1333,7 @@ mod tests {
                 ("a.ts", 50, None),
                 ("b.ts", 200, None),
             ],
-            &[
-                (0, 1, EdgeKind::Static),
-                (1, 2, EdgeKind::Static),
-            ],
+            &[(0, 1, EdgeKind::Static), (1, 2, EdgeKind::Static)],
         );
         let target_id = graph.path_to_id[&PathBuf::from("b.ts")];
         let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Module(target_id), false);
@@ -1292,17 +1350,17 @@ mod tests {
                 ("bridge.ts", 50, None),
                 ("target.ts", 200, None),
             ],
-            &[
-                (0, 1, EdgeKind::Static),
-                (1, 2, EdgeKind::Static),
-            ],
+            &[(0, 1, EdgeKind::Static), (1, 2, EdgeKind::Static)],
         );
         let target_id = graph.path_to_id[&PathBuf::from("target.ts")];
         let target = ChainTarget::Module(target_id);
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
         assert_eq!(cuts.len(), 1);
-        assert_eq!(cuts[0].module_id, graph.path_to_id[&PathBuf::from("bridge.ts")]);
+        assert_eq!(
+            cuts[0].module_id,
+            graph.path_to_id[&PathBuf::from("bridge.ts")]
+        );
     }
 
     // --- top_n negative/zero ---
@@ -1322,7 +1380,10 @@ mod tests {
                 (0, 3, EdgeKind::Static),
             ],
         );
-        let opts = TraceOptions { top_n: -1, ..Default::default() };
+        let opts = TraceOptions {
+            top_n: -1,
+            ..Default::default()
+        };
         let result = trace(&graph, ModuleId(0), &opts);
         assert_eq!(result.heavy_packages.len(), 3);
     }
@@ -1330,15 +1391,13 @@ mod tests {
     #[test]
     fn trace_top_n_zero_shows_none() {
         let graph = make_graph(
-            &[
-                ("entry.ts", 10, None),
-                ("a.ts", 10, Some("pkg-a")),
-            ],
-            &[
-                (0, 1, EdgeKind::Static),
-            ],
+            &[("entry.ts", 10, None), ("a.ts", 10, Some("pkg-a"))],
+            &[(0, 1, EdgeKind::Static)],
         );
-        let opts = TraceOptions { top_n: 0, ..Default::default() };
+        let opts = TraceOptions {
+            top_n: 0,
+            ..Default::default()
+        };
         let result = trace(&graph, ModuleId(0), &opts);
         assert_eq!(result.heavy_packages.len(), 0);
     }
