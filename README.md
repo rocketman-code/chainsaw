@@ -29,7 +29,7 @@ Only static imports count toward the weight. Dynamic `import()` and type-only im
 Requires Rust 1.85+:
 
 ```
-cargo install --path .
+cargo install chainsaw-cli
 ```
 
 ## Usage
