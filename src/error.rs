@@ -24,6 +24,16 @@ pub enum Error {
     MutuallyExclusiveFlags(String),
     /// --chain/--cut target is the entry point itself.
     TargetIsEntryPoint(String),
+    /// --entry is required when comparing git refs.
+    EntryRequired,
+    /// Not inside a git repository.
+    NotAGitRepo,
+    /// Argument is not a snapshot file or valid git ref.
+    NotSnapshotOrRef(String),
+    /// A path-like argument that doesn't exist on disk.
+    DiffFileNotFound(String),
+    /// Git command failed.
+    GitError(String),
 }
 
 impl Error {
@@ -39,6 +49,9 @@ impl Error {
             } else {
                 "--cut finds where to sever import chains to a dependency"
             }),
+            Self::EntryRequired => {
+                Some("use --entry to specify the entry point to trace at each ref")
+            }
             _ => None,
         }
     }
@@ -76,6 +89,13 @@ impl std::fmt::Display for Error {
             Self::TargetIsEntryPoint(flag) => {
                 write!(f, "{flag} target is the entry point itself")
             }
+            Self::EntryRequired => write!(f, "--entry is required when comparing git refs"),
+            Self::NotAGitRepo => write!(f, "not inside a git repository"),
+            Self::NotSnapshotOrRef(arg) => {
+                write!(f, "'{arg}' is not a snapshot file or a valid git ref")
+            }
+            Self::DiffFileNotFound(arg) => write!(f, "file not found: {arg}"),
+            Self::GitError(msg) => write!(f, "git: {msg}"),
         }
     }
 }
