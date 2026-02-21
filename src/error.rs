@@ -50,7 +50,7 @@ impl Error {
                 "--cut finds where to sever import chains to a dependency"
             }),
             Self::EntryRequired => {
-                Some("use --entry to specify the entry point to trace at each ref")
+                Some("use --entry to specify the entry point to trace")
             }
             _ => None,
         }
@@ -89,7 +89,9 @@ impl std::fmt::Display for Error {
             Self::TargetIsEntryPoint(flag) => {
                 write!(f, "{flag} target is the entry point itself")
             }
-            Self::EntryRequired => write!(f, "--entry is required when comparing git refs"),
+            Self::EntryRequired => {
+                write!(f, "--entry is required when diffing against a git ref or the working tree")
+            }
             Self::NotAGitRepo => write!(f, "not inside a git repository"),
             Self::NotSnapshotOrRef(arg) => {
                 write!(f, "'{arg}' is not a snapshot file or a valid git ref")

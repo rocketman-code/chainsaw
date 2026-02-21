@@ -33,14 +33,14 @@ enum Commands {
     /// Compare dependency weight across snapshots or git refs
     Diff {
         /// Snapshot file or git ref ("before" / "baseline").
-        /// If only one arg, compares working tree against this.
+        /// If only one arg, this is the baseline and the working tree is "after".
         a: String,
 
         /// Snapshot file or git ref ("after" / "current").
-        /// If omitted, the working tree is the "before" side.
+        /// If omitted, the current working tree is the "after" side.
         b: Option<String>,
 
-        /// Entry point to trace (required when comparing git refs)
+        /// Entry point to trace (required for git refs and working tree)
         #[arg(long)]
         entry: Option<PathBuf>,
 
@@ -619,16 +619,16 @@ fn run_diff(
     let repo_root = git::repo_root(&cwd).ok();
 
     // Classify arguments.
-    let fallback = cwd.clone();
-    let root = repo_root.as_deref().unwrap_or(&fallback);
+    let root = repo_root.as_deref().unwrap_or(&cwd);
     let arg_a = git::classify_diff_arg(&a, root)?;
     let arg_b = b.map(|s| git::classify_diff_arg(&s, root)).transpose()?;
 
     let has_ref = matches!(arg_a, git::DiffArg::GitRef(_))
         || matches!(&arg_b, Some(git::DiffArg::GitRef(_)));
 
-    // --entry is required when any side is a git ref.
-    if has_ref && entry.is_none() {
+    // --entry is required when any side is a git ref or when the working
+    // tree is an implicit side (one-arg form).
+    if entry.is_none() && (has_ref || arg_b.is_none()) {
         return Err(Error::EntryRequired);
     }
 
@@ -640,13 +640,12 @@ fn run_diff(
             (s, l, w)
         }
         None => {
-            // One arg: working tree is side A, the arg becomes side B.
-            // Swap: what we built as "a" is actually side B, working tree is side A.
+            // One arg: the arg is "before" (baseline), working tree is "after" (current).
+            // Matches `git diff <ref>` semantics.
             let entry_path = entry.as_ref().ok_or(Error::EntryRequired)?;
             let wt_snap = build_snapshot_from_working_tree(entry_path, quiet, sc)?;
             let wt_label = wt_snap.entry.clone();
-            // snap_a is the ref/snapshot side (B), wt is current working tree (A)
-            return finish_diff(&wt_snap, &wt_label, &snap_a, &label_a, limit, no_color, start, quiet, sc);
+            return finish_diff(&snap_a, &label_a, &wt_snap, &wt_label, limit, no_color, start, quiet, sc);
         }
     };
 
@@ -695,7 +694,7 @@ fn build_diff_side(
         git::DiffArg::GitRef(git_ref) => {
             let entry = entry.ok_or(Error::EntryRequired)?;
             let (snap, wt) = build_snapshot_from_ref(repo_root, git_ref, entry, quiet, sc)?;
-            let label = format!("{} ({})", entry.display(), git_ref);
+            let label = snap.entry.clone();
             Ok((snap, label, Some(wt)))
         }
     }
