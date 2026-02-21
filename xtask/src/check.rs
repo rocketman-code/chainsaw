@@ -29,6 +29,8 @@ pub fn run() -> i32 {
         ),
     ];
 
+    // No .stdout()/.stderr() — subprocesses inherit the terminal so
+    // cargo's colored output streams directly to the user.
     for (label, args, failure_msg) in steps {
         eprintln!("\n{label}");
         let status = match Command::new(args[0]).args(&args[1..]).status() {
