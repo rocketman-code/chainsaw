@@ -701,7 +701,9 @@ mod tests {
         let mut cache = ParseCache::new();
         drop(cache.save(&root, &file, &graph, vec![], 0));
 
-        // Modify the file
+        // Modify the file — bump mtime by 2s to guarantee a different
+        // timestamp on filesystems with coarse granularity (e.g. ext4 on CI).
+        std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(&file, "x = 2").unwrap();
 
         let mut loaded = ParseCache::load(&root);
