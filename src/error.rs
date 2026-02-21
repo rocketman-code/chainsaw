@@ -10,8 +10,8 @@ pub enum Error {
     EntryNotFound(PathBuf, std::io::Error),
     /// Entry point path refers to a directory, not a file.
     EntryIsDirectory(PathBuf),
-    /// File has an unsupported extension.
-    UnsupportedFileType(String),
+    /// File has an unsupported or missing extension.
+    UnsupportedFileType(Option<String>),
     /// Entry point exists but was not found in the dependency graph.
     EntryNotInGraph(PathBuf),
     /// Cannot read a snapshot file from disk.
@@ -40,9 +40,9 @@ impl Error {
     /// User-facing hint to accompany the error message.
     pub fn hint(&self) -> Option<&str> {
         match self {
-            Self::UnsupportedFileType(_) => {
-                Some("chainsaw supports TypeScript/JavaScript and Python files")
-            }
+            Self::UnsupportedFileType(_) => Some(
+                "chainsaw supports TypeScript/JavaScript (.ts, .tsx, .js, .jsx, .mjs, .cjs) and Python (.py) files",
+            ),
             Self::EntryNotInGraph(_) => Some("is it reachable from the project root?"),
             Self::TargetIsEntryPoint(flag) => Some(if flag == "--chain" {
                 "--chain finds import chains from the entry to a dependency"
@@ -50,6 +50,9 @@ impl Error {
                 "--cut finds where to sever import chains to a dependency"
             }),
             Self::EntryRequired => Some("use --entry to specify the entry point to trace"),
+            Self::EntryIsDirectory(_) => {
+                Some("provide a source file (e.g. src/index.ts or main.py)")
+            }
             _ => None,
         }
     }
@@ -66,8 +69,11 @@ impl std::fmt::Display for Error {
             Self::EntryIsDirectory(path) => {
                 write!(f, "'{}' is a directory, not a source file", path.display())
             }
-            Self::UnsupportedFileType(ext) => {
+            Self::UnsupportedFileType(Some(ext)) => {
                 write!(f, "unsupported file type '.{ext}'")
+            }
+            Self::UnsupportedFileType(None) => {
+                write!(f, "file has no extension")
             }
             Self::EntryNotInGraph(path) => {
                 write!(f, "entry file '{}' not found in graph", path.display())
@@ -113,5 +119,29 @@ impl std::error::Error for Error {
             Self::SnapshotParse(_, e) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_file_type_no_extension() {
+        let err = Error::UnsupportedFileType(None);
+        assert!(err.to_string().contains("no extension"));
+        assert!(err.hint().unwrap().contains(".ts"));
+    }
+
+    #[test]
+    fn unsupported_file_type_with_extension() {
+        let err = Error::UnsupportedFileType(Some("rs".to_string()));
+        assert!(err.to_string().contains(".rs"));
+    }
+
+    #[test]
+    fn entry_is_directory_has_hint() {
+        let err = Error::EntryIsDirectory(PathBuf::from("/tmp/src"));
+        assert!(err.hint().unwrap().contains("source file"));
     }
 }

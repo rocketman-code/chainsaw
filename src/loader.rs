@@ -48,11 +48,8 @@ pub fn load_graph(entry: &Path, no_cache: bool) -> Result<(LoadedGraph, CacheWri
     }
 
     let (root, kind) = lang::detect_project(&entry).ok_or_else(|| {
-        let ext = entry
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("(none)");
-        Error::UnsupportedFileType(ext.to_string())
+        let ext = entry.extension().and_then(|e| e.to_str()).map(String::from);
+        Error::UnsupportedFileType(ext)
     })?;
 
     let lang_support: Box<dyn LanguageSupport> = match kind {
