@@ -32,6 +32,7 @@ tree-sitter = "0.24"
 tree-sitter-python = "0.23"
 crossbeam-queue = "0.3"
 dashmap = "6"
+tempfile = "3"
 
 [lib]
 name = "chainsaw"
@@ -42,7 +43,6 @@ name = "chainsaw"
 path = "src/main.rs"
 
 [dev-dependencies]
-tempfile = "3"
 stats = { path = "stats" }
 ignore = "0.4"
 

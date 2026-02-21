@@ -52,5 +52,6 @@ mod auto_trait_tests {
         is_normal::<crate::lang::ParseResult>();
         is_normal::<crate::lang::ProjectKind>();
         is_normal::<crate::git::DiffArg>();
+        is_normal::<crate::git::TempWorktree>();
     }
 }
