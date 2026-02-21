@@ -2,14 +2,24 @@ use crate::registry::Registry;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Pre-commit hook logic: blocks commits to main without perf attestation.
+/// Pre-commit hook: run checks on feature branches, perf attestation gate on main.
 /// Returns exit code.
 pub fn pre_commit() -> i32 {
     let root = project_root();
 
     let branch = current_branch(&root);
+    if branch.is_empty() {
+        // Detached HEAD (rebase, bisect, CI checkout) — skip checks.
+        return 0;
+    }
     if branch != "main" {
-        return 0; // Not on main, no gate
+        // Feature branch: run fmt + clippy + test.
+        let status = Command::new("cargo")
+            .args(["xtask", "check"])
+            .current_dir(&root)
+            .status()
+            .unwrap_or_else(|e| panic!("failed to run cargo xtask check: {e}"));
+        return if status.success() { 0 } else { 1 };
     }
 
     let Some(registry) = Registry::load(&root) else {
