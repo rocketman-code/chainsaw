@@ -26,7 +26,7 @@ Only static imports count toward the weight. Dynamic `import()` and type-only im
 
 ## Install
 
-Requires Rust 1.85+:
+Requires Rust 1.91+:
 
 ```
 cargo install chainsaw-cli
@@ -142,6 +142,17 @@ chainsaw completions fish > ~/.config/fish/completions/chainsaw.fish
 ```
 
 Run `chainsaw --help` for the full flag reference.
+
+## Development
+
+```
+git clone https://github.com/rocketman-code/chainsaw.git
+cd chainsaw
+cargo xtask install-hooks
+cargo test --workspace
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ## License
 
