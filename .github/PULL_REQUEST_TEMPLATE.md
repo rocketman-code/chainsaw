@@ -6,6 +6,5 @@
 
 <!-- How was this tested? -->
 
-- [ ] `cargo test --workspace` passes
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean
-- [ ] `cargo fmt --check` passes
+- [ ] `cargo xtask check` passes (fmt + clippy + test)
+- [ ] If perf-sensitive files changed: `cargo xtask perf-validate` passes
