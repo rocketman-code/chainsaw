@@ -659,13 +659,17 @@ fn build_snapshot_from_ref(
 }
 
 /// Build a snapshot from the current working tree.
+///
+/// Uses `no_cache=true` to avoid polluting the disk cache — the "before"
+/// side of a diff may have written a reduced (git-tree-only) graph, and
+/// the working-tree snapshot must not read or overwrite that entry.
 fn build_snapshot_from_working_tree(
     entry: &Path,
     quiet: bool,
     sc: report::StderrColor,
 ) -> Result<query::TraceSnapshot, Error> {
     let start = Instant::now();
-    let (loaded, _cache_write) = loader::load_graph(entry, false)?;
+    let (loaded, _cache_write) = loader::load_graph(entry, true)?;
     if !quiet {
         print_build_status(&loaded, start, sc);
     }
