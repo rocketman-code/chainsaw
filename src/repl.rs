@@ -246,6 +246,8 @@ pub fn run(entry: &Path, no_color: bool, sc: StderrColor) -> Result<(), Error> {
     );
     eprintln!("Type 'help' for commands, 'quit' to exit.\n");
 
+    session.watch();
+
     let color = report::should_use_color(
         std::io::stdout().is_terminal(),
         no_color,
