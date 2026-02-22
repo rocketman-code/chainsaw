@@ -33,6 +33,7 @@ tree-sitter-python = "0.23"
 crossbeam-queue = "0.3"
 dashmap = "6"
 tempfile = "3"
+rustyline = "15"
 
 [lib]
 name = "chainsaw"

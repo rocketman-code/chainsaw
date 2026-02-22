@@ -23,6 +23,7 @@ pub mod graph;
 pub mod lang;
 pub mod loader;
 pub mod query;
+pub mod repl;
 pub mod report;
 pub mod session;
 pub mod walker;
@@ -56,5 +57,6 @@ mod auto_trait_tests {
         is_normal::<crate::lang::ProjectKind>();
         is_normal::<crate::git::DiffArg>();
         is_normal::<crate::git::TempWorktree>();
+        is_normal::<crate::repl::Command>();
     }
 }
