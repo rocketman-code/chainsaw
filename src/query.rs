@@ -484,6 +484,7 @@ fn dedup_chains_by_package(graph: &ModuleGraph, chains: Vec<Vec<ModuleId>>) -> V
 }
 
 /// BFS with multi-parent tracking to find all shortest paths to a target.
+#[allow(clippy::too_many_lines)]
 fn all_shortest_chains(
     graph: &ModuleGraph,
     entry: ModuleId,
@@ -551,7 +552,12 @@ fn all_shortest_chains(
         return Vec::new();
     }
 
-    // Backtrack from each target to reconstruct all paths
+    // Backtrack from each target to reconstruct all paths.
+    // `limit` caps *expansion* per iteration (not total paths) —
+    // capped paths extend with a single parent to avoid discarding
+    // reachable paths. Total paths grow linearly with depth, not
+    // exponentially.
+    let limit = max_chains * 2;
     let mut all_chains: Vec<Vec<ModuleId>> = Vec::new();
     for &target_mid in &targets {
         let mut partial_paths: Vec<Vec<ModuleId>> = vec![vec![target_mid]];
@@ -559,11 +565,24 @@ fn all_shortest_chains(
         loop {
             let mut next_partial: Vec<Vec<ModuleId>> = Vec::new();
             let mut any_extended = false;
+            let mut capped = false;
 
             for path in &partial_paths {
                 let &head = path.last().unwrap();
                 if head == entry {
                     next_partial.push(path.clone());
+                    continue;
+                }
+                if capped {
+                    // Over budget — only keep the first partial for this branch
+                    // so it can still reach entry in future iterations.
+                    let pars = &parents[head.0 as usize];
+                    if let Some(&p) = pars.first() {
+                        any_extended = true;
+                        let mut new_path = path.clone();
+                        new_path.push(ModuleId(p));
+                        next_partial.push(new_path);
+                    }
                     continue;
                 }
                 let pars = &parents[head.0 as usize];
@@ -573,15 +592,16 @@ fn all_shortest_chains(
                         let mut new_path = path.clone();
                         new_path.push(ModuleId(p));
                         next_partial.push(new_path);
-                        if next_partial.len() > max_chains * 2 {
-                            break; // Prevent combinatorial explosion
+                        if next_partial.len() > limit {
+                            capped = true;
+                            break;
                         }
                     }
                 }
             }
 
             partial_paths = next_partial;
-            if !any_extended || partial_paths.len() > max_chains * 2 {
+            if !any_extended {
                 break;
             }
         }
@@ -975,6 +995,59 @@ mod tests {
             chains_dynamic[0],
             vec![ModuleId(0), ModuleId(1), ModuleId(2)]
         );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn chain_high_fanout_not_dropped() {
+        // Bug #172: When a target has many parents (>max_chains*2), the
+        // explosion guard in backtracking fires before any path reaches
+        // the entry, causing all paths to be discarded as incomplete.
+        //
+        // Graph: entry -> hub -> {f0, f1, ..., f24} -> target(pkg=zod)
+        // Every fi fans into the same target, so target has 25 parents.
+        // BFS finds target at depth 3. Backtracking from target sees 25
+        // parents, exceeds max_chains*2=20, and breaks before any path
+        // completes back to entry.
+        // Build graph programmatically: entry -> hub -> {f0..f24} -> target
+        let fan = 25usize;
+        let mut graph = ModuleGraph::new();
+        graph.add_module(PathBuf::from("entry.ts"), 100, None); // 0
+        graph.add_module(PathBuf::from("hub.ts"), 100, None); // 1
+        for i in 0..fan {
+            graph.add_module(PathBuf::from(format!("f{i}.ts")), 50, None); // 2..2+fan
+        }
+        let target_idx = (2 + fan) as u32;
+        graph.add_module(
+            PathBuf::from("node_modules/zod/index.js"),
+            500,
+            Some("zod".to_string()),
+        );
+
+        // entry -> hub
+        graph.add_edge(ModuleId(0), ModuleId(1), EdgeKind::Static, "");
+        for i in 0..fan {
+            let fi = ModuleId((2 + i) as u32);
+            graph.add_edge(ModuleId(1), fi, EdgeKind::Static, ""); // hub -> fi
+            graph.add_edge(fi, ModuleId(target_idx), EdgeKind::Static, ""); // fi -> target
+        }
+
+        let chains = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            false,
+        );
+        // Must find at least one chain — the target IS reachable
+        assert!(
+            !chains.is_empty(),
+            "high-fanout target should still produce chains (got 0)"
+        );
+        // Every chain must start at entry and end at target
+        for chain in &chains {
+            assert_eq!(chain.first(), Some(&ModuleId(0)));
+            assert_eq!(chain.last(), Some(&ModuleId(target_idx)));
+        }
     }
 
     // --- Cut points ---
