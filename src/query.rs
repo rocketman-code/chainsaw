@@ -155,7 +155,7 @@ fn intersect_idom(idom: &[u32], rpo_num: &[u32], mut a: u32, mut b: u32) -> u32 
 /// subtree (modules that become unreachable if M is removed from the graph).
 /// Uses the Cooper-Harvey-Kennedy iterative dominator algorithm: O(N).
 #[allow(clippy::cast_possible_truncation)]
-fn compute_exclusive_weights(
+pub(crate) fn compute_exclusive_weights(
     graph: &ModuleGraph,
     entry: ModuleId,
     include_dynamic: bool,
@@ -622,13 +622,11 @@ pub fn find_cut_modules(
     entry: ModuleId,
     target: &ChainTarget,
     top_n: i32,
-    include_dynamic: bool,
+    exclusive_weights: &[u64],
 ) -> Vec<CutModule> {
     if chains.is_empty() {
         return Vec::new();
     }
-
-    let exclusive = compute_exclusive_weights(graph, entry, include_dynamic);
 
     let total = chains.len();
     let mut frequency = vec![0usize; graph.modules.len()];
@@ -648,7 +646,7 @@ pub fn find_cut_modules(
         .map(|(idx, &count)| CutModule {
             module_id: ModuleId(idx as u32),
             chains_broken: count,
-            exclusive_size: exclusive[idx],
+            exclusive_size: exclusive_weights[idx],
         })
         .collect();
 
@@ -1006,7 +1004,8 @@ mod tests {
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         assert_eq!(chains.len(), 2);
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
         assert!(!cuts.is_empty());
         assert!(cuts.iter().any(|c| c.module_id == ModuleId(3)));
     }
@@ -1034,7 +1033,8 @@ mod tests {
         );
         let target = ChainTarget::Package("zod".to_string());
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
         assert!(cuts.is_empty());
     }
 
@@ -1054,7 +1054,8 @@ mod tests {
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].len(), 2); // 1 hop = 2 nodes
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
         assert!(cuts.is_empty());
     }
 
@@ -1079,7 +1080,8 @@ mod tests {
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         assert_eq!(chains.len(), 1);
 
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
         assert!(cuts.len() >= 2);
         // First cut should have smaller exclusive_size (more surgical)
         assert!(cuts[0].exclusive_size <= cuts[1].exclusive_size);
@@ -1361,7 +1363,8 @@ mod tests {
         let target_id = graph.path_to_id[&PathBuf::from("target.ts")];
         let target = ChainTarget::Module(target_id);
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, false);
+        let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
+        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
         assert_eq!(cuts.len(), 1);
         assert_eq!(
             cuts[0].module_id,
