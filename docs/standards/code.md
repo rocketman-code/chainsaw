@@ -54,8 +54,10 @@ Manual benchmarks:
 
 ```
 cargo bench --bench benchmarks         # raw benchmark run
-just bench-cold                        # hyperfine cold-start A/B
-just bench-all                         # cold + warm + edit scenarios
+cargo xtask bench --scenario cold      # hyperfine cold-start
+cargo xtask bench                      # all scenarios on all targets
+just bench                             # shorthand for cargo xtask bench
+just bench-matrix                      # all scenarios x all targets
 ```
 
 Performance workflow:
