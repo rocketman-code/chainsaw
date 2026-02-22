@@ -51,7 +51,7 @@ pub fn pre_commit() -> i32 {
 
     // Pre-commit can't verify commit SHA (commit doesn't exist yet).
     // Just check that an attestation exists — pre-push does the full verification.
-    let attestation_path = root.join(".git/perf-attestation.json");
+    let attestation_path = git_dir(&root).join("perf-attestation.json");
     if !attestation_path.exists() {
         blocked(
             "Perf-sensitive files staged but no attestation found.",
@@ -82,7 +82,7 @@ pub fn pre_push() -> i32 {
         return 0;
     }
 
-    let attestation_path = root.join(".git/perf-attestation.json");
+    let attestation_path = git_dir(&root).join("perf-attestation.json");
     if !attestation_path.exists() {
         blocked(
             "Perf-sensitive files changed but no attestation found.",
@@ -94,7 +94,7 @@ pub fn pre_push() -> i32 {
     let json = match std::fs::read_to_string(&attestation_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("BLOCKED: failed to read .git/perf-attestation.json: {e}");
+            eprintln!("BLOCKED: failed to read perf-attestation.json: {e}");
             return 1;
         }
     };
@@ -115,7 +115,7 @@ pub fn pre_push() -> i32 {
 /// Install git hooks by writing thin shell stubs to .git/hooks/.
 pub fn install_hooks() -> i32 {
     let root = project_root();
-    let hooks_dir = root.join(".git/hooks");
+    let hooks_dir = git_dir(&root).join("hooks");
 
     if !hooks_dir.exists() {
         eprintln!("Not a git repository: {}", root.display());
@@ -225,6 +225,24 @@ fn project_root() -> PathBuf {
         "git rev-parse --show-toplevel failed (not in a git repo?)"
     );
     PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+}
+
+/// Resolve the `.git` directory (works in both normal repos and worktrees).
+///
+/// In a normal repo this returns `<root>/.git`. In a worktree it returns
+/// the worktree-specific git dir (e.g. `<root>/.git/worktrees/<name>`).
+pub fn git_dir(root: &Path) -> PathBuf {
+    let output = git_in(root, &["rev-parse", "--git-dir"])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git rev-parse --git-dir: {e}"));
+    assert!(output.status.success(), "git rev-parse --git-dir failed");
+    let dir = String::from_utf8(output.stdout).unwrap().trim().to_string();
+    let path = PathBuf::from(&dir);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
 }
 
 fn current_branch(root: &Path) -> Option<String> {
