@@ -118,8 +118,7 @@ pub fn run(baseline: Option<&str>, benchmark_args: &[String]) -> i32 {
             eprintln!("Failed to write attestation: {e}");
             return 1;
         }
-        println!("Attestation written to .git/perf-attestation.json");
-        println!("You can now push.");
+        println!("Attestation written. You can now push.");
     }
 
     0
@@ -243,7 +242,7 @@ fn write_attestation(root: &Path, required_benchmarks: &BTreeSet<String>) -> Res
     };
 
     let json = serde_json::to_string_pretty(&attestation).map_err(|e| format!("json: {e}"))?;
-    let path = root.join(".git/perf-attestation.json");
+    let path = crate::hooks::git_dir(root).join("perf-attestation.json");
     std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))?;
 
     Ok(())
