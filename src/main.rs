@@ -7,7 +7,11 @@ use std::time::Instant;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use chainsaw::{error::Error, git, loader, query, report};
+use chainsaw::{
+    error::Error,
+    git, loader, query, repl, report,
+    session::{self, Session},
+};
 
 #[derive(Parser)]
 #[command(
@@ -45,7 +49,7 @@ enum Commands {
         entry: Option<PathBuf>,
 
         /// Max packages to show in diff output (-1 for all)
-        #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+        #[arg(long, default_value_t = report::DEFAULT_TOP, allow_hyphen_values = true)]
         limit: i32,
 
         /// Suppress informational output (timing, warnings)
@@ -55,6 +59,12 @@ enum Commands {
 
     /// List all third-party packages in the dependency graph
     Packages(PackagesArgs),
+
+    /// Interactive exploration mode
+    Repl {
+        /// Entry point file to start from
+        entry: PathBuf,
+    },
 
     /// Generate shell completions
     Completions {
@@ -86,11 +96,11 @@ struct TraceArgs {
     include_dynamic: bool,
 
     /// Show top N heaviest dependencies (0 to hide, -1 for all)
-    #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+    #[arg(long, default_value_t = report::DEFAULT_TOP, allow_hyphen_values = true)]
     top: i32,
 
     /// Show top N modules by exclusive weight — bytes not reachable through any other path (0 to hide, -1 for all)
-    #[arg(long, default_value_t = 20, allow_hyphen_values = true)]
+    #[arg(long, default_value_t = report::DEFAULT_TOP_MODULES, allow_hyphen_values = true)]
     top_modules: i32,
 
     /// Show all shortest import chains to a package or file
@@ -118,7 +128,7 @@ struct TraceArgs {
     quiet: bool,
 
     /// Max packages to show in diff output (-1 for all)
-    #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+    #[arg(long, default_value_t = report::DEFAULT_TOP, allow_hyphen_values = true)]
     limit: i32,
 
     /// Exit with error if static weight exceeds this threshold (e.g. 5MB, 500KB)
@@ -140,7 +150,7 @@ struct PackagesArgs {
     no_cache: bool,
 
     /// Show top N packages by size (0 to hide, -1 for all)
-    #[arg(long, default_value_t = 10, allow_hyphen_values = true)]
+    #[arg(long, default_value_t = report::DEFAULT_TOP, allow_hyphen_values = true)]
     top: i32,
 
     /// Suppress informational output (timing, warnings)
@@ -161,12 +171,6 @@ fn parse_size(s: &str) -> Result<u64, String> {
         .parse()
         .map_err(|_| format!("invalid size: {s}\nhint: valid formats: 5MB, 500KB, 100B"))?;
     Ok((value * multiplier) as u64)
-}
-
-struct ResolvedTarget {
-    target: query::ChainTarget,
-    label: String,
-    exists: bool,
 }
 
 /// Cap the rayon thread pool to avoid VFS lock contention in the kernel.
@@ -214,6 +218,8 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
 
         Commands::Packages(ref args) => run_packages(args, no_color, sc),
 
+        Commands::Repl { ref entry } => repl::run(entry, no_color, sc),
+
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -225,6 +231,10 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// trace subcommand
+// ---------------------------------------------------------------------------
 
 fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
     let start = Instant::now();
@@ -253,66 +263,99 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
         return Err(Error::InvalidTopValue("--limit", args.limit));
     }
 
-    // Load or build graph
-    let (loaded, _cache_write) = loader::load_graph(&args.entry, args.no_cache)?;
+    let session = Session::open(&args.entry, args.no_cache)?;
     if !args.quiet {
-        print_build_status(&loaded, start, sc);
+        print_session_status(&session, start, sc);
     }
-
-    // Resolve entry module ID
-    let Some(&entry_id) = loaded.graph.path_to_id.get(&loaded.entry) else {
-        return Err(Error::EntryNotInGraph(loaded.entry));
-    };
 
     let opts = query::TraceOptions {
         include_dynamic: args.include_dynamic,
         top_n: args.top,
         ignore: args.ignore,
     };
-    let result = query::trace(&loaded.graph, entry_id, &opts);
-    let entry_rel = entry_label(&loaded.entry, &loaded.root);
+    let result = session.trace(&opts);
+    let entry_rel = session.entry_label();
 
     // Save snapshot if requested (works with any mode)
     if let Some(ref save_path) = args.save {
         save_snapshot(save_path, &result, &entry_rel, args.quiet, sc)?;
     }
 
-    // Handle --chain/--cut/--diff-from/--diff modes
+    // --chain
     if let Some(ref chain_arg) = args.chain {
-        if !handle_chain(
-            &loaded,
-            entry_id,
-            chain_arg,
-            args.include_dynamic,
-            args.json,
-            no_color,
-        )? {
+        let (resolved, chains) = session.chain(chain_arg, args.include_dynamic);
+        if resolved.target == query::ChainTarget::Module(session.entry_id()) {
+            return Err(Error::TargetIsEntryPoint("--chain".into()));
+        }
+        if args.json {
+            report::print_chains_json(
+                session.graph(),
+                &chains,
+                &resolved.label,
+                session.root(),
+                resolved.exists,
+            );
+        } else {
+            report::print_chains(
+                session.graph(),
+                &chains,
+                &resolved.label,
+                session.root(),
+                resolved.exists,
+                no_color,
+            );
+        }
+        if chains.is_empty() {
             std::process::exit(1);
         }
         return Ok(());
     }
+
+    // --cut
     if let Some(ref cut_arg) = args.cut {
-        if !handle_cut(
-            &loaded,
-            entry_id,
-            cut_arg,
-            args.top,
-            args.include_dynamic,
-            args.json,
-            no_color,
-        )? {
+        let (resolved, chains, cuts) = session.cut(cut_arg, args.top, args.include_dynamic);
+        if resolved.target == query::ChainTarget::Module(session.entry_id()) {
+            return Err(Error::TargetIsEntryPoint("--cut".into()));
+        }
+        if args.json {
+            report::print_cut_json(
+                session.graph(),
+                &cuts,
+                &chains,
+                &resolved.label,
+                session.root(),
+                resolved.exists,
+            );
+        } else {
+            report::print_cut(
+                session.graph(),
+                &cuts,
+                &chains,
+                &resolved.label,
+                session.root(),
+                resolved.exists,
+                no_color,
+            );
+        }
+        if chains.is_empty() {
             std::process::exit(1);
         }
         return Ok(());
     }
+
+    // --diff-from
     if let Some(ref snapshot_path) = args.diff_from {
-        handle_diff_from(snapshot_path, &result, &entry_rel, args.limit, no_color)?;
+        let saved = load_snapshot(snapshot_path)?;
+        let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
+        report::print_diff(&diff_output, &saved.entry, &entry_rel, args.limit, no_color);
         return Ok(());
     }
+
+    // --diff
     if let Some(ref diff_path) = args.diff {
-        return handle_diff(
+        return handle_trace_diff(
+            &session,
             diff_path,
-            &loaded,
             &result,
             &entry_rel,
             &opts,
@@ -326,10 +369,10 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
     // Normal trace output
     if args.json {
         report::print_trace_json(
-            &loaded.graph,
+            session.graph(),
             &result,
-            &loaded.entry,
-            &loaded.root,
+            session.entry(),
+            session.root(),
             args.top_modules,
         );
     } else {
@@ -341,10 +384,10 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
             max_weight: args.max_weight,
         };
         report::print_trace(
-            &loaded.graph,
+            session.graph(),
             &result,
-            &loaded.entry,
-            &loaded.root,
+            session.entry(),
+            session.root(),
             &display_opts,
         );
     }
@@ -364,36 +407,90 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
     Ok(())
 }
 
-fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: report::StderrColor) {
-    eprintln!(
-        "{} ({} modules) in {:.1}ms",
-        sc.status(if loaded.from_cache {
-            "Loaded cached graph"
-        } else {
-            "Built graph"
-        }),
-        loaded.graph.module_count(),
-        start.elapsed().as_secs_f64() * 1000.0
-    );
-    for w in &loaded.file_warnings {
-        eprintln!("{} {w}", sc.warning("warning:"));
-    }
-    if loaded.unresolvable_dynamic_count > 0 {
-        let count = loaded.unresolvable_dynamic_count;
+/// Handle `trace --diff <file>` by comparing two entry points.
+#[allow(clippy::too_many_arguments)] // private dispatch, called from one site
+fn handle_trace_diff(
+    session: &Session,
+    diff_path: &Path,
+    result: &query::TraceResult,
+    entry_rel: &str,
+    opts: &query::TraceOptions,
+    no_cache: bool,
+    limit: i32,
+    no_color: bool,
+    sc: report::StderrColor,
+) -> Result<(), Error> {
+    let diff_entry = diff_path
+        .canonicalize()
+        .map_err(|e| Error::EntryNotFound(diff_path.to_path_buf(), e))?;
+    if *session.entry() == diff_entry {
         eprintln!(
-            "{} {count} dynamic import{} with non-literal argument{} could not be traced:",
-            sc.warning("warning:"),
-            if count == 1 { "" } else { "s" },
-            if count == 1 { "" } else { "s" },
+            "{} both entry points are the same file, diff will be empty",
+            sc.warning("warning:")
         );
-        let mut files = loaded.unresolvable_dynamic_files.clone();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        for (path, file_count) in &files {
-            let rel = report::relative_path(path, &loaded.root);
-            eprintln!("  {rel} ({file_count})");
-        }
     }
+
+    let diff_snapshot = if let Some(&diff_id) = session.graph().path_to_id.get(&diff_entry) {
+        // Same graph — trace directly
+        let diff_rel = session.entry_label_for(&diff_entry);
+        query::trace(session.graph(), diff_id, opts).to_snapshot(&diff_rel)
+    } else {
+        // Different project — open a separate session
+        let diff_session = Session::open(&diff_entry, no_cache)?;
+        diff_session
+            .trace(opts)
+            .to_snapshot(&diff_session.entry_label())
+    };
+
+    let diff_output = query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
+    report::print_diff(
+        &diff_output,
+        entry_rel,
+        &diff_snapshot.entry,
+        limit,
+        no_color,
+    );
+    Ok(())
 }
+
+fn print_session_status(session: &Session, start: Instant, sc: report::StderrColor) {
+    report::print_load_status(
+        session.from_cache(),
+        session.graph().module_count(),
+        start.elapsed().as_secs_f64() * 1000.0,
+        session.file_warnings(),
+        session.unresolvable_dynamic_count(),
+        session.unresolvable_dynamic_files(),
+        session.root(),
+        sc,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// packages subcommand
+// ---------------------------------------------------------------------------
+
+fn run_packages(args: &PackagesArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
+    if args.top < -1 {
+        return Err(Error::InvalidTopValue("--top", args.top));
+    }
+    let start = Instant::now();
+    let session = Session::open(&args.entry, args.no_cache)?;
+    if !args.quiet {
+        print_session_status(&session, start, sc);
+    }
+
+    if args.json {
+        report::print_packages_json(session.graph(), args.top);
+    } else {
+        report::print_packages(session.graph(), args.top, no_color);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot helpers
+// ---------------------------------------------------------------------------
 
 fn save_snapshot(
     path: &Path,
@@ -417,203 +514,22 @@ fn load_snapshot(path: &Path) -> Result<query::TraceSnapshot, Error> {
     serde_json::from_str(&data).map_err(|e| Error::SnapshotParse(path.to_path_buf(), e))
 }
 
-fn resolve_target(arg: &str, loaded: &loader::LoadedGraph) -> ResolvedTarget {
-    if looks_like_path(arg, loaded.valid_extensions)
-        && let Ok(target_path) = loaded.root.join(arg).canonicalize()
-        && let Some(&id) = loaded.graph.path_to_id.get(&target_path)
-    {
-        let p = &loaded.graph.module(id).path;
-        let label = p
-            .strip_prefix(&loaded.root)
-            .unwrap_or(p)
-            .to_string_lossy()
-            .into_owned();
-        return ResolvedTarget {
-            target: query::ChainTarget::Module(id),
-            label,
-            exists: true,
-        };
-    }
-    // File doesn't exist or isn't in the graph — fall through to
-    // package name lookup. Handles packages like "six.py" or
-    // "highlight.js" whose names match file extensions.
-    let name = arg.to_string();
-    let exists = loaded.graph.package_map.contains_key(arg);
-    ResolvedTarget {
-        target: query::ChainTarget::Package(name.clone()),
-        label: name,
-        exists,
-    }
-}
-
-fn check_entry_target(
-    resolved: &ResolvedTarget,
-    entry_id: chainsaw::graph::ModuleId,
-    flag_name: &str,
-) -> Result<(), Error> {
-    if resolved.target == query::ChainTarget::Module(entry_id) {
-        return Err(Error::TargetIsEntryPoint(flag_name.to_string()));
-    }
-    Ok(())
-}
-
-fn handle_chain(
-    loaded: &loader::LoadedGraph,
-    entry_id: chainsaw::graph::ModuleId,
-    chain_arg: &str,
-    include_dynamic: bool,
-    json: bool,
-    no_color: bool,
-) -> Result<bool, Error> {
-    let resolved = resolve_target(chain_arg, loaded);
-    check_entry_target(&resolved, entry_id, "--chain")?;
-    let chains = query::find_all_chains(&loaded.graph, entry_id, &resolved.target, include_dynamic);
-    if json {
-        report::print_chains_json(
-            &loaded.graph,
-            &chains,
-            &resolved.label,
-            &loaded.root,
-            resolved.exists,
-        );
-    } else {
-        report::print_chains(
-            &loaded.graph,
-            &chains,
-            &resolved.label,
-            &loaded.root,
-            resolved.exists,
-            no_color,
-        );
-    }
-    Ok(!chains.is_empty())
-}
-
-#[allow(clippy::too_many_arguments)] // private dispatch, called from one site
-fn handle_cut(
-    loaded: &loader::LoadedGraph,
-    entry_id: chainsaw::graph::ModuleId,
-    cut_arg: &str,
-    top: i32,
-    include_dynamic: bool,
-    json: bool,
-    no_color: bool,
-) -> Result<bool, Error> {
-    let resolved = resolve_target(cut_arg, loaded);
-    check_entry_target(&resolved, entry_id, "--cut")?;
-    let chains = query::find_all_chains(&loaded.graph, entry_id, &resolved.target, include_dynamic);
-    let cuts = query::find_cut_modules(
-        &loaded.graph,
-        &chains,
-        entry_id,
-        &resolved.target,
-        top,
-        include_dynamic,
-    );
-    if json {
-        report::print_cut_json(
-            &loaded.graph,
-            &cuts,
-            &chains,
-            &resolved.label,
-            &loaded.root,
-            resolved.exists,
-        );
-    } else {
-        report::print_cut(
-            &loaded.graph,
-            &cuts,
-            &chains,
-            &resolved.label,
-            &loaded.root,
-            resolved.exists,
-            no_color,
-        );
-    }
-    Ok(!chains.is_empty())
-}
-
-fn handle_diff_from(
-    snapshot_path: &Path,
-    result: &query::TraceResult,
-    entry_rel: &str,
-    limit: i32,
-    no_color: bool,
-) -> Result<(), Error> {
-    let saved = load_snapshot(snapshot_path)?;
-    let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(entry_rel));
-    report::print_diff(&diff_output, &saved.entry, entry_rel, limit, no_color);
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)] // private dispatch, called from one site
-fn handle_diff(
-    diff_path: &Path,
-    loaded: &loader::LoadedGraph,
-    result: &query::TraceResult,
-    entry_rel: &str,
-    opts: &query::TraceOptions,
-    no_cache: bool,
-    limit: i32,
-    no_color: bool,
-    sc: report::StderrColor,
-) -> Result<(), Error> {
-    let diff_entry = diff_path
-        .canonicalize()
-        .map_err(|e| Error::EntryNotFound(diff_path.to_path_buf(), e))?;
-    if diff_entry == loaded.entry {
-        eprintln!(
-            "{} both entry points are the same file, diff will be empty",
-            sc.warning("warning:")
-        );
-    }
-
-    let diff_snapshot = if let Some(&diff_id) = loaded.graph.path_to_id.get(&diff_entry) {
-        // Same graph — trace directly
-        let diff_rel = entry_label(&diff_entry, &loaded.root);
-        query::trace(&loaded.graph, diff_id, opts).to_snapshot(&diff_rel)
-    } else {
-        // Different project — build second graph
-        let (diff_loaded, _diff_cache_write) = loader::load_graph(&diff_entry, no_cache)?;
-        let Some(&diff_id) = diff_loaded.graph.path_to_id.get(&diff_loaded.entry) else {
-            return Err(Error::EntryNotInGraph(diff_loaded.entry));
-        };
-        let diff_rel = entry_label(&diff_loaded.entry, &diff_loaded.root);
-        query::trace(&diff_loaded.graph, diff_id, opts).to_snapshot(&diff_rel)
-    };
-
-    let diff_output = query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
-    report::print_diff(
-        &diff_output,
-        entry_rel,
-        &diff_snapshot.entry,
-        limit,
-        no_color,
-    );
-    Ok(())
-}
-
-fn run_packages(args: &PackagesArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
-    if args.top < -1 {
-        return Err(Error::InvalidTopValue("--top", args.top));
-    }
-    let start = Instant::now();
-    let (loaded, _cache_write) = loader::load_graph(&args.entry, args.no_cache)?;
-    if !args.quiet {
-        print_build_status(&loaded, start, sc);
-    }
-
-    if args.json {
-        report::print_packages_json(&loaded.graph, args.top);
-    } else {
-        report::print_packages(&loaded.graph, args.top, no_color);
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
-// Diff across snapshots and/or git refs
+// diff subcommand (git refs / snapshots — uses LoadedGraph directly)
 // ---------------------------------------------------------------------------
+
+fn print_build_status(loaded: &loader::LoadedGraph, start: Instant, sc: report::StderrColor) {
+    report::print_load_status(
+        loaded.from_cache,
+        loaded.graph.module_count(),
+        start.elapsed().as_secs_f64() * 1000.0,
+        &loaded.file_warnings,
+        loaded.unresolvable_dynamic_count,
+        &loaded.unresolvable_dynamic_files,
+        &loaded.root,
+        sc,
+    );
+}
 
 #[allow(clippy::too_many_arguments)]
 fn run_diff(
@@ -778,109 +694,13 @@ fn build_snapshot_from_working_tree(
         ignore: vec![],
     };
     let result = query::trace(&loaded.graph, entry_id, &opts);
-    let label = entry_label(&loaded.entry, &loaded.root);
+    let label = session::entry_label(&loaded.entry, &loaded.root);
     Ok(result.to_snapshot(&label))
-}
-
-/// Build a display label for an entry point that includes the project
-/// directory name for disambiguation (e.g. `wrangler/src/index.ts`
-/// instead of just `src/index.ts`).
-fn entry_label(entry: &Path, root: &Path) -> String {
-    let rel = entry.strip_prefix(root).unwrap_or(entry);
-    root.file_name().map_or_else(
-        || rel.to_string_lossy().into_owned(),
-        |name| Path::new(name).join(rel).to_string_lossy().into_owned(),
-    )
-}
-
-/// Determine whether a --chain/--cut argument looks like a file path
-/// (as opposed to a package name).
-fn looks_like_path(arg: &str, extensions: &[&str]) -> bool {
-    !arg.starts_with('@')
-        && (arg.contains('/')
-            || arg.contains(std::path::MAIN_SEPARATOR)
-            || arg
-                .rsplit_once('.')
-                .is_some_and(|(_, suffix)| extensions.contains(&suffix)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn scoped_npm_package_is_not_path() {
-        let exts = &["ts", "tsx", "js", "jsx"];
-        assert!(!looks_like_path("@slack/web-api", exts));
-        assert!(!looks_like_path("@aws-sdk/client-s3", exts));
-        assert!(!looks_like_path("@anthropic-ai/sdk", exts));
-    }
-
-    #[test]
-    fn relative_file_path_is_path() {
-        let exts = &["ts", "tsx", "js", "jsx"];
-        assert!(looks_like_path("src/index.ts", exts));
-        assert!(looks_like_path("lib/utils.js", exts));
-    }
-
-    #[test]
-    fn bare_package_name_is_not_path() {
-        let exts = &["ts", "tsx", "js", "jsx"];
-        assert!(!looks_like_path("zod", exts));
-        assert!(!looks_like_path("express", exts));
-        // highlight.js is ambiguous — .js extension triggers path heuristic.
-        // resolve_target tries as file path first, falls back to package lookup.
-        assert!(looks_like_path("highlight.js", exts));
-    }
-
-    #[test]
-    fn file_with_extension_is_path() {
-        let exts = &["ts", "tsx", "js", "jsx", "py"];
-        assert!(looks_like_path("utils.ts", exts));
-        assert!(looks_like_path("main.py", exts));
-        assert!(!looks_like_path("utils.txt", exts));
-    }
-
-    #[test]
-    fn resolve_target_falls_back_to_package_for_extension_named_package() {
-        use chainsaw::graph::{ModuleGraph, ModuleId, PackageInfo};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let entry = root.join("entry.py");
-        std::fs::write(&entry, "").unwrap();
-
-        let mut graph = ModuleGraph::new();
-        graph.add_module(entry.clone(), 0, None);
-        graph.package_map.insert(
-            "six.py".to_string(),
-            PackageInfo {
-                name: "six.py".to_string(),
-                entry_module: ModuleId(0),
-                total_reachable_size: 100,
-                total_reachable_files: 1,
-            },
-        );
-
-        let loaded = loader::LoadedGraph {
-            graph,
-            root,
-            entry,
-            valid_extensions: &["py"],
-            from_cache: false,
-            unresolvable_dynamic_count: 0,
-            unresolvable_dynamic_files: vec![],
-            file_warnings: vec![],
-        };
-        // "six.py" looks like a path (.py extension) but no such file exists.
-        // Should fall back to package lookup, not exit(1).
-        let resolved = resolve_target("six.py", &loaded);
-        assert_eq!(
-            resolved.target,
-            query::ChainTarget::Package("six.py".to_string())
-        );
-        assert!(resolved.exists);
-    }
 
     #[test]
     fn parse_size_units() {
