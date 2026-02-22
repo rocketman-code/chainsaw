@@ -4,6 +4,7 @@
 //! argument string. No shell-style quoting or flags — the REPL is an
 //! interactive explorer, not a second CLI.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use rustyline::Helper;
@@ -245,6 +246,13 @@ pub fn run(entry: &Path, no_color: bool, sc: StderrColor) -> Result<(), Error> {
     );
     eprintln!("Type 'help' for commands, 'quit' to exit.\n");
 
+    let color = report::should_use_color(
+        std::io::stdout().is_terminal(),
+        no_color,
+        std::env::var_os("NO_COLOR").is_some(),
+        std::env::var("TERM").is_ok_and(|v| v == "dumb"),
+    );
+
     let mut helper = ChainsawHelper::new();
     helper.update_from_session(&session);
 
@@ -293,12 +301,12 @@ pub fn run(entry: &Path, no_color: bool, sc: StderrColor) -> Result<(), Error> {
         rl.add_history_entry(trimmed).ok();
 
         match Command::parse(trimmed) {
-            Command::Trace(file) => dispatch_trace(&session, file.as_deref(), no_color, sc),
+            Command::Trace(file) => dispatch_trace(&session, file.as_deref(), color, sc),
             Command::Entry(path) => dispatch_entry(&mut session, &path, sc),
-            Command::Chain(target) => dispatch_chain(&session, &target, no_color, sc),
-            Command::Cut(target) => dispatch_cut(&session, &target, no_color, sc),
-            Command::Diff(path) => dispatch_diff(&session, &path, no_color, sc),
-            Command::Packages => dispatch_packages(&session, no_color),
+            Command::Chain(target) => dispatch_chain(&session, &target, color, sc),
+            Command::Cut(target) => dispatch_cut(&session, &target, color, sc),
+            Command::Diff(path) => dispatch_diff(&session, &path, color, sc),
+            Command::Packages => dispatch_packages(&session, color),
             Command::Imports(path) => dispatch_imports(&session, &path, sc),
             Command::Importers(path) => dispatch_importers(&session, &path, sc),
             Command::Info(name) => dispatch_info(&session, &name, sc),
@@ -327,34 +335,20 @@ fn history_file() -> Option<PathBuf> {
 // Command dispatch
 // ---------------------------------------------------------------------------
 
-fn dispatch_trace(session: &Session, file: Option<&str>, no_color: bool, sc: StderrColor) {
+fn dispatch_trace(session: &Session, file: Option<&str>, color: bool, sc: StderrColor) {
     let opts = query::TraceOptions::default();
-    let (result, entry_path) = if let Some(f) = file {
-        match session.trace_from(Path::new(f), &opts) {
-            Ok(r) => r,
+    let report = if let Some(f) = file {
+        match session.trace_from_report(Path::new(f), &opts, report::DEFAULT_TOP_MODULES) {
+            Ok((r, _)) => r,
             Err(e) => {
                 eprintln!("{} {e}", sc.error("error:"));
                 return;
             }
         }
     } else {
-        (session.trace(&opts), session.entry().to_path_buf())
+        session.trace_report(&opts, report::DEFAULT_TOP_MODULES)
     };
-
-    let display_opts = report::DisplayOpts {
-        top: report::DEFAULT_TOP,
-        top_modules: report::DEFAULT_TOP_MODULES,
-        include_dynamic: false,
-        no_color,
-        max_weight: None,
-    };
-    report::print_trace(
-        session.graph(),
-        &result,
-        &entry_path,
-        session.root(),
-        &display_opts,
-    );
+    print!("{}", report.to_terminal(color));
 }
 
 fn dispatch_entry(session: &mut Session, path: &str, sc: StderrColor) {
@@ -366,67 +360,37 @@ fn dispatch_entry(session: &mut Session, path: &str, sc: StderrColor) {
     eprintln!("{} entry point is now {rel}", sc.status("Switched:"));
 }
 
-fn dispatch_chain(session: &Session, target: &str, no_color: bool, sc: StderrColor) {
-    let (resolved, chains) = session.chain(target, false);
+fn dispatch_chain(session: &Session, target: &str, color: bool, sc: StderrColor) {
+    let resolved = session.resolve_target(target);
     if resolved.target == ChainTarget::Module(session.entry_id()) {
         eprintln!("{} target is the entry point itself", sc.error("error:"));
         return;
     }
-    if !resolved.exists {
-        eprintln!(
-            "{} '{}' not found in graph",
-            sc.warning("warning:"),
-            resolved.label
-        );
-    }
-    report::print_chains(
-        session.graph(),
-        &chains,
-        &resolved.label,
-        session.root(),
-        resolved.exists,
-        no_color,
-    );
+    let report = session.chain_report(target, false);
+    print!("{}", report.to_terminal(color));
 }
 
-fn dispatch_cut(session: &Session, target: &str, no_color: bool, sc: StderrColor) {
-    let (resolved, chains, cuts) = session.cut(target, report::DEFAULT_TOP, false);
+fn dispatch_cut(session: &Session, target: &str, color: bool, sc: StderrColor) {
+    let resolved = session.resolve_target(target);
     if resolved.target == ChainTarget::Module(session.entry_id()) {
         eprintln!("{} target is the entry point itself", sc.error("error:"));
         return;
     }
-    if !resolved.exists {
-        eprintln!(
-            "{} '{}' not found in graph",
-            sc.warning("warning:"),
-            resolved.label
-        );
-    }
-    report::print_cut(
-        session.graph(),
-        &cuts,
-        &chains,
-        &resolved.label,
-        session.root(),
-        resolved.exists,
-        no_color,
-    );
+    let report = session.cut_report(target, report::DEFAULT_TOP, false);
+    print!("{}", report.to_terminal(color));
 }
 
-fn dispatch_diff(session: &Session, path: &str, no_color: bool, sc: StderrColor) {
+fn dispatch_diff(session: &Session, path: &str, color: bool, sc: StderrColor) {
     let opts = query::TraceOptions::default();
-    match session.diff_entry(Path::new(path), &opts) {
-        Ok((diff, other_canon)) => {
-            let entry_rel = session.entry_label();
-            let other_rel = session.entry_label_for(&other_canon);
-            report::print_diff(&diff, &entry_rel, &other_rel, report::DEFAULT_TOP, no_color);
-        }
+    match session.diff_report(Path::new(path), &opts, report::DEFAULT_TOP) {
+        Ok(report) => print!("{}", report.to_terminal(color)),
         Err(e) => eprintln!("{} {e}", sc.error("error:")),
     }
 }
 
-fn dispatch_packages(session: &Session, no_color: bool) {
-    report::print_packages(session.graph(), report::DEFAULT_TOP, no_color);
+fn dispatch_packages(session: &Session, color: bool) {
+    let report = session.packages_report(report::DEFAULT_TOP);
+    print!("{}", report.to_terminal(color));
 }
 
 fn dispatch_imports(session: &Session, path: &str, sc: StderrColor) {
