@@ -323,7 +323,7 @@ impl Session {
     /// Trace and produce a display-ready report.
     pub fn trace_report(&self, opts: &TraceOptions, top_modules: i32) -> TraceReport {
         let result = self.trace(opts);
-        self.build_trace_report(&result, self.entry(), opts.include_dynamic, top_modules)
+        self.build_trace_report(&result, self.entry(), opts, top_modules)
     }
 
     /// Trace from a different file and produce a display-ready report.
@@ -335,7 +335,7 @@ impl Session {
     ) -> Result<(TraceReport, PathBuf), Error> {
         let (result, canon) = self.trace_from(file, opts)?;
         Ok((
-            self.build_trace_report(&result, &canon, opts.include_dynamic, top_modules),
+            self.build_trace_report(&result, &canon, opts, top_modules),
             canon,
         ))
     }
@@ -345,7 +345,7 @@ impl Session {
         &self,
         result: &TraceResult,
         entry_path: &Path,
-        include_dynamic: bool,
+        opts: &TraceOptions,
         top_modules: i32,
     ) -> TraceReport {
         let heavy_packages = result
@@ -380,7 +380,9 @@ impl Session {
             dynamic_only_module_count: result.dynamic_only_module_count,
             heavy_packages,
             modules_by_cost,
-            include_dynamic,
+            total_modules_with_cost: result.modules_by_cost.len(),
+            include_dynamic: opts.include_dynamic,
+            top: opts.top_n,
         }
     }
 
@@ -400,12 +402,7 @@ impl Session {
     }
 
     /// Find cut points and produce a display-ready report.
-    pub fn cut_report(
-        &self,
-        target_arg: &str,
-        top: i32,
-        include_dynamic: bool,
-    ) -> CutReport {
+    pub fn cut_report(&self, target_arg: &str, top: i32, include_dynamic: bool) -> CutReport {
         let (resolved, chains, cuts) = self.cut(target_arg, top, include_dynamic);
         CutReport {
             target: resolved.label,
@@ -740,7 +737,12 @@ mod tests {
         assert!(report.static_weight_bytes > 0);
         assert_eq!(report.static_module_count, 2);
         // No ModuleIds -- paths are strings
-        assert!(report.modules_by_cost.iter().all(|m| m.path.contains(".ts")));
+        assert!(
+            report
+                .modules_by_cost
+                .iter()
+                .all(|m| m.path.contains(".ts"))
+        );
     }
 
     #[test]
