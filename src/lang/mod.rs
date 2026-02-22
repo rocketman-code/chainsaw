@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::graph::EdgeKind;
+use crate::vfs::Vfs;
 
 /// Opaque error from a language parser.
 ///
@@ -70,7 +71,7 @@ pub enum ProjectKind {
 /// Detect the project kind from the entry file extension, then walk up
 /// to find the matching project root marker. Returns `None` for
 /// unsupported file extensions.
-pub fn detect_project(entry: &Path) -> Option<(PathBuf, ProjectKind)> {
+pub fn detect_project(entry: &Path, vfs: &dyn Vfs) -> Option<(PathBuf, ProjectKind)> {
     let kind = match entry.extension().and_then(|e| e.to_str()) {
         Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts") => {
             ProjectKind::TypeScript
@@ -84,17 +85,17 @@ pub fn detect_project(entry: &Path) -> Option<(PathBuf, ProjectKind)> {
         ProjectKind::Python => &["pyproject.toml", "setup.py", "setup.cfg"],
     };
 
-    let root = find_root_with_markers(entry, markers)
+    let root = find_root_with_markers(entry, markers, vfs)
         .unwrap_or_else(|| entry.parent().unwrap_or(entry).to_path_buf());
 
     Some((root, kind))
 }
 
-fn find_root_with_markers(entry: &Path, markers: &[&str]) -> Option<PathBuf> {
+fn find_root_with_markers(entry: &Path, markers: &[&str], vfs: &dyn Vfs) -> Option<PathBuf> {
     let mut dir = entry.parent()?;
     loop {
         for marker in markers {
-            if dir.join(marker).exists() {
+            if vfs.exists(&dir.join(marker)) {
                 return Some(dir.to_path_buf());
             }
         }
@@ -105,6 +106,7 @@ fn find_root_with_markers(entry: &Path, markers: &[&str]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vfs::OsVfs;
     use std::fs;
     use tempfile::tempdir;
 
@@ -117,7 +119,7 @@ mod tests {
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "").unwrap();
 
-        let (detected_root, kind) = detect_project(&entry).unwrap();
+        let (detected_root, kind) = detect_project(&entry, &OsVfs).unwrap();
         assert_eq!(kind, ProjectKind::TypeScript);
         assert_eq!(detected_root, root);
     }
@@ -131,7 +133,7 @@ mod tests {
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "").unwrap();
 
-        let (detected_root, kind) = detect_project(&entry).unwrap();
+        let (detected_root, kind) = detect_project(&entry, &OsVfs).unwrap();
         assert_eq!(kind, ProjectKind::Python);
         assert_eq!(detected_root, root);
     }
@@ -145,7 +147,7 @@ mod tests {
         let entry = root.join("app.py");
         fs::write(&entry, "").unwrap();
 
-        let (detected_root, kind) = detect_project(&entry).unwrap();
+        let (detected_root, kind) = detect_project(&entry, &OsVfs).unwrap();
         assert_eq!(kind, ProjectKind::Python);
         assert_eq!(detected_root, root);
     }
