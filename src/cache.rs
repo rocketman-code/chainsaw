@@ -65,7 +65,7 @@ struct CachedGraph {
     dep_sentinels: Vec<(PathBuf, u128)>,
 }
 
-const LOCKFILES: &[&str] = &[
+pub(crate) const LOCKFILES: &[&str] = &[
     "package-lock.json",
     "pnpm-lock.yaml",
     "yarn.lock",

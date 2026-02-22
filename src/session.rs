@@ -6,8 +6,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::cache::CacheWriteHandle;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+
+use crate::cache::{CacheWriteHandle, LOCKFILES};
 use crate::error::Error;
 use crate::graph::{EdgeId, EdgeKind, ModuleGraph, ModuleId, PackageInfo};
 use crate::loader;
@@ -43,6 +47,8 @@ pub struct Session {
     unresolvable_dynamic_files: Vec<(PathBuf, usize)>,
     file_warnings: Vec<String>,
     _cache_handle: CacheWriteHandle,
+    dirty: Arc<AtomicBool>,
+    watcher: Option<RecommendedWatcher>,
 }
 
 fn build_reverse_adj(graph: &ModuleGraph) -> Vec<Vec<EdgeId>> {
@@ -80,6 +86,8 @@ impl Session {
             unresolvable_dynamic_files: loaded.unresolvable_dynamic_files,
             file_warnings: loaded.file_warnings,
             _cache_handle: cache_handle,
+            dirty: Arc::new(AtomicBool::new(false)),
+            watcher: None,
         })
     }
 
@@ -280,12 +288,59 @@ impl Session {
         Ok(())
     }
 
+    /// Start watching the project root for file changes.
+    ///
+    /// After calling this, `refresh()` will short-circuit when no relevant
+    /// files have changed since the last refresh. Idempotent: calling
+    /// `watch()` again replaces the existing watcher.
+    pub fn watch(&mut self) {
+        let dirty = Arc::clone(&self.dirty);
+        let extensions: Vec<String> = self
+            .valid_extensions
+            .iter()
+            .map(|&e| e.to_string())
+            .collect();
+
+        let handler = move |event: notify::Result<notify::Event>| {
+            if dirty.load(Ordering::Relaxed) {
+                return;
+            }
+            let Ok(event) = event else { return };
+            match event.kind {
+                notify::EventKind::Create(_)
+                | notify::EventKind::Modify(_)
+                | notify::EventKind::Remove(_) => {}
+                _ => return,
+            }
+            if event.paths.iter().any(|p| is_relevant_path(p, &extensions)) {
+                dirty.store(true, Ordering::Release);
+            }
+        };
+
+        if let Ok(mut watcher) = RecommendedWatcher::new(handler, notify::Config::default())
+            && watcher.watch(&self.root, RecursiveMode::Recursive).is_ok()
+        {
+            self.watcher = Some(watcher);
+        }
+    }
+
+    /// Whether the watcher has detected changes since the last refresh.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Acquire)
+    }
+
     /// Check for file changes and rebuild the graph if needed.
     ///
     /// Returns `true` if the graph was updated (cold build or module count
     /// changed since the last load).
     #[allow(clippy::used_underscore_binding)] // _cache_handle held for drop
     pub fn refresh(&mut self) -> Result<bool, Error> {
+        // Fast path: if a watcher is active and no relevant files changed,
+        // skip the full cache-hit path entirely.
+        if self.watcher.is_some() && !self.dirty.swap(false, Ordering::AcqRel) {
+            return Ok(false);
+        }
+
         let (loaded, handle) = loader::load_graph(&self.entry, false)?;
         let Some(&entry_id) = loaded.graph.path_to_id.get(&loaded.entry) else {
             return Err(Error::EntryNotInGraph(loaded.entry));
@@ -519,6 +574,37 @@ pub fn looks_like_path(arg: &str, extensions: &[&str]) -> bool {
                 .is_some_and(|(_, suffix)| extensions.contains(&suffix)))
 }
 
+/// Directories whose contents are never relevant to the dependency graph.
+const EXCLUDED_DIRS: &[&str] = &["node_modules", ".git", "__pycache__", ".chainsaw", "target"];
+
+/// Check whether a filesystem event path is relevant to the dependency graph.
+///
+/// Returns true for source files with matching extensions and lockfiles.
+/// Returns false for files inside excluded directories or with unrelated extensions.
+fn is_relevant_path<S: AsRef<str>>(path: &Path, valid_extensions: &[S]) -> bool {
+    // Reject paths inside excluded directories.
+    for component in path.components() {
+        if let std::path::Component::Normal(s) = component
+            && let Some(s) = s.to_str()
+            && EXCLUDED_DIRS.contains(&s)
+        {
+            return false;
+        }
+    }
+
+    // Accept lockfiles by filename.
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && LOCKFILES.contains(&name)
+    {
+        return true;
+    }
+
+    // Accept source files by extension.
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| valid_extensions.iter().any(|e| e.as_ref() == ext))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +804,77 @@ mod tests {
     }
 
     #[test]
+    fn event_filter_accepts_ts_source() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(is_relevant_path(Path::new("/project/src/index.ts"), exts));
+        assert!(is_relevant_path(Path::new("/project/lib/utils.jsx"), exts));
+    }
+
+    #[test]
+    fn event_filter_accepts_py_source() {
+        let exts = &["py"];
+        assert!(is_relevant_path(Path::new("/project/app/main.py"), exts));
+    }
+
+    #[test]
+    fn event_filter_rejects_wrong_extension() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(!is_relevant_path(Path::new("/project/README.md"), exts));
+        assert!(!is_relevant_path(Path::new("/project/image.png"), exts));
+        assert!(!is_relevant_path(Path::new("/project/Makefile"), exts));
+    }
+
+    #[test]
+    fn event_filter_rejects_excluded_dirs() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(!is_relevant_path(
+            Path::new("/project/node_modules/zod/index.ts"),
+            exts
+        ));
+        assert!(!is_relevant_path(
+            Path::new("/project/.git/objects/abc"),
+            exts
+        ));
+        assert!(!is_relevant_path(
+            Path::new("/project/__pycache__/mod.py"),
+            exts
+        ));
+        assert!(!is_relevant_path(
+            Path::new("/project/.chainsaw/cache"),
+            exts
+        ));
+        assert!(!is_relevant_path(
+            Path::new("/project/target/debug/build.rs"),
+            exts
+        ));
+    }
+
+    #[test]
+    fn event_filter_accepts_lockfiles() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(is_relevant_path(
+            Path::new("/project/package-lock.json"),
+            exts
+        ));
+        assert!(is_relevant_path(Path::new("/project/pnpm-lock.yaml"), exts));
+        assert!(is_relevant_path(Path::new("/project/yarn.lock"), exts));
+        assert!(is_relevant_path(Path::new("/project/bun.lockb"), exts));
+        assert!(is_relevant_path(Path::new("/project/poetry.lock"), exts));
+        assert!(is_relevant_path(Path::new("/project/Pipfile.lock"), exts));
+        assert!(is_relevant_path(Path::new("/project/uv.lock"), exts));
+        assert!(is_relevant_path(
+            Path::new("/project/requirements.txt"),
+            exts
+        ));
+    }
+
+    #[test]
+    fn event_filter_rejects_no_extension_non_lockfile() {
+        let exts = &["ts", "tsx", "js", "jsx"];
+        assert!(!is_relevant_path(Path::new("/project/Dockerfile"), exts));
+    }
+
+    #[test]
     fn entry_label_includes_project_dir() {
         let (_tmp, entry) = test_project();
         let session = Session::open(&entry, true).unwrap();
@@ -773,5 +930,51 @@ mod tests {
         let report = session.packages_report(report::DEFAULT_TOP);
         assert_eq!(report.package_count, 0);
         assert!(report.packages.is_empty());
+    }
+
+    #[test]
+    fn watch_then_refresh_returns_false_when_clean() {
+        let (_tmp, entry) = test_project();
+        let mut session = Session::open(&entry, true).unwrap();
+        session.watch();
+        // No files changed — refresh should be instant and return false.
+        let changed = session.refresh().unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn refresh_without_watch_still_works() {
+        // Backward compat: no watch() call, refresh runs the full path.
+        let (_tmp, entry) = test_project();
+        let mut session = Session::open(&entry, false).unwrap();
+        // Wait for cache write to complete, then refresh hits the cache.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let changed = session.refresh().unwrap();
+        assert!(!changed); // cache hit, nothing changed
+    }
+
+    #[test]
+    fn watch_detects_file_modification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        let entry = root.join("index.ts");
+        std::fs::write(&entry, r#"import { x } from "./a";"#).unwrap();
+        std::fs::write(root.join("a.ts"), "export const x = 1;").unwrap();
+
+        let mut session = Session::open(&entry, true).unwrap();
+        session.watch();
+
+        // Modify a source file.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::fs::write(root.join("a.ts"), "export const x = 2;").unwrap();
+
+        // Give the watcher time to deliver the event.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert!(session.is_dirty());
+        let _changed = session.refresh().unwrap();
+        // After refresh, the flag is cleared regardless of changed return value.
+        assert!(!session.is_dirty());
     }
 }
