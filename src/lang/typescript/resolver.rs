@@ -1,5 +1,9 @@
-use oxc_resolver::{ResolveOptions, Resolver};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use oxc_resolver::{ResolveOptions, ResolverGeneric};
+
+use crate::vfs::{OxcVfsAdapter, Vfs};
 
 const NODE_BUILTINS: &[&str] = &[
     "assert",
@@ -54,43 +58,51 @@ pub fn is_node_builtin(specifier: &str) -> bool {
     NODE_BUILTINS.contains(&specifier)
 }
 
-#[derive(Debug)]
 pub struct ImportResolver {
-    resolver: Resolver,
+    resolver: ResolverGeneric<OxcVfsAdapter>,
+}
+
+impl std::fmt::Debug for ImportResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportResolver").finish_non_exhaustive()
+    }
 }
 
 impl ImportResolver {
-    pub fn new(_root: &Path) -> Self {
-        let resolver = Resolver::new(ResolveOptions {
-            modules: vec!["node_modules".into()],
-            extensions: vec![
-                ".ts".into(),
-                ".tsx".into(),
-                ".d.ts".into(),
-                ".js".into(),
-                ".jsx".into(),
-                ".mjs".into(),
-                ".cjs".into(),
-                ".json".into(),
-                ".node".into(),
-            ],
-            extension_alias: vec![
-                (
+    pub fn new(_root: &Path, vfs: Arc<dyn Vfs>) -> Self {
+        let resolver = ResolverGeneric::new_with_file_system(
+            OxcVfsAdapter(vfs),
+            ResolveOptions {
+                modules: vec!["node_modules".into()],
+                extensions: vec![
+                    ".ts".into(),
+                    ".tsx".into(),
+                    ".d.ts".into(),
                     ".js".into(),
-                    vec![".ts".into(), ".tsx".into(), ".js".into()],
-                ),
-                (".mjs".into(), vec![".mts".into(), ".mjs".into()]),
-                (".cjs".into(), vec![".cts".into(), ".cjs".into()]),
-            ],
-            condition_names: vec![
-                "node".into(),
-                "import".into(),
-                "require".into(),
-                "default".into(),
-            ],
-            main_fields: vec!["module".into(), "main".into()],
-            ..ResolveOptions::default()
-        });
+                    ".jsx".into(),
+                    ".mjs".into(),
+                    ".cjs".into(),
+                    ".json".into(),
+                    ".node".into(),
+                ],
+                extension_alias: vec![
+                    (
+                        ".js".into(),
+                        vec![".ts".into(), ".tsx".into(), ".js".into()],
+                    ),
+                    (".mjs".into(), vec![".mts".into(), ".mjs".into()]),
+                    (".cjs".into(), vec![".cts".into(), ".cjs".into()]),
+                ],
+                condition_names: vec![
+                    "node".into(),
+                    "import".into(),
+                    "require".into(),
+                    "default".into(),
+                ],
+                main_fields: vec!["module".into(), "main".into()],
+                ..ResolveOptions::default()
+            },
+        );
 
         Self { resolver }
     }
@@ -145,8 +157,8 @@ pub fn package_name_from_path(path: &Path) -> Option<String> {
     }
 }
 
-pub(super) fn read_package_name(pkg_json: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(pkg_json).ok()?;
+pub(super) fn read_package_name(pkg_json: &Path, vfs: &dyn Vfs) -> Option<String> {
+    let content = vfs.read_to_string(pkg_json).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
     parsed.get("name")?.as_str().map(str::to_string)
 }

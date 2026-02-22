@@ -4,25 +4,39 @@ mod parser;
 mod resolver;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 
 use crate::lang::{LanguageSupport, ParseError, ParseResult};
+use crate::vfs::{OsVfs, Vfs};
 
 use self::resolver::{ImportResolver, package_name_from_path};
 
 const EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
-#[derive(Debug)]
+
 pub struct TypeScriptSupport {
     resolver: ImportResolver,
     workspace_cache: DashMap<PathBuf, Option<String>>,
+    vfs: Arc<dyn Vfs>,
+}
+
+impl std::fmt::Debug for TypeScriptSupport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypeScriptSupport").finish_non_exhaustive()
+    }
 }
 
 impl TypeScriptSupport {
     pub fn new(root: &Path) -> Self {
+        Self::with_vfs(root, Arc::new(OsVfs))
+    }
+
+    pub fn with_vfs(root: &Path, vfs: Arc<dyn Vfs>) -> Self {
         Self {
-            resolver: ImportResolver::new(root),
+            resolver: ImportResolver::new(root, vfs.clone()),
             workspace_cache: DashMap::new(),
+            vfs,
         }
     }
 }
@@ -64,11 +78,11 @@ impl LanguageSupport for TypeScriptSupport {
             }
 
             let pkg_json = dir.join("package.json");
-            if pkg_json.exists() {
+            if self.vfs.exists(&pkg_json) {
                 let result = if dir == project_root {
                     None
                 } else {
-                    resolver::read_package_name(&pkg_json)
+                    resolver::read_package_name(&pkg_json, &*self.vfs)
                 };
                 uncached.push(dir.to_path_buf());
                 break result;
