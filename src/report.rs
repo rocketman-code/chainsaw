@@ -356,8 +356,8 @@ pub struct PackagesReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageListEntry {
     pub name: String,
-    pub size: u64,
-    pub files: u32,
+    pub total_size_bytes: u64,
+    pub file_count: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -849,9 +849,9 @@ impl PackagesReport {
                 out,
                 "  {:<40} {:>8}  {} file{}",
                 pkg.name,
-                format_size(pkg.size),
-                pkg.files,
-                plural(u64::from(pkg.files))
+                format_size(pkg.total_size_bytes),
+                pkg.file_count,
+                plural(u64::from(pkg.file_count))
             )
             .unwrap();
         }
@@ -1027,15 +1027,15 @@ mod tests {
             package_count: 2,
             packages: vec![PackageListEntry {
                 name: "zod".into(),
-                size: 500,
-                files: 3,
+                total_size_bytes: 500,
+                file_count: 3,
             }],
         };
         let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
         assert_eq!(json["package_count"], 2);
         assert_eq!(json["packages"][0]["name"], "zod");
-        assert_eq!(json["packages"][0]["size"], 500);
-        assert_eq!(json["packages"][0]["files"], 3);
+        assert_eq!(json["packages"][0]["total_size_bytes"], 500);
+        assert_eq!(json["packages"][0]["file_count"], 3);
     }
 
     #[test]
