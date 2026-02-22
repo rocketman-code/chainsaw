@@ -3062,6 +3062,7 @@ dependencies = [
  "stats",
  "tempfile",
  "toml",
+ "walkdir",
 ]
 
 [[package]]

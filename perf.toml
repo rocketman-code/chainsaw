@@ -79,6 +79,8 @@ files = [
     "xtask/src/hooks.rs",
     "xtask/src/registry.rs",
     "xtask/src/perf_validate.rs",
+    "xtask/src/bench.rs",
+    "xtask/src/find_entry.rs",
     "tests/perf_registry.rs",
 ]
 benchmarks = []
