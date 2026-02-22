@@ -5,12 +5,9 @@
 //! lock-free work queue and rayon thread pool.
 
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::SystemTime;
 
 use crossbeam_queue::SegQueue;
 use dashmap::DashSet;
@@ -19,6 +16,7 @@ use rayon::slice::ParallelSliceMut;
 use crate::cache::ParseCache;
 use crate::graph::ModuleGraph;
 use crate::lang::{LanguageSupport, RawImport};
+use crate::vfs::Vfs;
 
 fn is_parseable(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
@@ -45,7 +43,12 @@ struct DiscoverResult {
 /// Phase 1: Concurrent file discovery using a lock-free work queue.
 /// Returns all discovered files with their parsed imports and resolved paths.
 #[allow(clippy::too_many_lines)]
-fn concurrent_discover(entry: &Path, root: &Path, lang: &dyn LanguageSupport) -> DiscoverResult {
+fn concurrent_discover(
+    entry: &Path,
+    root: &Path,
+    lang: &dyn LanguageSupport,
+    vfs: &dyn Vfs,
+) -> DiscoverResult {
     let queue: SegQueue<PathBuf> = SegQueue::new();
     let seen: DashSet<PathBuf> = DashSet::new();
     let results: Mutex<Vec<FileResult>> = Mutex::new(Vec::new());
@@ -63,36 +66,16 @@ fn concurrent_discover(entry: &Path, root: &Path, lang: &dyn LanguageSupport) ->
                 loop {
                     if let Some(path) = queue.pop() {
                         spin_count = 0;
-                        // Open + fstat + read in one pass (3 syscalls, not 4)
-                        let mut file = match File::open(&path) {
-                            Ok(f) => f,
+                        let (source, meta) = match vfs.read_with_metadata(&path) {
+                            Ok(r) => r,
                             Err(e) => {
                                 warnings.push(format!("{}: {e}", path.display()));
                                 active.fetch_sub(1, Ordering::AcqRel);
                                 continue;
                             }
                         };
-                        let meta = match file.metadata() {
-                            Ok(m) => m,
-                            Err(e) => {
-                                warnings.push(format!("{}: {e}", path.display()));
-                                active.fetch_sub(1, Ordering::AcqRel);
-                                continue;
-                            }
-                        };
-                        let mtime_nanos = meta
-                            .modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                            .map(|d| d.as_nanos());
-                        let size = meta.len();
-                        #[allow(clippy::cast_possible_truncation)]
-                        let mut source = String::with_capacity(size as usize + 1);
-                        if let Err(e) = file.read_to_string(&mut source) {
-                            warnings.push(format!("{}: {e}", path.display()));
-                            active.fetch_sub(1, Ordering::AcqRel);
-                            continue;
-                        }
+                        let mtime_nanos = meta.mtime_nanos;
+                        let size = meta.len;
 
                         let result = match lang.parse(&path, &source) {
                             Ok(r) => r,
@@ -183,9 +166,10 @@ pub fn build_graph(
     root: &Path,
     lang: &dyn LanguageSupport,
     cache: &mut ParseCache,
+    vfs: &dyn Vfs,
 ) -> BuildResult {
     // Phase 1: Concurrent discovery (lock-free work queue)
-    let discovered = concurrent_discover(entry, root, lang);
+    let discovered = concurrent_discover(entry, root, lang, vfs);
     let file_results = discovered.files;
 
     // Phase 2: Serial graph construction from sorted results
@@ -226,7 +210,7 @@ pub fn build_graph(
                     // Target not in graph = unparseable leaf (e.g. .json, .css)
                     // Add it as a leaf module
                     else {
-                        let size = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                        let size = vfs.metadata(p).map(|m| m.len).unwrap_or(0);
                         let package = lang
                             .package_name(p)
                             .or_else(|| lang.workspace_package_name(p, root));
@@ -267,6 +251,7 @@ pub fn build_graph(
 mod tests {
     use super::*;
     use crate::lang::typescript::TypeScriptSupport;
+    use crate::vfs::OsVfs;
     use std::fs;
 
     #[test]
@@ -280,7 +265,7 @@ mod tests {
 
         let lang = TypeScriptSupport::new(&root);
         let mut cache = ParseCache::new();
-        let result = build_graph(&root.join("entry.ts"), &root, &lang, &mut cache);
+        let result = build_graph(&root.join("entry.ts"), &root, &lang, &mut cache, &OsVfs);
         let graph = result.graph;
 
         let entry_count = graph
