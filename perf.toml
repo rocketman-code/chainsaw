@@ -82,5 +82,14 @@ files = [
     "xtask/src/bench.rs",
     "xtask/src/find_entry.rs",
     "tests/perf_registry.rs",
+    "tests/common/mod.rs",
+    "tests/cli.rs",
+    "tests/session_reports.rs",
+    "tests/json_roundtrip.rs",
+    "tests/git_refs.rs",
+    "tests/cache_safety.rs",
+    "tests/negative_cases.rs",
+    "tests/property.rs",
+    "tests/report_battery.rs",
 ]
 benchmarks = []
