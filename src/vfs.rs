@@ -5,6 +5,7 @@
 //! objects ([`GitTreeVfs`]). This enables in-process git ref diffs without
 //! spawning worktrees.
 
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -156,6 +157,231 @@ impl oxc_resolver::FileSystem for OxcVfsAdapter {
     }
 }
 
+/// Reads files from a git tree object, enabling in-process git ref diffs
+/// without spawning worktrees. Construction walks the tree once to build
+/// an in-memory index; subsequent reads decompress blobs from the pack.
+pub struct GitTreeVfs {
+    repo: gix::ThreadSafeRepository,
+    /// Relative path -> (blob `ObjectId`, uncompressed size).
+    blobs: HashMap<PathBuf, (gix::ObjectId, u64)>,
+    /// Set of directories present in the tree (relative paths).
+    dirs: HashSet<PathBuf>,
+    /// Directory (relative) -> direct children as absolute paths.
+    children: HashMap<PathBuf, Vec<PathBuf>>,
+    /// Absolute prefix joined to relative paths for external consumers.
+    root: PathBuf,
+}
+
+impl GitTreeVfs {
+    /// Open the repository, resolve `git_ref` to a commit, walk its tree,
+    /// and build an in-memory index of all blobs and directories.
+    pub fn new(repo_path: &Path, git_ref: &str, root: &Path) -> io::Result<Self> {
+        use gix::prelude::FindExt;
+
+        // Resolve ref to SHA via git CLI (avoids pulling in gix revision feature).
+        let sha = resolve_ref_to_sha(repo_path, git_ref)?;
+        let commit_id = gix::ObjectId::from_hex(sha.as_bytes())
+            .map_err(|e| io::Error::other(format!("parse oid: {e}")))?;
+
+        let ts_repo = gix::ThreadSafeRepository::open(repo_path)
+            .map_err(|e| io::Error::other(format!("open repo: {e}")))?;
+        let repo = ts_repo.to_thread_local();
+
+        // commit -> tree
+        let commit = repo
+            .find_object(commit_id)
+            .map_err(|e| io::Error::other(format!("find commit: {e}")))?
+            .try_into_commit()
+            .map_err(|e| io::Error::other(format!("not a commit: {e}")))?;
+        let tree_id = commit
+            .tree_id()
+            .map_err(|e| io::Error::other(format!("tree id: {e}")))?;
+
+        // Walk tree with Recorder
+        let mut buf = Vec::new();
+        let tree_iter = repo
+            .objects
+            .find_tree_iter(&tree_id, &mut buf)
+            .map_err(|e| io::Error::other(format!("find tree: {e}")))?;
+
+        let mut recorder = gix::traverse::tree::Recorder::default()
+            .track_location(Some(gix::traverse::tree::recorder::Location::Path));
+        gix::traverse::tree::breadthfirst(
+            tree_iter,
+            gix::traverse::tree::breadthfirst::State::default(),
+            &repo.objects,
+            &mut recorder,
+        )
+        .map_err(|e| io::Error::other(format!("traverse: {e}")))?;
+
+        let mut blobs = HashMap::new();
+        let mut dirs = HashSet::new();
+        let mut children: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+
+        dirs.insert(PathBuf::new()); // root dir
+
+        for entry in &recorder.records {
+            let rel = PathBuf::from(
+                std::str::from_utf8(entry.filepath.as_ref())
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            );
+            let abs = root.join(&rel);
+            let parent_rel = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+
+            if entry.mode.is_tree() {
+                dirs.insert(rel);
+                children.entry(parent_rel).or_default().push(abs);
+            } else if entry.mode.is_blob() {
+                let size = repo
+                    .find_header(entry.oid)
+                    .map_err(|e| io::Error::other(format!("header: {e}")))?
+                    .size();
+                blobs.insert(rel, (entry.oid, size));
+                children.entry(parent_rel).or_default().push(abs);
+            }
+            // Skip symlinks, submodules
+        }
+
+        Ok(Self {
+            repo: ts_repo,
+            blobs,
+            dirs,
+            children,
+            root: root.to_path_buf(),
+        })
+    }
+
+    /// Strip the root prefix to get the relative tree path.
+    fn relative(&self, path: &Path) -> Option<PathBuf> {
+        path.strip_prefix(&self.root).ok().map(Path::to_path_buf)
+    }
+
+    fn not_found(path: &Path) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} not in git tree", path.display()),
+        )
+    }
+}
+
+fn resolve_ref_to_sha(repo_path: &Path, git_ref: &str) -> io::Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", git_ref])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| io::Error::other(format!("git rev-parse: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::other(format!(
+            "git rev-parse failed for '{git_ref}': {}",
+            stderr.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+impl Vfs for GitTreeVfs {
+    fn read_to_string(&self, path: &Path) -> io::Result<String> {
+        let rel = self.relative(path).ok_or_else(|| Self::not_found(path))?;
+        let &(oid, _) = self.blobs.get(&rel).ok_or_else(|| Self::not_found(path))?;
+        let repo = self.repo.to_thread_local();
+        let obj = repo
+            .find_object(oid)
+            .map_err(|e| io::Error::other(format!("read object: {e}")))?;
+        String::from_utf8(obj.data.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        let rel = self.relative(path).ok_or_else(|| Self::not_found(path))?;
+        let &(oid, _) = self.blobs.get(&rel).ok_or_else(|| Self::not_found(path))?;
+        let repo = self.repo.to_thread_local();
+        let obj = repo
+            .find_object(oid)
+            .map_err(|e| io::Error::other(format!("read object: {e}")))?;
+        Ok(obj.data.clone())
+    }
+
+    fn metadata(&self, path: &Path) -> io::Result<VfsMetadata> {
+        let rel = self.relative(path).ok_or_else(|| Self::not_found(path))?;
+        if let Some(&(_, size)) = self.blobs.get(&rel) {
+            Ok(VfsMetadata {
+                len: size,
+                is_file: true,
+                is_dir: false,
+                mtime_nanos: None,
+            })
+        } else if self.dirs.contains(&rel) {
+            Ok(VfsMetadata {
+                len: 0,
+                is_file: false,
+                is_dir: true,
+                mtime_nanos: None,
+            })
+        } else {
+            Err(Self::not_found(path))
+        }
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        let Some(rel) = self.relative(path) else {
+            return false;
+        };
+        self.blobs.contains_key(&rel) || self.dirs.contains(&rel)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        let Some(rel) = self.relative(path) else {
+            return false;
+        };
+        self.dirs.contains(&rel)
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        let Some(rel) = self.relative(path) else {
+            return false;
+        };
+        self.blobs.contains_key(&rel)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        let rel = self.relative(path).ok_or_else(|| Self::not_found(path))?;
+        self.children
+            .get(&rel)
+            .cloned()
+            .ok_or_else(|| Self::not_found(path))
+    }
+
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        // Git trees have no symlinks; verify existence and return normalized path.
+        let rel = self.relative(path).ok_or_else(|| Self::not_found(path))?;
+        if self.blobs.contains_key(&rel) || self.dirs.contains(&rel) {
+            Ok(self.root.join(&rel))
+        } else {
+            Err(Self::not_found(path))
+        }
+    }
+
+    /// Single lookup + blob decompress for both content and metadata.
+    fn read_with_metadata(&self, path: &Path) -> io::Result<(String, VfsMetadata)> {
+        let rel = self.relative(path).ok_or_else(|| Self::not_found(path))?;
+        let &(oid, size) = self.blobs.get(&rel).ok_or_else(|| Self::not_found(path))?;
+        let repo = self.repo.to_thread_local();
+        let obj = repo
+            .find_object(oid)
+            .map_err(|e| io::Error::other(format!("read object: {e}")))?;
+        let content = String::from_utf8(obj.data.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let meta = VfsMetadata {
+            len: size,
+            is_file: true,
+            is_dir: false,
+            mtime_nanos: None,
+        };
+        Ok((content, meta))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +433,58 @@ mod tests {
         assert!(!vfs.exists(&path));
         assert!(vfs.read_to_string(&path).is_err());
         assert!(vfs.metadata(&path).is_err());
+    }
+
+    #[test]
+    fn git_tree_vfs_reads_head() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let vfs = GitTreeVfs::new(root, "HEAD", root).unwrap();
+
+        // Known file exists and is readable
+        assert!(vfs.is_file(&root.join("Cargo.toml")));
+        assert!(!vfs.is_dir(&root.join("Cargo.toml")));
+        let content = vfs.read_to_string(&root.join("Cargo.toml")).unwrap();
+        assert!(content.contains("chainsaw-cli"));
+
+        // Known directory
+        assert!(vfs.is_dir(&root.join("src")));
+        assert!(!vfs.is_file(&root.join("src")));
+
+        // Non-existent path
+        assert!(!vfs.exists(&root.join("nonexistent.rs")));
+        assert!(vfs.read_to_string(&root.join("nonexistent.rs")).is_err());
+    }
+
+    #[test]
+    fn git_tree_vfs_metadata() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let vfs = GitTreeVfs::new(root, "HEAD", root).unwrap();
+
+        let meta = vfs.metadata(&root.join("Cargo.toml")).unwrap();
+        assert!(meta.is_file);
+        assert!(!meta.is_dir);
+        assert!(meta.len > 0);
+        assert!(meta.mtime_nanos.is_none(), "git blobs have no mtime");
+    }
+
+    #[test]
+    fn git_tree_vfs_read_dir() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let vfs = GitTreeVfs::new(root, "HEAD", root).unwrap();
+
+        let entries = vfs.read_dir(&root.join("src")).unwrap();
+        assert!(entries.iter().any(|p| p.ends_with("main.rs")));
+        assert!(entries.iter().any(|p| p.ends_with("lib.rs")));
+    }
+
+    #[test]
+    fn git_tree_vfs_canonicalize() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let vfs = GitTreeVfs::new(root, "HEAD", root).unwrap();
+
+        let canonical = vfs.canonicalize(&root.join("Cargo.toml")).unwrap();
+        assert_eq!(canonical, root.join("Cargo.toml"));
+
+        assert!(vfs.canonicalize(&root.join("nonexistent")).is_err());
     }
 }

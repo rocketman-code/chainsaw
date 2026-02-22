@@ -65,5 +65,6 @@ mod auto_trait_tests {
         is_normal::<crate::report::PackagesReport>();
         is_normal::<crate::vfs::VfsMetadata>();
         is_normal::<crate::vfs::OsVfs>();
+        is_normal::<crate::vfs::GitTreeVfs>();
     }
 }
