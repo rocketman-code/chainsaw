@@ -335,7 +335,11 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         let saved = load_snapshot(snapshot_path)?;
         let diff = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
         let report = report::DiffReport::from_diff(&diff, &saved.entry, &entry_rel, args.limit);
-        print!("{}", report.to_terminal(color));
+        if args.json {
+            println!("{}", report.to_json());
+        } else {
+            print!("{}", report.to_terminal(color));
+        }
         return Ok(());
     }
 
