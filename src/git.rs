@@ -15,8 +15,8 @@ pub enum DiffArg {
 ///
 /// Detection order:
 /// 1. Existing file on disk -> Snapshot
-/// 2. Path-like arg that doesn't exist (contains `/` or `.json`) -> error (file not found)
-/// 3. `git rev-parse --verify <arg>` succeeds -> `GitRef`
+/// 2. `git rev-parse --verify <arg>^{commit}` succeeds -> `GitRef`
+/// 3. Path-like arg that doesn't exist (contains `/` or `.json`) -> error (file not found)
 /// 4. Neither -> error
 pub fn classify_diff_arg(arg: &str, repo_root: &Path) -> Result<DiffArg, crate::error::Error> {
     let path = Path::new(arg);
@@ -26,7 +26,18 @@ pub fn classify_diff_arg(arg: &str, repo_root: &Path) -> Result<DiffArg, crate::
         return Ok(DiffArg::Snapshot(path.to_path_buf()));
     }
 
-    // 2. Path-like arg that doesn't exist? Error as "file not found".
+    // 2. Valid git ref? Use ^{commit} to peel annotated tags to their commit.
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", &format!("{arg}^{{commit}}")])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| crate::error::Error::GitError(format!("failed to run git: {e}")))?;
+
+    if output.status.success() {
+        return Ok(DiffArg::GitRef(arg.to_string()));
+    }
+
+    // 3. Path-like arg that doesn't exist? Error as "file not found".
     let looks_like_path = arg.contains('/')
         || arg.contains(std::path::MAIN_SEPARATOR)
         || path
@@ -34,17 +45,6 @@ pub fn classify_diff_arg(arg: &str, repo_root: &Path) -> Result<DiffArg, crate::
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
     if looks_like_path {
         return Err(crate::error::Error::DiffFileNotFound(arg.to_string()));
-    }
-
-    // 3. Valid git ref?
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", arg])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|e| crate::error::Error::GitError(format!("failed to run git: {e}")))?;
-
-    if output.status.success() {
-        return Ok(DiffArg::GitRef(arg.to_string()));
     }
 
     // 4. Neither
@@ -234,6 +234,39 @@ mod tests {
             .unwrap();
         let result = classify_diff_arg("v1.0.0", tmp.path());
         assert_eq!(result.unwrap(), DiffArg::GitRef("v1.0.0".to_string()));
+    }
+
+    #[test]
+    fn annotated_tag_is_git_ref() {
+        let (tmp, _) = git_repo();
+        Command::new("git")
+            .args(["tag", "-a", "v2.0.0", "-m", "release"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let result = classify_diff_arg("v2.0.0", tmp.path());
+        assert_eq!(result.unwrap(), DiffArg::GitRef("v2.0.0".to_string()));
+    }
+
+    #[test]
+    fn branch_with_slash_is_git_ref() {
+        let (tmp, _) = git_repo();
+        Command::new("git")
+            .args(["branch", "feature/auth"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let result = classify_diff_arg("feature/auth", tmp.path());
+        assert!(matches!(result, Ok(DiffArg::GitRef(_))));
+    }
+
+    #[test]
+    fn nonexistent_path_with_slash_still_errors() {
+        let (tmp, _) = git_repo();
+        let result = classify_diff_arg("some/nonexistent/path", tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("file not found"), "got: {err}");
     }
 
     #[test]
