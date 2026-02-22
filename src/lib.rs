@@ -24,6 +24,7 @@ pub mod lang;
 pub mod loader;
 pub mod query;
 pub mod report;
+pub mod session;
 pub mod walker;
 
 /// Compile-time guard: all public types must be Send + Sync + Unpin.
@@ -47,6 +48,8 @@ mod auto_trait_tests {
         is_normal::<crate::walker::BuildResult>();
         is_normal::<crate::error::Error>();
         is_normal::<crate::loader::LoadedGraph>();
+        is_normal::<crate::session::Session>();
+        is_normal::<crate::session::ResolvedTarget>();
         is_normal::<crate::lang::ParseError>();
         is_normal::<crate::lang::RawImport>();
         is_normal::<crate::lang::ParseResult>();
