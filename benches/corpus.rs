@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use chainsaw::graph::EdgeKind;
 
-const CORPUS_VERSION: u32 = 1;
+const CORPUS_VERSION: u32 = 2;
 
 struct Rng(u64);
 
@@ -143,7 +143,20 @@ const TS_HUB_COUNT: usize = 100;
 const TS_PKG_COUNT: usize = 20;
 const TS_PHANTOM_COUNT: usize = 50;
 const TS_PKG_WITH_INTERNALS: usize = 5;
+const TS_SCOPED_PKG_COUNT: usize = 8;
+const TS_PEER_DEP_COUNT: usize = 5;
+const TS_WORKSPACE_PKG_COUNT: usize = 10;
+const TS_MODULES_PER_WORKSPACE: usize = 100;
+const TS_MAIN_MODULE_COUNT: usize =
+    TS_MODULE_COUNT - (TS_WORKSPACE_PKG_COUNT * TS_MODULES_PER_WORKSPACE);
+const TS_BARREL_RATIO: f64 = 0.07;
 const TS_SEED: u64 = 0xC4A1_5AED;
+
+const TS_WORKSPACE_NAMES: &[&str] = &[
+    "auth", "cache", "cli", "config", "core", "db", "logger", "router", "shared", "worker",
+];
+
+const TS_WORKSPACE_DIRS: &[&str] = &["src", "src/lib", "src/utils"];
 
 /// Directory paths relative to src/ for distributing modules.
 const TS_DIRS: &[&str] = &[
@@ -177,10 +190,12 @@ const TS_DIRS: &[&str] = &[
     "routes/v2",
 ];
 
-/// Metadata for a generated module: its directory and BFS level.
+/// Metadata for a generated module: its directory, BFS level, and workspace membership.
 struct TsModule {
     dir_idx: usize,
     bfs_level: usize,
+    /// None = main src/ tree, Some(i) = workspace package i
+    workspace: Option<usize>,
 }
 
 /// An edge in the TS corpus dependency graph.
@@ -227,11 +242,37 @@ fn ts_module_name(idx: usize) -> String {
     }
 }
 
-fn ts_module_dir(modules: &[TsModule], idx: usize) -> &'static str {
+/// Full directory path for a module relative to the project root.
+/// Used for computing correct relative import specifiers across src/ and packages/.
+fn ts_module_full_dir(modules: &[TsModule], idx: usize) -> String {
     if idx == 0 || modules[idx].dir_idx == usize::MAX {
-        "" // src/ root
+        return "src".to_string();
+    }
+    match modules[idx].workspace {
+        None => format!("src/{}", TS_DIRS[modules[idx].dir_idx]),
+        Some(ws) => {
+            let ws_name = TS_WORKSPACE_NAMES[ws];
+            let sub = TS_WORKSPACE_DIRS[modules[idx].dir_idx % TS_WORKSPACE_DIRS.len()];
+            format!("packages/{ws_name}/{sub}")
+        }
+    }
+}
+
+/// Package name for node_modules. First 8 are scoped (@corp/pkg-00), rest unscoped.
+fn ts_pkg_name(i: usize) -> String {
+    if i < TS_SCOPED_PKG_COUNT {
+        format!("@corp/pkg-{i:02}")
     } else {
-        TS_DIRS[modules[idx].dir_idx]
+        format!("pkg-{i:02}")
+    }
+}
+
+/// pnpm virtual store directory name: @corp+pkg-00@1.0.0 or pkg-08@1.0.0.
+fn pnpm_store_name(i: usize) -> String {
+    if i < TS_SCOPED_PKG_COUNT {
+        format!("@corp+pkg-{i:02}@1.0.0")
+    } else {
+        format!("pkg-{i:02}@1.0.0")
     }
 }
 
@@ -285,7 +326,7 @@ fn generate_ts_edges(
     hubs: &[usize],
     hub_set: &[bool],
 ) -> Vec<TsEdge> {
-    let pkg_names: Vec<String> = (0..TS_PKG_COUNT).map(|i| format!("pkg-{i:02}")).collect();
+    let pkg_names: Vec<String> = (0..TS_PKG_COUNT).map(ts_pkg_name).collect();
     let phantom_names: Vec<String> = (0..TS_PHANTOM_COUNT)
         .map(|i| format!("phantom-{i:02}"))
         .collect();
@@ -347,8 +388,11 @@ fn generate_ts_edges(
 
             // Specifier type: 12% bare, 88% relative
             if rng.next_f64() < 0.12 {
-                // 20/(20+50) = ~29% chance of existing package, ~71% phantom
-                let bare_name = if rng.next_f64() < 0.29 {
+                // Workspace modules: 20% chance to import a sibling workspace package
+                let bare_name = if modules[from_idx].workspace.is_some() && rng.next_f64() < 0.20 {
+                    let ws_target = rng.next_usize(TS_WORKSPACE_PKG_COUNT);
+                    format!("@bench/{}", TS_WORKSPACE_NAMES[ws_target])
+                } else if rng.next_f64() < 0.29 {
                     pkg_names[rng.next_usize(TS_PKG_COUNT)].clone()
                 } else {
                     phantom_names[rng.next_usize(TS_PHANTOM_COUNT)].clone()
@@ -384,7 +428,7 @@ fn generate_ts_edges(
     edges
 }
 
-/// Write all TS module source files under `src/`.
+/// Write all TS module source files (both `src/` and workspace `packages/`).
 fn write_ts_module_files(rng: &mut Rng, src: &Path, modules: &[TsModule], edges: &[TsEdge]) {
     let mut edges_by_module: Vec<Vec<&TsEdge>> = vec![Vec::new(); TS_MODULE_COUNT];
     for edge in edges {
@@ -392,19 +436,22 @@ fn write_ts_module_files(rng: &mut Rng, src: &Path, modules: &[TsModule], edges:
     }
 
     for (idx, my_edges) in edges_by_module.iter().enumerate() {
-        let dir = ts_module_dir(modules, idx);
         let name = ts_module_name(idx);
-        let file_path = join_subdir(src, dir, format!("{name}.ts"));
+        let root = src.parent().unwrap();
+        let full_dir = ts_module_full_dir(modules, idx);
+        let file_path = root.join(&full_dir).join(format!("{name}.ts"));
 
         let target_bytes = rng.triangular(500, 4000);
         let mut content = String::with_capacity(target_bytes + 256);
 
         // Write import statements
+        let from_dir = &full_dir;
         for edge in my_edges {
             let specifier = if let Some(ref bare) = edge.bare_specifier {
                 bare.clone()
             } else if let Some(to) = edge.to {
-                relative_specifier(dir, ts_module_dir(modules, to), &ts_module_name(to))
+                let to_dir = ts_module_full_dir(modules, to);
+                relative_specifier(from_dir, &to_dir, &ts_module_name(to))
             } else {
                 continue;
             };
@@ -450,20 +497,35 @@ fn write_ts_module_files(rng: &mut Rng, src: &Path, modules: &[TsModule], edges:
     }
 }
 
-/// Generate `node_modules/` packages with optional internal submodules.
+/// Generate pnpm-style `node_modules/` with `.pnpm/` virtual store and hoisted symlinks.
 fn write_ts_packages(rng: &mut Rng, nm: &Path) {
-    let pkg_names: Vec<String> = (0..TS_PKG_COUNT).map(|i| format!("pkg-{i:02}")).collect();
+    let pnpm = nm.join(".pnpm");
+    fs::create_dir_all(&pnpm).expect("failed to create .pnpm/");
 
-    for (i, pkg_name) in pkg_names.iter().enumerate() {
-        let pkg_dir = nm.join(pkg_name);
-        fs::create_dir_all(&pkg_dir).expect("failed to create package dir");
+    // Phase 1: Create real package files inside .pnpm/ virtual store
+    for i in 0..TS_PKG_COUNT {
+        let pkg_name = ts_pkg_name(i);
+        let store_name = pnpm_store_name(i);
 
+        // .pnpm/<store_name>/node_modules/<pkg_name>/
+        let store_nm = pnpm.join(&store_name).join("node_modules");
+        let pkg_dir = if i < TS_SCOPED_PKG_COUNT {
+            let scope_dir = store_nm.join("@corp");
+            fs::create_dir_all(&scope_dir).expect("failed to create scoped pkg dir");
+            scope_dir.join(format!("pkg-{i:02}"))
+        } else {
+            store_nm.join(format!("pkg-{i:02}"))
+        };
+        fs::create_dir_all(&pkg_dir).expect("failed to create pnpm pkg dir");
+
+        // package.json
         fs::write(
             pkg_dir.join("package.json"),
             format!("{{\"name\":\"{pkg_name}\",\"main\":\"index.ts\"}}"),
         )
         .expect("failed to write package.json");
 
+        // index.ts + optional internals
         let mut index_content = String::new();
         if i < TS_PKG_WITH_INTERNALS {
             let internal_count = 3 + rng.next_usize(8);
@@ -487,9 +549,131 @@ fn write_ts_packages(rng: &mut Rng, nm: &Path) {
         fs::write(pkg_dir.join("index.ts"), index_content)
             .expect("failed to write package index.ts");
     }
+
+    // Phase 2: Create hoisted symlinks from node_modules/<pkg> -> .pnpm/<store>/node_modules/<pkg>
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let scope_dir = nm.join("@corp");
+        fs::create_dir_all(&scope_dir).expect("failed to create scope dir");
+
+        for i in 0..TS_PKG_COUNT {
+            let store_name = pnpm_store_name(i);
+            if i < TS_SCOPED_PKG_COUNT {
+                let target = format!("../.pnpm/{store_name}/node_modules/@corp/pkg-{i:02}");
+                let link = scope_dir.join(format!("pkg-{i:02}"));
+                symlink(&target, &link).expect("failed to create scoped hoisted symlink");
+            } else {
+                let target = format!(".pnpm/{store_name}/node_modules/pkg-{i:02}");
+                let link = nm.join(format!("pkg-{i:02}"));
+                symlink(&target, &link).expect("failed to create hoisted symlink");
+            }
+        }
+    }
+
+    // Phase 3: Peer dependency symlinks between packages inside .pnpm/
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        for i in 0..TS_PEER_DEP_COUNT {
+            let dep_i = (i + 1) % TS_PKG_COUNT;
+            let store_name = pnpm_store_name(i);
+            let dep_store_name = pnpm_store_name(dep_i);
+            let store_nm = pnpm.join(&store_name).join("node_modules");
+            if dep_i < TS_SCOPED_PKG_COUNT {
+                let scope_dir = store_nm.join("@corp");
+                fs::create_dir_all(&scope_dir).ok();
+                let target = format!("../../../{dep_store_name}/node_modules/@corp/pkg-{dep_i:02}");
+                let link = scope_dir.join(format!("pkg-{dep_i:02}"));
+                if !link.exists() {
+                    symlink(&target, &link).ok();
+                }
+            } else {
+                let target = format!("../../{dep_store_name}/node_modules/pkg-{dep_i:02}");
+                let link = store_nm.join(format!("pkg-{dep_i:02}"));
+                if !link.exists() {
+                    symlink(&target, &link).ok();
+                }
+            }
+        }
+    }
+}
+
+/// Create workspace package directories under `packages/`.
+fn write_ts_workspace_packages(root: &Path) {
+    let packages = root.join("packages");
+    fs::create_dir_all(&packages).expect("failed to create packages/");
+
+    for ws_name in TS_WORKSPACE_NAMES {
+        let ws_dir = packages.join(ws_name);
+        for sub in TS_WORKSPACE_DIRS {
+            fs::create_dir_all(ws_dir.join(sub)).expect("failed to create workspace subdir");
+        }
+
+        // package.json with name field (triggers workspace_package_name detection)
+        fs::write(
+            ws_dir.join("package.json"),
+            format!("{{\"name\":\"@bench/{ws_name}\",\"main\":\"src/index.ts\"}}"),
+        )
+        .expect("failed to write workspace package.json");
+
+        // Symlink node_modules to root (pnpm hoists shared deps)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let target = "../../node_modules";
+            let link = ws_dir.join("node_modules");
+            symlink(target, &link).ok();
+        }
+    }
+}
+
+/// Create barrel index.ts files in directories with multiple modules.
+fn write_ts_barrel_files(rng: &mut Rng, src: &Path, modules: &[TsModule]) {
+    // Group non-entry modules by their full directory (relative to project root)
+    let mut dir_modules: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (idx, m) in modules.iter().enumerate() {
+        if idx == 0 || m.dir_idx == usize::MAX {
+            continue;
+        }
+        let dir = ts_module_full_dir(modules, idx);
+        dir_modules.entry(dir).or_default().push(idx);
+    }
+
+    let root = src.parent().unwrap();
+
+    // For directories with 3+ modules, maybe create a barrel file
+    for (dir, module_idxs) in &dir_modules {
+        if module_idxs.len() < 3 || rng.next_f64() > TS_BARREL_RATIO * 3.0 {
+            continue;
+        }
+
+        let file_path = root.join(dir).join("index.ts");
+
+        // Don't overwrite existing files
+        if file_path.exists() {
+            continue;
+        }
+
+        let mut content = String::new();
+        for &idx in module_idxs {
+            let name = ts_module_name(idx);
+            let _ = writeln!(
+                content,
+                "export {{ process_{idx}, State_{idx} }} from \"./{name}\";"
+            );
+        }
+        fs::write(&file_path, &content)
+            .unwrap_or_else(|e| panic!("failed to write barrel {}: {e}", file_path.display()));
+    }
 }
 
 fn generate_ts_corpus(root: &Path) {
+    // Clean stale/partial corpus before regenerating
+    if root.exists() {
+        fs::remove_dir_all(root).expect("failed to clean stale corpus");
+    }
     let mut rng = Rng::new(TS_SEED);
 
     // --- 1. Create directory structure ---
@@ -501,6 +685,9 @@ fn generate_ts_corpus(root: &Path) {
     let nm = root.join("node_modules");
     fs::create_dir_all(&nm).expect("failed to create node_modules/");
 
+    // --- 1b. Create workspace package structure ---
+    write_ts_workspace_packages(root);
+
     // --- 2. Assign modules to directories and BFS levels ---
     let mut modules: Vec<TsModule> = Vec::with_capacity(TS_MODULE_COUNT);
 
@@ -508,6 +695,7 @@ fn generate_ts_corpus(root: &Path) {
     modules.push(TsModule {
         dir_idx: usize::MAX, // sentinel: lives in src/ root
         bfs_level: 0,
+        workspace: None,
     });
 
     // Modules 1..=SPINE_DEPTH form the spine chain (BFS levels 1..=15)
@@ -515,15 +703,28 @@ fn generate_ts_corpus(root: &Path) {
         modules.push(TsModule {
             dir_idx: rng.next_usize(TS_DIRS.len()),
             bfs_level: level,
+            workspace: None,
         });
     }
 
-    // Remaining modules distributed across BFS levels 1..=14
-    for _ in (TS_SPINE_DEPTH + 1)..TS_MODULE_COUNT {
+    // Remaining modules: first TS_MAIN_MODULE_COUNT go to src/, rest to workspace packages
+    for i in (TS_SPINE_DEPTH + 1)..TS_MODULE_COUNT {
         let level = rng.triangular(1, TS_SPINE_DEPTH - 1);
+        let workspace = if i >= TS_MAIN_MODULE_COUNT {
+            let ws_idx = (i - TS_MAIN_MODULE_COUNT) / TS_MODULES_PER_WORKSPACE;
+            Some(ws_idx.min(TS_WORKSPACE_PKG_COUNT - 1))
+        } else {
+            None
+        };
+        let dir_idx = if workspace.is_some() {
+            rng.next_usize(TS_WORKSPACE_DIRS.len())
+        } else {
+            rng.next_usize(TS_DIRS.len())
+        };
         modules.push(TsModule {
-            dir_idx: rng.next_usize(TS_DIRS.len()),
+            dir_idx,
             bfs_level: level,
+            workspace,
         });
     }
 
@@ -559,13 +760,16 @@ fn generate_ts_corpus(root: &Path) {
     // --- 6. Write module files ---
     write_ts_module_files(&mut rng, &src, &modules, &edges);
 
+    // --- 6b. Write barrel index.ts files ---
+    write_ts_barrel_files(&mut rng, &src, &modules);
+
     // --- 7. Generate node_modules packages ---
     write_ts_packages(&mut rng, &nm);
 
-    // --- 8. Root package.json ---
+    // --- 8. Root package.json with workspaces ---
     fs::write(
         root.join("package.json"),
-        "{\"name\":\"bench-corpus\",\"private\":true}",
+        "{\"name\":\"bench-corpus\",\"private\":true,\"workspaces\":[\"packages/*\"]}",
     )
     .expect("failed to write root package.json");
 }
@@ -781,6 +985,10 @@ fn write_py_module_files(rng: &mut Rng, app: &Path, modules: &[PyModule], edges:
 }
 
 fn generate_py_corpus(root: &Path) {
+    // Clean stale/partial corpus before regenerating
+    if root.exists() {
+        fs::remove_dir_all(root).expect("failed to clean stale corpus");
+    }
     let mut rng = Rng::new(PY_SEED);
 
     // --- 1. Create directory structure ---
