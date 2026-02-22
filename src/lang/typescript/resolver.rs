@@ -100,6 +100,14 @@ impl ImportResolver {
                     "default".into(),
                 ],
                 main_fields: vec!["module".into(), "main".into()],
+                // Disable symlink resolution: our VFS follows symlinks via
+                // stat (not lstat), so symlink_metadata never reports
+                // is_symlink=true. With symlinks=true the resolver would
+                // iterate every path component calling symlink_metadata for a
+                // no-op canonicalize. Setting this to false skips that
+                // entirely, saving thousands of unnecessary stat calls per
+                // build in pnpm/yarn projects.
+                symlinks: false,
                 ..ResolveOptions::default()
             },
         );

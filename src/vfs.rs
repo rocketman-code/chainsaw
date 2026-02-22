@@ -133,14 +133,21 @@ impl oxc_resolver::FileSystem for OxcVfsAdapter {
     }
 
     fn metadata(&self, path: &Path) -> io::Result<oxc_resolver::FileMetadata> {
-        let m = self.0.metadata(path)?;
-        Ok(oxc_resolver::FileMetadata::new(m.is_file, m.is_dir, false))
+        // Single stat syscall via Vfs::metadata, then map to oxc_resolver's type.
+        // oxc_resolver has its own per-path OnceLock cache, so this is called at
+        // most once per unique CachedPath.
+        let meta = self.0.metadata(path)?;
+        Ok(oxc_resolver::FileMetadata::new(
+            meta.is_file,
+            meta.is_dir,
+            false,
+        ))
     }
 
     fn symlink_metadata(&self, path: &Path) -> io::Result<oxc_resolver::FileMetadata> {
-        // No lstat equivalent in Vfs; follows symlinks via metadata().
-        // For GitTreeVfs: correct (git trees have no symlinks).
-        // For OsVfs: matches the previous Resolver::new behavior.
+        // We always follow symlinks (stat, not lstat) and never report
+        // is_symlink=true. Combined with symlinks=false in ResolveOptions,
+        // this means the resolver skips canonicalize entirely.
         self.metadata(path)
     }
 
@@ -486,5 +493,26 @@ mod tests {
         assert_eq!(canonical, root.join("Cargo.toml"));
 
         assert!(vfs.canonicalize(&root.join("nonexistent")).is_err());
+    }
+
+    #[test]
+    fn oxc_adapter_metadata_single_stat() {
+        use oxc_resolver::FileSystem;
+
+        let adapter = OxcVfsAdapter(Arc::new(OsVfs));
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+        // File should be found
+        let meta = adapter.metadata(&src.join("main.rs")).unwrap();
+        assert!(meta.is_file());
+        assert!(!meta.is_dir());
+
+        // Directory should be found
+        let meta = adapter.metadata(&src.join("lang")).unwrap();
+        assert!(!meta.is_file());
+        assert!(meta.is_dir());
+
+        // Non-existent should be NotFound
+        assert!(adapter.metadata(&src.join("nonexistent.xyz")).is_err());
     }
 }
