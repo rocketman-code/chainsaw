@@ -65,6 +65,7 @@ files = [
     "src/error.rs",
     "src/git.rs",
     "src/loader.rs",
+    "src/vfs.rs",
     "src/lang/typescript/mod.rs",
     "src/lang/python/mod.rs",
     "src/lang/python/conformance.rs",
