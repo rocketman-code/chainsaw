@@ -1,36 +1,46 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
-#[derive(Debug)]
+use crate::vfs::Vfs;
+
 pub struct PythonResolver {
     source_roots: Vec<PathBuf>,
     site_packages_dirs: Vec<PathBuf>,
+    vfs: Arc<dyn Vfs>,
+}
+
+impl std::fmt::Debug for PythonResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PythonResolver").finish_non_exhaustive()
+    }
 }
 
 impl PythonResolver {
-    pub fn new(root: &Path) -> Self {
+    pub fn with_vfs(root: &Path, vfs: Arc<dyn Vfs>) -> Self {
         let mut source_roots = vec![root.to_path_buf()];
         for subdir in &["src", "lib"] {
             let candidate = root.join(subdir);
-            if candidate.is_dir() {
+            if vfs.is_dir(&candidate) {
                 source_roots.push(candidate);
             }
         }
 
-        source_roots.extend(scan_conftest_paths(root));
+        source_roots.extend(scan_conftest_paths(root, &*vfs));
 
-        let mut site_packages_dirs = discover_site_packages(root);
+        let mut site_packages_dirs = discover_site_packages(root, &*vfs);
         let pth_dirs: Vec<PathBuf> = site_packages_dirs
             .iter()
-            .flat_map(|sp| parse_pth_files(sp))
+            .flat_map(|sp| parse_pth_files(sp, &*vfs))
             .collect();
         site_packages_dirs.extend(pth_dirs);
-        let vendor_dirs = scan_site_packages_paths(&site_packages_dirs);
+        let vendor_dirs = scan_site_packages_paths(&site_packages_dirs, &*vfs);
         site_packages_dirs.extend(vendor_dirs);
         Self {
             source_roots,
             site_packages_dirs,
+            vfs,
         }
     }
 
@@ -50,7 +60,6 @@ impl PythonResolver {
         &self.site_packages_dirs
     }
 
-    #[allow(clippy::unused_self)]
     fn resolve_relative(&self, from_dir: &Path, specifier: &str) -> Option<PathBuf> {
         let dots = specifier.bytes().take_while(|&b| b == b'.').count();
         let module = &specifier[dots..];
@@ -60,7 +69,7 @@ impl PythonResolver {
             base = base.parent()?.to_path_buf();
         }
 
-        try_resolve_module(&base, module, false)
+        try_resolve_module(&base, module, false, &*self.vfs)
     }
 
     fn resolve_absolute(&self, specifier: &str) -> Option<PathBuf> {
@@ -82,7 +91,7 @@ impl PythonResolver {
                 let prefix: String = components[..=i].join("/");
                 let mut locked_root = None;
                 for &root in &valid_roots {
-                    if root.join(&prefix).join("__init__.py").exists() {
+                    if self.vfs.exists(&root.join(&prefix).join("__init__.py")) {
                         locked_root = Some(root);
                         break;
                     }
@@ -91,7 +100,7 @@ impl PythonResolver {
                     valid_roots = vec![root];
                 } else {
                     // Namespace: keep only roots where the directory exists
-                    valid_roots.retain(|root| root.join(&prefix).is_dir());
+                    valid_roots.retain(|root| self.vfs.is_dir(&root.join(&prefix)));
                 }
                 if valid_roots.is_empty() {
                     return None;
@@ -107,26 +116,26 @@ impl PythonResolver {
             let rel_path = components.join("/");
             for &root in &valid_roots {
                 let pkg_init = root.join(&rel_path).join("__init__.py");
-                if pkg_init.exists() {
+                if self.vfs.exists(&pkg_init) {
                     return Some(pkg_init);
                 }
                 if self
                     .site_packages_dirs
                     .iter()
                     .any(|sp| sp.as_path() == root)
-                    && let Some(ext) = find_c_extension(root, &rel_path)
+                    && let Some(ext) = find_c_extension(root, &rel_path, &*self.vfs)
                 {
                     return Some(ext);
                 }
                 let module_file = root.join(format!("{rel_path}.py"));
-                if module_file.exists() {
+                if self.vfs.exists(&module_file) {
                     return Some(module_file);
                 }
             }
             // Namespace package for the full path
             for &root in &valid_roots {
                 let pkg_dir = root.join(&rel_path);
-                if pkg_dir.is_dir() {
+                if self.vfs.is_dir(&pkg_dir) {
                     return Some(pkg_dir);
                 }
             }
@@ -138,7 +147,7 @@ impl PythonResolver {
 
         // Pass 1: source roots — regular packages and .py modules
         for root in &self.source_roots {
-            if let Some(path) = try_resolve_module(root, rel_path, false) {
+            if let Some(path) = try_resolve_module(root, rel_path, false, &*self.vfs) {
                 return Some(path);
             }
         }
@@ -153,7 +162,7 @@ impl PythonResolver {
         // Pass 3: namespace packages (directories without __init__.py)
         for root in &all_roots {
             let pkg_dir = root.join(rel_path);
-            if pkg_dir.is_dir() {
+            if self.vfs.is_dir(&pkg_dir) {
                 return Some(pkg_dir);
             }
         }
@@ -162,30 +171,34 @@ impl PythonResolver {
 
     /// Resolve a module within a single root, using Python's per-directory
     /// loader order: __init__.py > C extension (.so/.pyd) > source (.py).
-    #[allow(clippy::unused_self)]
     fn resolve_in_root(&self, root: &Path, rel_path: &str) -> Option<PathBuf> {
         let pkg_init = root.join(rel_path).join("__init__.py");
-        if pkg_init.exists() {
+        if self.vfs.exists(&pkg_init) {
             return Some(pkg_init);
         }
-        if let Some(ext) = find_c_extension(root, rel_path) {
+        if let Some(ext) = find_c_extension(root, rel_path, &*self.vfs) {
             return Some(ext);
         }
         let module_file = root.join(format!("{rel_path}.py"));
-        if module_file.exists() {
+        if self.vfs.exists(&module_file) {
             return Some(module_file);
         }
         None
     }
 }
 
-fn try_resolve_module(base: &Path, dotted_name: &str, allow_namespace: bool) -> Option<PathBuf> {
+fn try_resolve_module(
+    base: &Path,
+    dotted_name: &str,
+    allow_namespace: bool,
+    vfs: &dyn Vfs,
+) -> Option<PathBuf> {
     if dotted_name.is_empty() {
         let init = base.join("__init__.py");
-        if init.exists() {
+        if vfs.exists(&init) {
             return Some(init);
         }
-        if allow_namespace && base.is_dir() {
+        if allow_namespace && vfs.is_dir(base) {
             return Some(base.to_path_buf());
         }
         return None;
@@ -196,39 +209,37 @@ fn try_resolve_module(base: &Path, dotted_name: &str, allow_namespace: bool) -> 
     // Regular package: directory with __init__.py
     let pkg_dir = base.join(&rel_path);
     let pkg_init = pkg_dir.join("__init__.py");
-    if pkg_init.exists() {
+    if vfs.exists(&pkg_init) {
         return Some(pkg_init);
     }
 
     // Module file
     let module_file = base.join(format!("{rel_path}.py"));
-    if module_file.exists() {
+    if vfs.exists(&module_file) {
         return Some(module_file);
     }
 
     // Namespace package: directory exists without __init__.py
-    if allow_namespace && pkg_dir.is_dir() {
+    if allow_namespace && vfs.is_dir(&pkg_dir) {
         return Some(pkg_dir);
     }
 
     None
 }
 
-fn find_c_extension(base: &Path, rel_path: &str) -> Option<PathBuf> {
+fn find_c_extension(base: &Path, rel_path: &str, vfs: &dyn Vfs) -> Option<PathBuf> {
     let (parent, leaf) = rel_path.rfind('/').map_or_else(
         || (base.to_path_buf(), rel_path),
         |i| (base.join(&rel_path[..i]), &rel_path[i + 1..]),
     );
     let prefix = format!("{leaf}.");
-    for entry in std::fs::read_dir(&parent).ok()?.flatten() {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
+    for path in vfs.read_dir(&parent).ok()? {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
         if !name.starts_with(&prefix) {
             continue;
         }
-        let path = entry.path();
         let is_c_ext = path
             .extension()
             .is_some_and(|ext| ext == "so" || ext == "pyd");
@@ -263,24 +274,24 @@ pub fn package_name_from_path(path: &Path, site_packages: &[PathBuf]) -> Option<
     None
 }
 
-fn find_python(root: &Path) -> PathBuf {
+fn find_python(root: &Path, vfs: &dyn Vfs) -> PathBuf {
     let venv_python = root.join(".venv/bin/python");
-    if venv_python.exists() {
+    if vfs.exists(&venv_python) {
         return venv_python;
     }
     PathBuf::from("python3")
 }
 
-fn discover_site_packages_from_cfg(root: &Path) -> Option<Vec<PathBuf>> {
+fn discover_site_packages_from_cfg(root: &Path, vfs: &dyn Vfs) -> Option<Vec<PathBuf>> {
     const VENV_NAMES: &[&str] = &[".venv", "venv", ".env", "env"];
     for name in VENV_NAMES {
         let venv_dir = root.join(name);
         let cfg_path = venv_dir.join("pyvenv.cfg");
-        if let Ok(contents) = std::fs::read_to_string(&cfg_path)
+        if let Ok(contents) = vfs.read_to_string(&cfg_path)
             && let Some(version) = parse_python_version(&contents)
         {
             let sp = venv_dir.join(format!("lib/python{version}/site-packages"));
-            if sp.is_dir() {
+            if vfs.is_dir(&sp) {
                 return Some(vec![sp]);
             }
         }
@@ -305,13 +316,15 @@ fn parse_python_version(cfg: &str) -> Option<String> {
     None
 }
 
-fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
+fn discover_site_packages(root: &Path, vfs: &dyn Vfs) -> Vec<PathBuf> {
     // Fast path: parse pyvenv.cfg directly (no subprocess)
-    if let Some(dirs) = discover_site_packages_from_cfg(root) {
+    if let Some(dirs) = discover_site_packages_from_cfg(root, vfs) {
         return dirs;
     }
-    // Fallback: shell out to python
-    let python = find_python(root);
+    // Fallback: shell out to the real Python (hits the host filesystem, not the
+    // VFS). For GitTreeVfs the returned paths likely won't exist in the tree,
+    // but the vfs.exists() filter below catches mismatches.
+    let python = find_python(root, vfs);
     let output = Command::new(&python)
         .args([
             "-c",
@@ -323,7 +336,7 @@ fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(PathBuf::from)
-            .filter(|p| p.exists())
+            .filter(|p| vfs.exists(p))
             .collect(),
         Ok(out) => {
             eprintln!(
@@ -343,17 +356,16 @@ fn discover_site_packages(root: &Path) -> Vec<PathBuf> {
     }
 }
 
-fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(site_packages) else {
+fn parse_pth_files(site_packages: &Path, vfs: &dyn Vfs) -> Vec<PathBuf> {
+    let Ok(entries) = vfs.read_dir(site_packages) else {
         return Vec::new();
     };
     let mut paths = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for path in entries {
         if path.extension().and_then(|e| e.to_str()) != Some("pth") {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Ok(contents) = vfs.read_to_string(&path) else {
             continue;
         };
         for line in contents.lines() {
@@ -366,7 +378,7 @@ fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
             } else {
                 site_packages.join(line)
             };
-            if dir.is_dir() {
+            if vfs.is_dir(&dir) {
                 paths.push(dir);
             }
         }
@@ -376,45 +388,44 @@ fn parse_pth_files(site_packages: &Path) -> Vec<PathBuf> {
 
 const CONFTEST_SEARCH_DIRS: &[&str] = &["test", "tests", "testing", "spec", "specs"];
 
-fn scan_conftest_paths(root: &Path) -> Vec<PathBuf> {
+fn scan_conftest_paths(root: &Path, vfs: &dyn Vfs) -> Vec<PathBuf> {
     // Check root-level conftest.py and common test directories only.
     // Walking the entire project tree is too expensive for large codebases.
     let mut files = Vec::new();
 
     let root_conftest = root.join("conftest.py");
-    if root_conftest.exists() {
+    if vfs.exists(&root_conftest) {
         files.push(root_conftest);
     }
 
     for dir in CONFTEST_SEARCH_DIRS {
         let test_dir = root.join(dir);
-        if test_dir.is_dir() {
-            walk_for_conftest(&test_dir, &mut files);
+        if vfs.is_dir(&test_dir) {
+            walk_for_conftest(&test_dir, &mut files, vfs);
         }
     }
 
     let mut paths = Vec::new();
     for file in &files {
-        let Ok(source) = std::fs::read_to_string(file) else {
+        let Ok(source) = vfs.read_to_string(file) else {
             continue;
         };
-        paths.extend(extract_sys_path_additions(file, &source));
+        paths.extend(extract_sys_path_additions(file, &source, vfs));
     }
     paths
 }
 
-fn scan_site_packages_paths(site_packages: &[PathBuf]) -> Vec<PathBuf> {
+fn scan_site_packages_paths(site_packages: &[PathBuf], vfs: &dyn Vfs) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for sp in site_packages {
         // Only scan top-level package __init__.py files. Vendor dirs are
         // set up in the top-level package's __init__.py, not in sub-packages.
         // Recursing all of site-packages is too expensive.
-        let Ok(entries) = std::fs::read_dir(sp) else {
+        let Ok(entries) = vfs.read_dir(sp) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
+        for path in entries {
+            if !vfs.is_dir(&path) {
                 continue;
             }
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -423,10 +434,10 @@ fn scan_site_packages_paths(site_packages: &[PathBuf]) -> Vec<PathBuf> {
                 continue;
             }
             let init = path.join("__init__.py");
-            let Ok(source) = std::fs::read_to_string(&init) else {
+            let Ok(source) = vfs.read_to_string(&init) else {
                 continue;
             };
-            paths.extend(extract_sys_path_additions(&init, &source));
+            paths.extend(extract_sys_path_additions(&init, &source, vfs));
         }
     }
     paths
@@ -446,16 +457,15 @@ const CONFTEST_SKIP_DIRS: &[&str] = &[
     ".eggs",
 ];
 
-fn walk_for_conftest(dir: &Path, results: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+fn walk_for_conftest(dir: &Path, results: &mut Vec<PathBuf>, vfs: &dyn Vfs) {
+    let Ok(entries) = vfs.read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if path.is_dir() {
+        if vfs.is_dir(&path) {
             if !CONFTEST_SKIP_DIRS.contains(&name) {
-                walk_for_conftest(&path, results);
+                walk_for_conftest(&path, results, vfs);
             }
         } else if name == "conftest.py" {
             results.push(path);
@@ -463,7 +473,7 @@ fn walk_for_conftest(dir: &Path, results: &mut Vec<PathBuf>) {
     }
 }
 
-fn extract_sys_path_additions(file_path: &Path, source: &str) -> Vec<PathBuf> {
+fn extract_sys_path_additions(file_path: &Path, source: &str, vfs: &dyn Vfs) -> Vec<PathBuf> {
     if !source.contains("sys.path") || !source.contains("__file__") {
         return Vec::new();
     }
@@ -485,8 +495,8 @@ fn extract_sys_path_additions(file_path: &Path, source: &str) -> Vec<PathBuf> {
 
     paths
         .into_iter()
-        .filter_map(|p| p.canonicalize().ok())
-        .filter(|p| p.is_dir())
+        .filter_map(|p| vfs.canonicalize(&p).ok())
+        .filter(|p| vfs.is_dir(p))
         .collect()
 }
 
@@ -674,6 +684,7 @@ fn extract_string_content(node: tree_sitter::Node, src: &[u8]) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vfs::OsVfs;
     use std::fs;
 
     fn setup_project(tmp: &Path) {
@@ -691,6 +702,7 @@ mod tests {
         PythonResolver {
             source_roots: vec![root.to_path_buf()],
             site_packages_dirs: vec![],
+            vfs: Arc::new(OsVfs),
         }
     }
 
@@ -775,6 +787,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs: vec![sp.clone()],
+            vfs: Arc::new(OsVfs),
         };
 
         let result = resolver.resolve(&root, "requests");
@@ -801,7 +814,7 @@ mod tests {
         fs::write(src_pkg.join("__init__.py"), "").unwrap();
         fs::write(src_pkg.join("core.py"), "x = 1").unwrap();
 
-        let resolver = PythonResolver::new(&root);
+        let resolver = PythonResolver::with_vfs(&root, Arc::new(OsVfs));
         let result = resolver.resolve(&root, "mypackage.core");
         assert_eq!(result, Some(src_pkg.join("core.py")));
     }
@@ -815,7 +828,7 @@ mod tests {
         fs::write(lib_pkg.join("__init__.py"), "").unwrap();
         fs::write(lib_pkg.join("core.py"), "x = 1").unwrap();
 
-        let resolver = PythonResolver::new(&root);
+        let resolver = PythonResolver::with_vfs(&root, Arc::new(OsVfs));
         let result = resolver.resolve(&root, "mypackage.core");
         assert_eq!(result, Some(lib_pkg.join("core.py")));
     }
@@ -832,7 +845,7 @@ mod tests {
         fs::write(root_pkg.join("__init__.py"), "").unwrap();
         fs::write(src_pkg.join("__init__.py"), "").unwrap();
 
-        let resolver = PythonResolver::new(&root);
+        let resolver = PythonResolver::with_vfs(&root, Arc::new(OsVfs));
         let result = resolver.resolve(&root, "mypackage");
         assert_eq!(result, Some(root_pkg.join("__init__.py")));
     }
@@ -907,6 +920,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs: vec![sp],
+            vfs: Arc::new(OsVfs),
         };
         let result = resolver.resolve(&root, "packaging");
         assert_eq!(result, Some(real_pkg.join("__init__.py")));
@@ -925,7 +939,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = discover_site_packages_from_cfg(&root);
+        let result = discover_site_packages_from_cfg(&root, &OsVfs);
         assert_eq!(result, Some(vec![sp]));
     }
 
@@ -942,7 +956,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = discover_site_packages_from_cfg(&root);
+        let result = discover_site_packages_from_cfg(&root, &OsVfs);
         assert_eq!(result, Some(vec![sp]));
     }
 
@@ -950,7 +964,7 @@ mod tests {
     fn discover_from_pyvenv_cfg_no_venv_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let result = discover_site_packages_from_cfg(&root);
+        let result = discover_site_packages_from_cfg(&root, &OsVfs);
         assert_eq!(result, None);
     }
 
@@ -966,7 +980,7 @@ mod tests {
 
         fs::write(sp.join("myproject.pth"), extra.to_string_lossy().as_ref()).unwrap();
 
-        let result = parse_pth_files(&sp);
+        let result = parse_pth_files(&sp, &OsVfs);
         assert_eq!(result, vec![extra]);
     }
 
@@ -980,7 +994,7 @@ mod tests {
 
         fs::write(sp.join("thing.pth"), "my-subdir\n").unwrap();
 
-        let result = parse_pth_files(&sp);
+        let result = parse_pth_files(&sp, &OsVfs);
         assert_eq!(result, vec![rel_dir]);
     }
 
@@ -1000,7 +1014,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = parse_pth_files(&sp);
+        let result = parse_pth_files(&sp, &OsVfs);
         assert_eq!(result, vec![extra]);
     }
 
@@ -1013,7 +1027,7 @@ mod tests {
 
         fs::write(sp.join("gone.pth"), "/nonexistent/path/here\n").unwrap();
 
-        let result = parse_pth_files(&sp);
+        let result = parse_pth_files(&sp, &OsVfs);
         assert!(result.is_empty());
     }
 
@@ -1035,12 +1049,13 @@ mod tests {
 
         // Construct resolver WITH .pth scanning via helper
         let mut site_packages_dirs = vec![sp.clone()];
-        let pth_dirs = parse_pth_files(&sp);
+        let pth_dirs = parse_pth_files(&sp, &OsVfs);
         site_packages_dirs.extend(pth_dirs);
 
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs,
+            vfs: Arc::new(OsVfs),
         };
         let result = resolver.resolve(&root, "mypkg");
         assert_eq!(result, Some(ext_pkg.join("__init__.py")));
@@ -1061,6 +1076,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs: vec![root.join("site-packages")],
+            vfs: Arc::new(OsVfs),
         };
 
         let result = resolver.resolve(&root, "yaml._yaml");
@@ -1090,6 +1106,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs: vec![root.join("site-packages")],
+            vfs: Arc::new(OsVfs),
         };
 
         let result = resolver.resolve(&root, "pkg.mod");
@@ -1120,6 +1137,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs: vec![sp],
+            vfs: Arc::new(OsVfs),
         };
 
         let result = resolver.resolve(&root, "cmod");
@@ -1182,6 +1200,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![src],
             site_packages_dirs: vec![sp],
+            vfs: Arc::new(OsVfs),
         };
 
         // foo.extras only exists in site-packages, but foo is owned by source root
@@ -1213,6 +1232,7 @@ mod tests {
         let resolver = PythonResolver {
             source_roots: vec![root_a, root_b],
             site_packages_dirs: vec![],
+            vfs: Arc::new(OsVfs),
         };
 
         // ns is namespace (merged across roots)
@@ -1252,7 +1272,7 @@ if __vendor_site__ not in sys.path:
 
         let init_path = pkg_dir.join("__init__.py");
         let source = fs::read_to_string(&init_path).unwrap();
-        let result = extract_sys_path_additions(&init_path, &source);
+        let result = extract_sys_path_additions(&init_path, &source, &OsVfs);
         assert_eq!(result, vec![vendor]);
     }
 
@@ -1282,7 +1302,7 @@ sys.path.insert(0, test_lib)
         .unwrap();
 
         let source = fs::read_to_string(&conftest).unwrap();
-        let result = extract_sys_path_additions(&conftest, &source);
+        let result = extract_sys_path_additions(&conftest, &source, &OsVfs);
         assert_eq!(result, vec![test_lib]);
     }
 
@@ -1295,7 +1315,7 @@ sys.path.insert(0, test_lib)
         fs::write(&init, "x = 1\n").unwrap();
 
         let source = fs::read_to_string(&init).unwrap();
-        let result = extract_sys_path_additions(&init, &source);
+        let result = extract_sys_path_additions(&init, &source, &OsVfs);
         assert!(result.is_empty());
     }
 
@@ -1323,7 +1343,7 @@ sys.path.insert(0, test_lib)
         )
         .unwrap();
 
-        let paths = scan_conftest_paths(&root);
+        let paths = scan_conftest_paths(&root, &OsVfs);
         assert_eq!(paths, vec![test_lib]);
     }
 
@@ -1348,7 +1368,7 @@ sys.path.insert(0, __vendor_site__)
         )
         .unwrap();
 
-        let paths = scan_site_packages_paths(&[sp]);
+        let paths = scan_site_packages_paths(&[sp], &OsVfs);
         assert_eq!(paths, vec![vendor]);
     }
 
@@ -1384,12 +1404,13 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
 
         // Build resolver: vendor dirs are appended after site-packages
         let mut site_packages_dirs = vec![sp];
-        let vendor_dirs = scan_site_packages_paths(&site_packages_dirs);
+        let vendor_dirs = scan_site_packages_paths(&site_packages_dirs, &OsVfs);
         site_packages_dirs.extend(vendor_dirs);
 
         let resolver = PythonResolver {
             source_roots: vec![root.clone()],
             site_packages_dirs,
+            vfs: Arc::new(OsVfs),
         };
 
         // Vendor-only package is found via fallback
@@ -1421,6 +1442,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
         let resolver = PythonResolver {
             source_roots,
             site_packages_dirs: vec![],
+            vfs: Arc::new(OsVfs),
         };
         (resolver, root)
     }
@@ -1552,7 +1574,7 @@ sys.path.insert(0, (Path(__file__).parent / "_vendor").as_posix())
         .unwrap();
 
         let source = fs::read_to_string(&init).unwrap();
-        let result = extract_sys_path_additions(&init, &source);
+        let result = extract_sys_path_additions(&init, &source, &OsVfs);
         assert!(result.is_empty());
     }
 }

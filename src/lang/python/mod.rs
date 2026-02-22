@@ -7,20 +7,31 @@ mod resolver;
 mod conformance;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::lang::{LanguageSupport, ParseError, ParseResult};
+use crate::vfs::{OsVfs, Vfs};
 
 use self::resolver::{PythonResolver, package_name_from_path};
 
-#[derive(Debug)]
 pub struct PythonSupport {
     resolver: PythonResolver,
 }
 
+impl std::fmt::Debug for PythonSupport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PythonSupport").finish_non_exhaustive()
+    }
+}
+
 impl PythonSupport {
     pub fn new(root: &Path) -> Self {
+        Self::with_vfs(root, Arc::new(OsVfs))
+    }
+
+    pub fn with_vfs(root: &Path, vfs: Arc<dyn Vfs>) -> Self {
         Self {
-            resolver: PythonResolver::new(root),
+            resolver: PythonResolver::with_vfs(root, vfs),
         }
     }
 
