@@ -58,6 +58,8 @@ mod auto_trait_tests {
         is_normal::<crate::lang::ProjectKind>();
         is_normal::<crate::git::DiffArg>();
         is_normal::<crate::repl::Command>();
+        is_normal::<crate::repl::ReplSettings>();
+        is_normal::<crate::repl::CommandOptions>();
         is_normal::<crate::report::TraceReport>();
         is_normal::<crate::report::ChainReport>();
         is_normal::<crate::report::CutReport>();
