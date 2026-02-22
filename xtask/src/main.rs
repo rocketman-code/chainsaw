@@ -1,4 +1,6 @@
+mod bench;
 mod check;
+mod find_entry;
 mod hooks;
 mod perf_judge;
 mod perf_validate;
@@ -40,6 +42,33 @@ enum Command {
     InstallHooks,
     /// Run all local CI checks (fmt, clippy, test)
     Check,
+    /// Find the entry point producing the largest module graph
+    FindEntry {
+        /// Project root to scan
+        root: String,
+
+        /// Path to chainsaw binary
+        #[arg(long, default_value = "target/release/chainsaw")]
+        binary: Option<String>,
+    },
+    /// Run real-world benchmarks via hyperfine
+    Bench {
+        /// Scenario to run (cold, warm, edit). Defaults to all.
+        #[arg(long, value_enum)]
+        scenario: Option<bench::Scenario>,
+
+        /// Specific target name (e.g., openclaw, aws-cli)
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Path to baseline binary for A/B comparison
+        #[arg(long)]
+        baseline: Option<String>,
+
+        /// Run full matrix across all configured targets
+        #[arg(long)]
+        matrix: bool,
+    },
 }
 
 fn main() {
@@ -62,6 +91,22 @@ fn main() {
         }
         Command::Check => {
             std::process::exit(check::run());
+        }
+        Command::FindEntry { root, binary } => {
+            std::process::exit(find_entry::run(&root, binary.as_deref()));
+        }
+        Command::Bench {
+            scenario,
+            target,
+            baseline,
+            matrix,
+        } => {
+            std::process::exit(bench::run(
+                scenario,
+                target.as_deref(),
+                baseline.as_deref(),
+                matrix,
+            ));
         }
     }
 }
