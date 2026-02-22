@@ -538,8 +538,8 @@ impl Session {
                 .iter()
                 .map(|pkg| PackageListEntry {
                     name: pkg.name.clone(),
-                    size: pkg.total_reachable_size,
-                    files: pkg.total_reachable_files,
+                    total_size_bytes: pkg.total_reachable_size,
+                    file_count: pkg.total_reachable_files,
                 })
                 .collect(),
         }
