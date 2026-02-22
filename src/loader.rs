@@ -1,13 +1,13 @@
 //! Entry point for building or loading a cached dependency graph.
 
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::Arc;
 
 use crate::cache::{self, CacheWriteHandle, ParseCache};
 use crate::error::Error;
 use crate::graph::ModuleGraph;
 use crate::lang::{self, LanguageSupport};
+use crate::vfs::{OsVfs, Vfs};
 use crate::walker;
 
 /// Result of loading or building a dependency graph.
@@ -30,7 +30,15 @@ pub struct LoadedGraph {
     pub file_warnings: Vec<String>,
 }
 
-/// Load a dependency graph from the given entry point.
+/// Load a dependency graph using the real filesystem.
+///
+/// Convenience wrapper around [`load_graph_with_vfs`] that uses [`OsVfs`].
+#[must_use = "the CacheWriteHandle joins a background thread on drop"]
+pub fn load_graph(entry: &Path, no_cache: bool) -> Result<(LoadedGraph, CacheWriteHandle), Error> {
+    load_graph_with_vfs(entry, no_cache, Arc::new(OsVfs))
+}
+
+/// Load a dependency graph from the given entry point using a custom VFS.
 ///
 /// Validates the entry path, detects the project kind, and either loads
 /// a cached graph or builds one from scratch using BFS discovery.
@@ -38,27 +46,37 @@ pub struct LoadedGraph {
 /// The returned [`CacheWriteHandle`] must be kept alive until you are done
 /// with the graph — it joins a background cache-write thread on drop.
 #[must_use = "the CacheWriteHandle joins a background thread on drop"]
-pub fn load_graph(entry: &Path, no_cache: bool) -> Result<(LoadedGraph, CacheWriteHandle), Error> {
-    let entry = entry
-        .canonicalize()
+#[allow(clippy::needless_pass_by_value)] // Arc is cloned into lang support implementations
+pub fn load_graph_with_vfs(
+    entry: &Path,
+    no_cache: bool,
+    vfs: Arc<dyn Vfs>,
+) -> Result<(LoadedGraph, CacheWriteHandle), Error> {
+    let entry = vfs
+        .canonicalize(entry)
         .map_err(|e| Error::EntryNotFound(entry.to_path_buf(), e))?;
 
-    if entry.is_dir() {
+    if vfs.is_dir(&entry) {
         return Err(Error::EntryIsDirectory(entry));
     }
 
-    let (root, kind) = lang::detect_project(&entry).ok_or_else(|| {
+    let (root, kind) = lang::detect_project(&entry, &*vfs).ok_or_else(|| {
         let ext = entry.extension().and_then(|e| e.to_str()).map(String::from);
         Error::UnsupportedFileType(ext)
     })?;
 
     let lang_support: Box<dyn LanguageSupport> = match kind {
-        lang::ProjectKind::TypeScript => Box::new(lang::typescript::TypeScriptSupport::new(&root)),
-        lang::ProjectKind::Python => Box::new(lang::python::PythonSupport::new(&root)),
+        lang::ProjectKind::TypeScript => Box::new(lang::typescript::TypeScriptSupport::with_vfs(
+            &root,
+            vfs.clone(),
+        )),
+        lang::ProjectKind::Python => {
+            Box::new(lang::python::PythonSupport::with_vfs(&root, vfs.clone()))
+        }
     };
 
     let valid_extensions = lang_support.extensions();
-    let (result, handle) = build_or_load(&entry, &root, no_cache, lang_support.as_ref());
+    let (result, handle) = build_or_load(&entry, &root, no_cache, lang_support.as_ref(), &*vfs);
 
     Ok((
         LoadedGraph {
@@ -92,6 +110,7 @@ fn build_or_load(
     root: &Path,
     no_cache: bool,
     lang: &dyn LanguageSupport,
+    vfs: &dyn Vfs,
 ) -> (BuildResult, CacheWriteHandle) {
     let mut cache = if no_cache {
         ParseCache::new()
@@ -148,6 +167,7 @@ fn build_or_load(
                     unresolvable_dynamic,
                     unresolvable_dynamic_files,
                     lang,
+                    vfs,
                 ) {
                     graph.compute_package_info();
                     let handle = cache.save_incremental(
@@ -176,7 +196,7 @@ fn build_or_load(
     }
 
     // Tier 2: BFS walk with per-file parse cache
-    let result = walker::build_graph(entry, root, lang, &mut cache);
+    let result = walker::build_graph(entry, root, lang, &mut cache, vfs);
     let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
     let handle = cache.save(
         root,
@@ -214,6 +234,7 @@ fn try_incremental_update(
     old_unresolvable_total: usize,
     mut unresolvable_files: Vec<(PathBuf, usize)>,
     lang: &dyn LanguageSupport,
+    vfs: &dyn Vfs,
 ) -> Option<IncrementalResult> {
     let mut unresolvable_delta: isize = 0;
 
@@ -229,7 +250,7 @@ fn try_incremental_update(
             .collect();
 
         // Re-parse the changed file
-        let source = std::fs::read_to_string(path).ok()?;
+        let source = vfs.read_to_string(path).ok()?;
         let new_result = lang.parse(path, &source).ok()?;
 
         // Compare import lists — if anything changed, bail out
@@ -263,15 +284,10 @@ fn try_incremental_update(
             .iter()
             .map(|imp| lang.resolve(dir, &imp.specifier))
             .collect();
-        if let Ok(meta) = fs::metadata(path) {
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .map(|d: std::time::Duration| d.as_nanos());
-            if let Some(mtime) = mtime {
-                cache.insert(path.clone(), new_size, mtime, new_result, resolved_paths);
-            }
+        if let Ok(meta) = vfs.metadata(path)
+            && let Some(mtime) = meta.mtime_nanos
+        {
+            cache.insert(path.clone(), new_size, mtime, new_result, resolved_paths);
         }
     }
 
