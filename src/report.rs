@@ -9,6 +9,11 @@ use serde::Serialize;
 use crate::graph::{ModuleGraph, ModuleId};
 use crate::query::{CutModule, DiffResult, TraceResult};
 
+/// Default number of heavy dependencies to display.
+pub const DEFAULT_TOP: i32 = 10;
+/// Default number of modules by exclusive weight to display.
+pub const DEFAULT_TOP_MODULES: i32 = 20;
+
 /// Determine whether color output should be used for a given stream.
 ///
 /// Color is disabled when any of these hold:
@@ -121,6 +126,49 @@ impl StderrColor {
             format!("\x1b[1;92m{s}\x1b[0m")
         } else {
             s.to_string()
+        }
+    }
+}
+
+/// Print the standard graph-load status line plus any warnings.
+///
+/// Used by the CLI (trace, packages, diff) and the REPL startup to avoid
+/// duplicating the same formatting logic.
+#[allow(clippy::too_many_arguments)]
+pub fn print_load_status(
+    from_cache: bool,
+    module_count: usize,
+    elapsed_ms: f64,
+    file_warnings: &[String],
+    unresolvable_dynamic_count: usize,
+    unresolvable_dynamic_files: &[(PathBuf, usize)],
+    root: &Path,
+    sc: StderrColor,
+) {
+    eprintln!(
+        "{} ({module_count} modules) in {elapsed_ms:.1}ms",
+        sc.status(if from_cache {
+            "Loaded cached graph"
+        } else {
+            "Built graph"
+        }),
+    );
+    for w in file_warnings {
+        eprintln!("{} {w}", sc.warning("warning:"));
+    }
+    if unresolvable_dynamic_count > 0 {
+        let n = unresolvable_dynamic_count;
+        eprintln!(
+            "{} {n} dynamic import{} with non-literal argument{} could not be traced:",
+            sc.warning("warning:"),
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "" } else { "s" },
+        );
+        let mut files: Vec<_> = unresolvable_dynamic_files.to_vec();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, file_count) in &files {
+            let rel = relative_path(path, root);
+            eprintln!("  {rel} ({file_count})");
         }
     }
 }

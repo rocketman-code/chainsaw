@@ -36,6 +36,8 @@ pub enum Error {
     GitError(String),
     /// --top or --limit value is invalid (must be >= -1).
     InvalidTopValue(&'static str, i32),
+    /// Readline/REPL initialization failed.
+    Readline(String),
 }
 
 impl Error {
@@ -110,6 +112,7 @@ impl std::fmt::Display for Error {
             Self::InvalidTopValue(flag, n) => {
                 write!(f, "invalid value {n} for {flag}: must be -1 (all) or 0+")
             }
+            Self::Readline(msg) => write!(f, "readline: {msg}"),
         }
     }
 }
