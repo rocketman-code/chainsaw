@@ -458,6 +458,7 @@ fn register_benchmarks() -> Vec<Benchmark> {
     }
 
     // query_trace_ts
+    let ts_entry_for_session = ts_entry_path.clone();
     if ts_entry_path.exists() {
         let lang = TypeScriptSupport::new(&ts);
         let entry = ts_entry_path;
@@ -475,6 +476,26 @@ fn register_benchmarks() -> Vec<Benchmark> {
                     black_box(entry_id),
                     black_box(&opts),
                 ));
+            }),
+        });
+    }
+
+    // session_trace_cached_ts — measures repeated trace_report through Session.
+    // On main (uncached): every call recomputes trace (~300us).
+    // With query cache: first call populates, subsequent calls hit cache (~10us).
+    // Uses RefCell so the Fn closure can call &mut self methods.
+    if ts_entry_for_session.exists() {
+        let session = std::cell::RefCell::new(
+            chainsaw::session::Session::open(&ts_entry_for_session, true).unwrap(),
+        );
+        let opts = query::TraceOptions::default();
+        // Warm: one call outside measurement to populate cache (feature branch)
+        // or establish steady state (main).
+        let _ = session.borrow_mut().trace_report(&opts, 10);
+        benches.push(Benchmark {
+            name: "session_trace_cached_ts",
+            run: Box::new(move || {
+                let _ = black_box(session.borrow_mut().trace_report(black_box(&opts), 10));
             }),
         });
     }
