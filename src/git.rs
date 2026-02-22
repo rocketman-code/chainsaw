@@ -51,61 +51,6 @@ pub fn classify_diff_arg(arg: &str, repo_root: &Path) -> Result<DiffArg, crate::
     Err(crate::error::Error::NotSnapshotOrRef(arg.to_string()))
 }
 
-/// A temporary git worktree that cleans up on drop.
-pub struct TempWorktree {
-    dir: tempfile::TempDir,
-    repo_root: std::path::PathBuf,
-}
-
-impl TempWorktree {
-    /// Path to the worktree checkout.
-    pub fn path(&self) -> &Path {
-        self.dir.path()
-    }
-}
-
-impl Drop for TempWorktree {
-    fn drop(&mut self) {
-        // Best-effort cleanup: remove worktree from git's tracking.
-        // If this fails, `git worktree prune` will clean it up later.
-        let _ = std::process::Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(self.dir.path())
-            .current_dir(&self.repo_root)
-            .output();
-    }
-}
-
-/// Create a temporary worktree checked out at the given git ref.
-pub fn create_worktree(
-    repo_root: &Path,
-    git_ref: &str,
-) -> Result<TempWorktree, crate::error::Error> {
-    let dir = tempfile::tempdir()
-        .map_err(|e| crate::error::Error::GitError(format!("failed to create temp dir: {e}")))?;
-
-    let output = std::process::Command::new("git")
-        .args(["worktree", "add", "--detach"])
-        .arg(dir.path())
-        .arg(git_ref)
-        .current_dir(repo_root)
-        .output()
-        .map_err(|e| crate::error::Error::GitError(format!("failed to run git: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(crate::error::Error::GitError(format!(
-            "git worktree add failed: {}",
-            stderr.trim(),
-        )));
-    }
-
-    Ok(TempWorktree {
-        dir,
-        repo_root: repo_root.to_path_buf(),
-    })
-}
-
 /// Check whether the given path is inside a git repository.
 pub fn is_git_repo(path: &Path) -> bool {
     std::process::Command::new("git")
@@ -292,30 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn worktree_roundtrip() {
-        let (tmp, sha) = git_repo();
-        std::fs::write(tmp.path().join("marker.txt"), "original").unwrap();
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "marker"])
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
-
-        let wt = create_worktree(tmp.path(), &sha).unwrap();
-        // Worktree should have file.txt from the first commit but NOT marker.txt
-        assert!(wt.path().join("file.txt").exists());
-        assert!(!wt.path().join("marker.txt").exists());
-        // Cleanup should not panic
-        drop(wt);
-    }
-
-    #[test]
     fn integration_diff_two_refs() {
+        use std::sync::Arc;
+
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
 
@@ -390,7 +314,7 @@ mod tests {
         .trim()
         .to_string();
 
-        // Build snapshots from each ref via worktrees
+        // Build snapshots from each ref via GitTreeVfs
         let entry = std::path::Path::new("index.ts");
         let opts = crate::query::TraceOptions {
             include_dynamic: false,
@@ -398,13 +322,15 @@ mod tests {
             ignore: vec![],
         };
 
-        let wt1 = create_worktree(dir, &sha1).unwrap();
-        let (loaded1, _cw1) = crate::loader::load_graph(&wt1.path().join(entry), true).unwrap();
+        let vfs1 = Arc::new(crate::vfs::GitTreeVfs::new(dir, &sha1, dir).unwrap());
+        let (loaded1, _cw1) =
+            crate::loader::load_graph_with_vfs(&dir.join(entry), true, vfs1).unwrap();
         let eid1 = *loaded1.graph.path_to_id.get(&loaded1.entry).unwrap();
         let snap1 = crate::query::trace(&loaded1.graph, eid1, &opts).to_snapshot("v1");
 
-        let wt2 = create_worktree(dir, &sha2).unwrap();
-        let (loaded2, _cw2) = crate::loader::load_graph(&wt2.path().join(entry), true).unwrap();
+        let vfs2 = Arc::new(crate::vfs::GitTreeVfs::new(dir, &sha2, dir).unwrap());
+        let (loaded2, _cw2) =
+            crate::loader::load_graph_with_vfs(&dir.join(entry), true, vfs2).unwrap();
         let eid2 = *loaded2.graph.path_to_id.get(&loaded2.entry).unwrap();
         let snap2 = crate::query::trace(&loaded2.graph, eid2, &opts).to_snapshot("v2");
 

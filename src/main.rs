@@ -3,6 +3,7 @@
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -12,6 +13,7 @@ use chainsaw::{
     error::Error,
     git, loader, query, repl, report,
     session::{self, Session},
+    vfs,
 };
 
 #[derive(Parser)]
@@ -528,7 +530,7 @@ fn run_diff(
     }
     let start = Instant::now();
 
-    // Determine repo root (needed for git ref detection and worktrees).
+    // Determine repo root (needed for git ref detection and in-process tree reading).
     // Use CWD — if we're not in a git repo, classify_diff_arg will fail
     // gracefully for git refs and succeed for snapshot files.
     let cwd = std::env::current_dir()
@@ -550,12 +552,9 @@ fn run_diff(
     }
 
     // Build snapshots from each side.
-    let (snap_a, label_a, _wt_a) = build_diff_side(&arg_a, entry.as_deref(), root, quiet, sc)?;
-    let (snap_b, label_b, _wt_b) = match arg_b {
-        Some(ref arg) => {
-            let (s, l, w) = build_diff_side(arg, entry.as_deref(), root, quiet, sc)?;
-            (s, l, w)
-        }
+    let (snap_a, label_a) = build_diff_side(&arg_a, entry.as_deref(), root, quiet, sc)?;
+    let (snap_b, label_b) = match arg_b {
+        Some(ref arg) => build_diff_side(arg, entry.as_deref(), root, quiet, sc)?,
         None => {
             // One arg: the arg is "before" (baseline), working tree is "after" (current).
             // Matches `git diff <ref>` semantics.
@@ -599,41 +598,43 @@ fn finish_diff(
 }
 
 /// Build a snapshot from one side of a diff (either a snapshot file or a git ref).
-/// Returns (snapshot, display_label, optional_worktree_handle).
 fn build_diff_side(
     arg: &git::DiffArg,
     entry: Option<&Path>,
     repo_root: &Path,
     quiet: bool,
     sc: report::StderrColor,
-) -> Result<(query::TraceSnapshot, String, Option<git::TempWorktree>), Error> {
+) -> Result<(query::TraceSnapshot, String), Error> {
     match arg {
         git::DiffArg::Snapshot(path) => {
             let snap = load_snapshot(path)?;
             let label = snap.entry.clone();
-            Ok((snap, label, None))
+            Ok((snap, label))
         }
         git::DiffArg::GitRef(git_ref) => {
             let entry = entry.ok_or(Error::EntryRequired)?;
-            let (snap, wt) = build_snapshot_from_ref(repo_root, git_ref, entry, quiet, sc)?;
+            let snap = build_snapshot_from_ref(repo_root, git_ref, entry, quiet, sc)?;
             let label = snap.entry.clone();
-            Ok((snap, label, Some(wt)))
+            Ok((snap, label))
         }
     }
 }
 
-/// Create a worktree at the given ref, build the graph, trace, and return the snapshot.
+/// Read the tree at `git_ref` in-process via gix and build a snapshot.
 fn build_snapshot_from_ref(
     repo_root: &Path,
     git_ref: &str,
     entry: &Path,
     quiet: bool,
     sc: report::StderrColor,
-) -> Result<(query::TraceSnapshot, git::TempWorktree), Error> {
+) -> Result<query::TraceSnapshot, Error> {
     let start = Instant::now();
-    let wt = git::create_worktree(repo_root, git_ref)?;
-    let wt_entry = wt.path().join(entry);
-    let (loaded, _cache_write) = loader::load_graph(&wt_entry, true)?; // no-cache
+    let git_vfs = Arc::new(
+        vfs::GitTreeVfs::new(repo_root, git_ref, repo_root)
+            .map_err(|e| Error::GitError(e.to_string()))?,
+    );
+    let entry_in_vfs = repo_root.join(entry);
+    let (loaded, _cache_write) = loader::load_graph_with_vfs(&entry_in_vfs, true, git_vfs)?; // no-cache
     if !quiet {
         eprintln!(
             "{} {} at {} ({} modules) in {:.1}ms",
@@ -654,7 +655,7 @@ fn build_snapshot_from_ref(
     };
     let result = query::trace(&loaded.graph, entry_id, &opts);
     let label = format!("{} ({})", entry.display(), git_ref);
-    Ok((result.to_snapshot(&label), wt))
+    Ok(result.to_snapshot(&label))
 }
 
 /// Build a snapshot from the current working tree.

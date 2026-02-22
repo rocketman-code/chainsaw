@@ -10,7 +10,8 @@ fn ts_corpus_builds_successfully() {
 
     let lang = chainsaw::lang::typescript::TypeScriptSupport::new(&root);
     let mut cache = chainsaw::cache::ParseCache::new();
-    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+    let result =
+        chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache, &chainsaw::vfs::OsVfs);
 
     let g = &result.graph;
     eprintln!(
@@ -45,7 +46,8 @@ fn py_corpus_builds_successfully() {
 
     let lang = chainsaw::lang::python::PythonSupport::new(&root);
     let mut cache = chainsaw::cache::ParseCache::new();
-    let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+    let result =
+        chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache, &chainsaw::vfs::OsVfs);
 
     let g = &result.graph;
     eprintln!(

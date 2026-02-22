@@ -394,7 +394,8 @@ fn register_benchmarks() -> Vec<Benchmark> {
         let root = ts.clone();
         let entry = ts_entry_path.clone();
         let mut cache = ParseCache::new();
-        let result = chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache);
+        let result =
+            chainsaw::walker::build_graph(&entry, &root, &lang, &mut cache, &chainsaw::vfs::OsVfs);
         let unresolvable_count: usize = result.unresolvable_dynamic.iter().map(|(_, c)| c).sum();
         cache.save(
             &root,
@@ -428,6 +429,7 @@ fn register_benchmarks() -> Vec<Benchmark> {
                     black_box(&root),
                     &lang,
                     &mut cache,
+                    &chainsaw::vfs::OsVfs,
                 );
             }),
         });
@@ -447,6 +449,7 @@ fn register_benchmarks() -> Vec<Benchmark> {
                     black_box(&root),
                     &lang,
                     &mut cache,
+                    &chainsaw::vfs::OsVfs,
                 );
             }),
         });
@@ -457,7 +460,8 @@ fn register_benchmarks() -> Vec<Benchmark> {
         let lang = TypeScriptSupport::new(&ts);
         let entry = ts_entry_path;
         let mut cache = ParseCache::new();
-        let result = chainsaw::walker::build_graph(&entry, &ts, &lang, &mut cache);
+        let result =
+            chainsaw::walker::build_graph(&entry, &ts, &lang, &mut cache, &chainsaw::vfs::OsVfs);
         let graph = result.graph;
         let entry_id = graph.path_to_id[&entry];
         let opts = query::TraceOptions::default();
@@ -478,7 +482,8 @@ fn register_benchmarks() -> Vec<Benchmark> {
         let lang = PythonSupport::new(&py);
         let entry = py_entry_path;
         let mut cache = ParseCache::new();
-        let result = chainsaw::walker::build_graph(&entry, &py, &lang, &mut cache);
+        let result =
+            chainsaw::walker::build_graph(&entry, &py, &lang, &mut cache, &chainsaw::vfs::OsVfs);
         let graph = result.graph;
         let entry_id = graph.path_to_id[&entry];
         let opts = query::TraceOptions::default();
