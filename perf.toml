@@ -60,6 +60,8 @@ files = [
     "src/main.rs",
     "src/lib.rs",
     "src/report.rs",
+    "src/session.rs",
+    "src/repl.rs",
     "src/error.rs",
     "src/git.rs",
     "src/loader.rs",
