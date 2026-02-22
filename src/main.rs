@@ -1,6 +1,7 @@
 // compact_str 0.8 (oxc_span) + 0.9 (oxc_resolver) — transitive, out of our control.
 #![allow(clippy::multiple_crate_versions)]
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -173,6 +174,15 @@ fn parse_size(s: &str) -> Result<u64, String> {
     Ok((value * multiplier) as u64)
 }
 
+fn resolve_color(no_color: bool) -> bool {
+    report::should_use_color(
+        std::io::stdout().is_terminal(),
+        no_color,
+        std::env::var_os("NO_COLOR").is_some(),
+        std::env::var("TERM").is_ok_and(|v| v == "dumb"),
+    )
+}
+
 /// Cap the rayon thread pool to avoid VFS lock contention in the kernel.
 ///
 /// Filesystem-heavy workloads (stat, open, read) hit diminishing returns beyond
@@ -205,8 +215,9 @@ fn main() {
 }
 
 fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
+    let color = resolve_color(no_color);
     match command {
-        Commands::Trace(args) => run_trace(args, no_color, sc),
+        Commands::Trace(args) => run_trace(args, color, sc),
 
         Commands::Diff {
             a,
@@ -214,9 +225,9 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
             entry,
             limit,
             quiet,
-        } => run_diff(a, b, entry, limit, quiet, no_color, sc),
+        } => run_diff(a, b, entry, limit, quiet, color, sc),
 
-        Commands::Packages(ref args) => run_packages(args, no_color, sc),
+        Commands::Packages(ref args) => run_packages(args, color, sc),
 
         Commands::Repl { ref entry } => repl::run(entry, no_color, sc),
 
@@ -236,7 +247,7 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
 // trace subcommand
 // ---------------------------------------------------------------------------
 
-fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
+fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<(), Error> {
     let start = Instant::now();
 
     // Validate mutually exclusive flags before loading graph
@@ -283,29 +294,17 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
 
     // --chain
     if let Some(ref chain_arg) = args.chain {
-        let (resolved, chains) = session.chain(chain_arg, args.include_dynamic);
+        let resolved = session.resolve_target(chain_arg);
         if resolved.target == query::ChainTarget::Module(session.entry_id()) {
             return Err(Error::TargetIsEntryPoint("--chain".into()));
         }
+        let report = session.chain_report(chain_arg, args.include_dynamic);
         if args.json {
-            report::print_chains_json(
-                session.graph(),
-                &chains,
-                &resolved.label,
-                session.root(),
-                resolved.exists,
-            );
+            println!("{}", report.to_json());
         } else {
-            report::print_chains(
-                session.graph(),
-                &chains,
-                &resolved.label,
-                session.root(),
-                resolved.exists,
-                no_color,
-            );
+            print!("{}", report.to_terminal(color));
         }
-        if chains.is_empty() {
+        if report.chains.is_empty() {
             std::process::exit(1);
         }
         return Ok(());
@@ -313,31 +312,17 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
 
     // --cut
     if let Some(ref cut_arg) = args.cut {
-        let (resolved, chains, cuts) = session.cut(cut_arg, args.top, args.include_dynamic);
+        let resolved = session.resolve_target(cut_arg);
         if resolved.target == query::ChainTarget::Module(session.entry_id()) {
             return Err(Error::TargetIsEntryPoint("--cut".into()));
         }
+        let report = session.cut_report(cut_arg, args.top, args.include_dynamic);
         if args.json {
-            report::print_cut_json(
-                session.graph(),
-                &cuts,
-                &chains,
-                &resolved.label,
-                session.root(),
-                resolved.exists,
-            );
+            println!("{}", report.to_json());
         } else {
-            report::print_cut(
-                session.graph(),
-                &cuts,
-                &chains,
-                &resolved.label,
-                session.root(),
-                resolved.exists,
-                no_color,
-            );
+            print!("{}", report.to_terminal(color));
         }
-        if chains.is_empty() {
+        if report.chain_count == 0 {
             std::process::exit(1);
         }
         return Ok(());
@@ -346,8 +331,9 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
     // --diff-from
     if let Some(ref snapshot_path) = args.diff_from {
         let saved = load_snapshot(snapshot_path)?;
-        let diff_output = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
-        report::print_diff(&diff_output, &saved.entry, &entry_rel, args.limit, no_color);
+        let diff = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
+        let report = report::DiffReport::from_diff(&diff, &saved.entry, &entry_rel, args.limit);
+        print!("{}", report.to_terminal(color));
         return Ok(());
     }
 
@@ -361,38 +347,37 @@ fn run_trace(args: TraceArgs, no_color: bool, sc: report::StderrColor) -> Result
             &opts,
             args.no_cache,
             args.limit,
-            no_color,
+            color,
             sc,
         );
     }
 
     // Normal trace output
+    let report = session.trace_report(&opts, args.top_modules);
     if args.json {
-        report::print_trace_json(
-            session.graph(),
-            &result,
-            session.entry(),
-            session.root(),
-            args.top_modules,
-        );
+        println!("{}", report.to_json());
     } else {
-        let display_opts = report::DisplayOpts {
-            top: args.top,
-            top_modules: args.top_modules,
-            include_dynamic: args.include_dynamic,
-            no_color,
-            max_weight: args.max_weight,
-        };
-        report::print_trace(
-            session.graph(),
-            &result,
-            session.entry(),
-            session.root(),
-            &display_opts,
-        );
+        print!("{}", report.to_terminal(color));
     }
 
-    if args.max_weight.is_some_and(|t| result.static_weight > t) {
+    if let Some(threshold) = args.max_weight.filter(|&t| report.static_weight_bytes > t) {
+        let kind = if args.include_dynamic {
+            "total"
+        } else {
+            "static"
+        };
+        eprintln!(
+            "{} {kind} transitive weight {} ({} module{}) exceeds --max-weight threshold {}",
+            sc.error("error:"),
+            report::format_size(report.static_weight_bytes),
+            report.static_module_count,
+            if report.static_module_count == 1 {
+                ""
+            } else {
+                "s"
+            },
+            report::format_size(threshold),
+        );
         std::process::exit(1);
     }
 
@@ -417,7 +402,7 @@ fn handle_trace_diff(
     opts: &query::TraceOptions,
     no_cache: bool,
     limit: i32,
-    no_color: bool,
+    color: bool,
     sc: report::StderrColor,
 ) -> Result<(), Error> {
     let diff_entry = diff_path
@@ -443,13 +428,9 @@ fn handle_trace_diff(
     };
 
     let diff_output = query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
-    report::print_diff(
-        &diff_output,
-        entry_rel,
-        &diff_snapshot.entry,
-        limit,
-        no_color,
-    );
+    let report =
+        report::DiffReport::from_diff(&diff_output, entry_rel, &diff_snapshot.entry, limit);
+    print!("{}", report.to_terminal(color));
     Ok(())
 }
 
@@ -470,7 +451,7 @@ fn print_session_status(session: &Session, start: Instant, sc: report::StderrCol
 // packages subcommand
 // ---------------------------------------------------------------------------
 
-fn run_packages(args: &PackagesArgs, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
+fn run_packages(args: &PackagesArgs, color: bool, sc: report::StderrColor) -> Result<(), Error> {
     if args.top < -1 {
         return Err(Error::InvalidTopValue("--top", args.top));
     }
@@ -480,10 +461,11 @@ fn run_packages(args: &PackagesArgs, no_color: bool, sc: report::StderrColor) ->
         print_session_status(&session, start, sc);
     }
 
+    let report = session.packages_report(args.top);
     if args.json {
-        report::print_packages_json(session.graph(), args.top);
+        println!("{}", report.to_json());
     } else {
-        report::print_packages(session.graph(), args.top, no_color);
+        print!("{}", report.to_terminal(color));
     }
     Ok(())
 }
@@ -538,7 +520,7 @@ fn run_diff(
     entry: Option<PathBuf>,
     limit: i32,
     quiet: bool,
-    no_color: bool,
+    color: bool,
     sc: report::StderrColor,
 ) -> Result<(), Error> {
     if limit < -1 {
@@ -581,13 +563,13 @@ fn run_diff(
             let wt_snap = build_snapshot_from_working_tree(entry_path, quiet, sc)?;
             let wt_label = wt_snap.entry.clone();
             return finish_diff(
-                &snap_a, &label_a, &wt_snap, &wt_label, limit, no_color, start, quiet, sc,
+                &snap_a, &label_a, &wt_snap, &wt_label, limit, color, start, quiet, sc,
             );
         }
     };
 
     finish_diff(
-        &snap_a, &label_a, &snap_b, &label_b, limit, no_color, start, quiet, sc,
+        &snap_a, &label_a, &snap_b, &label_b, limit, color, start, quiet, sc,
     )
 }
 
@@ -598,13 +580,14 @@ fn finish_diff(
     snap_b: &query::TraceSnapshot,
     label_b: &str,
     limit: i32,
-    no_color: bool,
+    color: bool,
     start: Instant,
     quiet: bool,
     sc: report::StderrColor,
 ) -> Result<(), Error> {
     let diff_output = query::diff_snapshots(snap_a, snap_b);
-    report::print_diff(&diff_output, label_a, label_b, limit, no_color);
+    let report = report::DiffReport::from_diff(&diff_output, label_a, label_b, limit);
+    print!("{}", report.to_terminal(color));
     if !quiet {
         eprintln!(
             "\n{} in {:.1}ms",
