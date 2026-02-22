@@ -65,8 +65,7 @@ src/
 stats/            # zero-dep statistics library (workspace crate)
 xtask/            # dev tooling: hooks, perf gate, registry
 benches/          # adaptive benchmark harness
-scripts/          # benchmark scripts
-Justfile          # task runner recipes
+Justfile          # task runner recipes (thin aliases to xtask)
 ```
 
 ## Standards
