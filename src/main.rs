@@ -368,19 +368,12 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         } else {
             "static"
         };
-        eprintln!(
-            "{} {kind} transitive weight {} ({} module{}) exceeds --max-weight threshold {}",
-            sc.error("error:"),
-            report::format_size(report.static_weight_bytes),
-            report.static_module_count,
-            if report.static_module_count == 1 {
-                ""
-            } else {
-                "s"
-            },
-            report::format_size(threshold),
-        );
-        std::process::exit(1);
+        return Err(Error::MaxWeightExceeded {
+            kind,
+            weight: report.static_weight_bytes,
+            module_count: report.static_module_count,
+            threshold,
+        });
     }
 
     if !args.quiet {
