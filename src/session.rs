@@ -12,6 +12,10 @@ use crate::error::Error;
 use crate::graph::{EdgeId, EdgeKind, ModuleGraph, ModuleId, PackageInfo};
 use crate::loader;
 use crate::query::{self, ChainTarget, CutModule, DiffResult, TraceOptions, TraceResult};
+use crate::report::{
+    self, ChainReport, CutEntry, CutReport, DiffReport, ModuleEntry, PackageEntry,
+    PackageListEntry, PackagesReport, TraceReport,
+};
 
 /// The result of resolving a `--chain`/`--cut` argument against the graph.
 ///
@@ -314,6 +318,149 @@ impl Session {
         Ok(changed)
     }
 
+    // -- report builders --
+
+    /// Trace and produce a display-ready report.
+    pub fn trace_report(&self, opts: &TraceOptions, top_modules: i32) -> TraceReport {
+        let result = self.trace(opts);
+        self.build_trace_report(&result, self.entry(), opts.include_dynamic, top_modules)
+    }
+
+    /// Trace from a different file and produce a display-ready report.
+    pub fn trace_from_report(
+        &self,
+        file: &Path,
+        opts: &TraceOptions,
+        top_modules: i32,
+    ) -> Result<(TraceReport, PathBuf), Error> {
+        let (result, canon) = self.trace_from(file, opts)?;
+        Ok((
+            self.build_trace_report(&result, &canon, opts.include_dynamic, top_modules),
+            canon,
+        ))
+    }
+
+    #[allow(clippy::cast_sign_loss)]
+    fn build_trace_report(
+        &self,
+        result: &TraceResult,
+        entry_path: &Path,
+        include_dynamic: bool,
+        top_modules: i32,
+    ) -> TraceReport {
+        let heavy_packages = result
+            .heavy_packages
+            .iter()
+            .map(|pkg| PackageEntry {
+                name: pkg.name.clone(),
+                total_size_bytes: pkg.total_size,
+                file_count: pkg.file_count,
+                chain: report::chain_display_names(&self.graph, &pkg.chain, &self.root),
+            })
+            .collect();
+
+        let display_count = if top_modules < 0 {
+            result.modules_by_cost.len()
+        } else {
+            result.modules_by_cost.len().min(top_modules as usize)
+        };
+        let modules_by_cost = result.modules_by_cost[..display_count]
+            .iter()
+            .map(|mc| ModuleEntry {
+                path: report::relative_path(&self.graph.module(mc.module_id).path, &self.root),
+                exclusive_size_bytes: mc.exclusive_size,
+            })
+            .collect();
+
+        TraceReport {
+            entry: report::relative_path(entry_path, &self.root),
+            static_weight_bytes: result.static_weight,
+            static_module_count: result.static_module_count,
+            dynamic_only_weight_bytes: result.dynamic_only_weight,
+            dynamic_only_module_count: result.dynamic_only_module_count,
+            heavy_packages,
+            modules_by_cost,
+            include_dynamic,
+        }
+    }
+
+    /// Find import chains and produce a display-ready report.
+    pub fn chain_report(&self, target_arg: &str, include_dynamic: bool) -> ChainReport {
+        let (resolved, chains) = self.chain(target_arg, include_dynamic);
+        ChainReport {
+            target: resolved.label,
+            found_in_graph: resolved.exists,
+            chain_count: chains.len(),
+            hop_count: chains.first().map_or(0, |c| c.len().saturating_sub(1)),
+            chains: chains
+                .iter()
+                .map(|chain| report::chain_display_names(&self.graph, chain, &self.root))
+                .collect(),
+        }
+    }
+
+    /// Find cut points and produce a display-ready report.
+    pub fn cut_report(
+        &self,
+        target_arg: &str,
+        top: i32,
+        include_dynamic: bool,
+    ) -> CutReport {
+        let (resolved, chains, cuts) = self.cut(target_arg, top, include_dynamic);
+        CutReport {
+            target: resolved.label,
+            found_in_graph: resolved.exists,
+            chain_count: chains.len(),
+            direct_import: cuts.is_empty() && chains.iter().all(|c| c.len() == 2),
+            cut_points: cuts
+                .iter()
+                .map(|c| CutEntry {
+                    module: report::display_name(&self.graph, c.module_id, &self.root),
+                    exclusive_size_bytes: c.exclusive_size,
+                    chains_broken: c.chains_broken,
+                })
+                .collect(),
+        }
+    }
+
+    /// Diff two entry points and produce a display-ready report.
+    pub fn diff_report(
+        &self,
+        other: &Path,
+        opts: &TraceOptions,
+        limit: i32,
+    ) -> Result<DiffReport, Error> {
+        let (diff, other_canon) = self.diff_entry(other, opts)?;
+        let entry_a = self.entry_label();
+        let entry_b = self.entry_label_for(&other_canon);
+        Ok(DiffReport::from_diff(&diff, &entry_a, &entry_b, limit))
+    }
+
+    /// List packages and produce a display-ready report.
+    #[allow(clippy::cast_sign_loss)]
+    pub fn packages_report(&self, top: i32) -> PackagesReport {
+        let mut packages: Vec<_> = self.graph.package_map.values().collect();
+        packages.sort_by(|a, b| b.total_reachable_size.cmp(&a.total_reachable_size));
+        let total = packages.len();
+        let display_count = if top < 0 {
+            total
+        } else {
+            total.min(top as usize)
+        };
+
+        PackagesReport {
+            package_count: total,
+            packages: packages[..display_count]
+                .iter()
+                .map(|pkg| PackageListEntry {
+                    name: pkg.name.clone(),
+                    size: pkg.total_reachable_size,
+                    files: pkg.total_reachable_files,
+                })
+                .collect(),
+        }
+    }
+
     // -- accessors --
 
     pub fn graph(&self) -> &ModuleGraph {
@@ -581,5 +728,48 @@ mod tests {
         // The temp dir has a name, so label should be "dirname/index.ts"
         assert!(label.ends_with("index.ts"));
         assert!(label.contains('/'));
+    }
+
+    #[test]
+    fn trace_report_has_display_ready_fields() {
+        let (_tmp, entry) = test_project();
+        let session = Session::open(&entry, true).unwrap();
+        let opts = TraceOptions::default();
+        let report = session.trace_report(&opts, report::DEFAULT_TOP_MODULES);
+        assert!(report.entry.contains("index.ts"));
+        assert!(report.static_weight_bytes > 0);
+        assert_eq!(report.static_module_count, 2);
+        // No ModuleIds -- paths are strings
+        assert!(report.modules_by_cost.iter().all(|m| m.path.contains(".ts")));
+    }
+
+    #[test]
+    fn chain_report_resolves_to_strings() {
+        let (_tmp, entry) = test_project();
+        let session = Session::open(&entry, true).unwrap();
+        let report = session.chain_report("a.ts", false);
+        assert!(report.found_in_graph);
+        assert_eq!(report.chain_count, 1);
+        assert!(report.chains[0].iter().any(|s| s.contains("a.ts")));
+    }
+
+    #[test]
+    fn cut_report_direct_import() {
+        let (_tmp, entry) = test_project();
+        let session = Session::open(&entry, true).unwrap();
+        let report = session.cut_report("a.ts", 10, false);
+        assert!(report.found_in_graph);
+        assert_eq!(report.chain_count, 1);
+        assert!(report.direct_import);
+        assert!(report.cut_points.is_empty());
+    }
+
+    #[test]
+    fn packages_report_empty_for_first_party() {
+        let (_tmp, entry) = test_project();
+        let session = Session::open(&entry, true).unwrap();
+        let report = session.packages_report(report::DEFAULT_TOP);
+        assert_eq!(report.package_count, 0);
+        assert!(report.packages.is_empty());
     }
 }

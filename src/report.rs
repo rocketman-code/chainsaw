@@ -192,7 +192,7 @@ pub fn relative_path(path: &Path, root: &Path) -> String {
         .into_owned()
 }
 
-fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
+pub(crate) fn display_name(graph: &ModuleGraph, mid: ModuleId, root: &Path) -> String {
     let m = graph.module(mid);
     m.package
         .clone()
@@ -245,7 +245,7 @@ pub struct DisplayOpts {
 
 /// Build display names for a chain, expanding duplicate package nodes
 /// to package-relative file paths for disambiguation.
-fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> Vec<String> {
+pub(crate) fn chain_display_names(graph: &ModuleGraph, chain: &[ModuleId], root: &Path) -> Vec<String> {
     let names: Vec<String> = chain
         .iter()
         .map(|&mid| display_name(graph, mid, root))
