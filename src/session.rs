@@ -49,6 +49,27 @@ pub struct Session {
     _cache_handle: CacheWriteHandle,
     dirty: Arc<AtomicBool>,
     watcher: Option<RecommendedWatcher>,
+    cached_trace: Option<CachedTrace>,
+    cached_weights: Option<CachedWeights>,
+}
+
+/// Cached entry trace result, keyed on `(entry_id, include_dynamic)`.
+///
+/// The cache intentionally ignores `TraceOptions::top_n` and `ignore` because
+/// those fields only affect `heavy_packages` filtering — they don't change the
+/// underlying traversal (`static_weight`, `modules_by_cost`, `all_packages`).
+/// This is safe as long as callers use consistent options across cached calls
+/// (the REPL always uses `TraceOptions::default()`).
+struct CachedTrace {
+    entry_id: ModuleId,
+    include_dynamic: bool,
+    result: TraceResult,
+}
+
+struct CachedWeights {
+    entry_id: ModuleId,
+    include_dynamic: bool,
+    weights: Vec<u64>,
 }
 
 fn build_reverse_adj(graph: &ModuleGraph) -> Vec<Vec<EdgeId>> {
@@ -88,6 +109,8 @@ impl Session {
             _cache_handle: cache_handle,
             dirty: Arc::new(AtomicBool::new(false)),
             watcher: None,
+            cached_trace: None,
+            cached_weights: None,
         })
     }
 
@@ -165,7 +188,7 @@ impl Session {
 
     /// Find import chains and optimal cut points to sever them.
     pub fn cut(
-        &self,
+        &mut self,
         target_arg: &str,
         top: i32,
         include_dynamic: bool,
@@ -177,13 +200,15 @@ impl Session {
             &resolved.target,
             include_dynamic,
         );
+        self.ensure_weights(include_dynamic);
+        let weights = &self.cached_weights.as_ref().unwrap().weights;
         let cuts = query::find_cut_modules(
             &self.graph,
             &chains,
             self.entry_id,
             &resolved.target,
             top,
-            include_dynamic,
+            weights,
         );
         (resolved, chains, cuts)
     }
@@ -193,7 +218,7 @@ impl Session {
     /// path of the other entry (avoids redundant canonicalization by
     /// the caller).
     pub fn diff_entry(
-        &self,
+        &mut self,
         other: &Path,
         opts: &TraceOptions,
     ) -> Result<(DiffResult, PathBuf), Error> {
@@ -204,7 +229,13 @@ impl Session {
         let Some(&other_id) = self.graph.path_to_id.get(&other_canon) else {
             return Err(Error::EntryNotInGraph(other_canon.clone()));
         };
-        let snap_a = self.trace(opts).to_snapshot(&self.entry_label());
+        self.ensure_trace(opts);
+        let snap_a = self
+            .cached_trace
+            .as_ref()
+            .unwrap()
+            .result
+            .to_snapshot(&self.entry_label());
         let snap_b = query::trace(&self.graph, other_id, opts)
             .to_snapshot(&self.entry_label_for(&other_canon));
         Ok((query::diff_snapshots(&snap_a, &snap_b), other_canon))
@@ -285,6 +316,7 @@ impl Session {
         };
         self.entry = canon;
         self.entry_id = id;
+        self.invalidate_cache();
         Ok(())
     }
 
@@ -353,6 +385,7 @@ impl Session {
             !loaded.from_cache || loaded.graph.module_count() != self.graph.module_count();
         if changed {
             self.reverse_adj = build_reverse_adj(&loaded.graph);
+            self.invalidate_cache();
         } else {
             debug_assert_eq!(
                 self.reverse_adj,
@@ -373,12 +406,57 @@ impl Session {
         Ok(changed)
     }
 
+    // -- query cache --
+
+    fn invalidate_cache(&mut self) {
+        self.cached_trace = None;
+        self.cached_weights = None;
+    }
+
+    fn ensure_trace(&mut self, opts: &TraceOptions) {
+        let valid = self.cached_trace.as_ref().is_some_and(|c| {
+            c.entry_id == self.entry_id && c.include_dynamic == opts.include_dynamic
+        });
+        if !valid {
+            let result = query::trace(&self.graph, self.entry_id, opts);
+            self.cached_trace = Some(CachedTrace {
+                entry_id: self.entry_id,
+                include_dynamic: opts.include_dynamic,
+                result,
+            });
+        }
+    }
+
+    fn ensure_weights(&mut self, include_dynamic: bool) {
+        let valid = self
+            .cached_weights
+            .as_ref()
+            .is_some_and(|c| c.entry_id == self.entry_id && c.include_dynamic == include_dynamic);
+        if !valid {
+            let weights =
+                query::compute_exclusive_weights(&self.graph, self.entry_id, include_dynamic);
+            self.cached_weights = Some(CachedWeights {
+                entry_id: self.entry_id,
+                include_dynamic,
+                weights,
+            });
+        }
+    }
+
     // -- report builders --
 
     /// Trace and produce a display-ready report.
-    pub fn trace_report(&self, opts: &TraceOptions, top_modules: i32) -> TraceReport {
-        let result = self.trace(opts);
-        self.build_trace_report(&result, self.entry(), opts, top_modules)
+    pub fn trace_report(&mut self, opts: &TraceOptions, top_modules: i32) -> TraceReport {
+        self.ensure_trace(opts);
+        let result = &self.cached_trace.as_ref().unwrap().result;
+        build_trace_report(
+            result,
+            &self.entry,
+            &self.graph,
+            &self.root,
+            opts,
+            top_modules,
+        )
     }
 
     /// Trace from a different file and produce a display-ready report.
@@ -390,55 +468,9 @@ impl Session {
     ) -> Result<(TraceReport, PathBuf), Error> {
         let (result, canon) = self.trace_from(file, opts)?;
         Ok((
-            self.build_trace_report(&result, &canon, opts, top_modules),
+            build_trace_report(&result, &canon, &self.graph, &self.root, opts, top_modules),
             canon,
         ))
-    }
-
-    #[allow(clippy::cast_sign_loss)]
-    fn build_trace_report(
-        &self,
-        result: &TraceResult,
-        entry_path: &Path,
-        opts: &TraceOptions,
-        top_modules: i32,
-    ) -> TraceReport {
-        let heavy_packages = result
-            .heavy_packages
-            .iter()
-            .map(|pkg| PackageEntry {
-                name: pkg.name.clone(),
-                total_size_bytes: pkg.total_size,
-                file_count: pkg.file_count,
-                chain: report::chain_display_names(&self.graph, &pkg.chain, &self.root),
-            })
-            .collect();
-
-        let display_count = if top_modules < 0 {
-            result.modules_by_cost.len()
-        } else {
-            result.modules_by_cost.len().min(top_modules as usize)
-        };
-        let modules_by_cost = result.modules_by_cost[..display_count]
-            .iter()
-            .map(|mc| ModuleEntry {
-                path: report::relative_path(&self.graph.module(mc.module_id).path, &self.root),
-                exclusive_size_bytes: mc.exclusive_size,
-            })
-            .collect();
-
-        TraceReport {
-            entry: report::relative_path(entry_path, &self.root),
-            static_weight_bytes: result.static_weight,
-            static_module_count: result.static_module_count,
-            dynamic_only_weight_bytes: result.dynamic_only_weight,
-            dynamic_only_module_count: result.dynamic_only_module_count,
-            heavy_packages,
-            modules_by_cost,
-            total_modules_with_cost: result.modules_by_cost.len(),
-            include_dynamic: opts.include_dynamic,
-            top: opts.top_n,
-        }
     }
 
     /// Find import chains and produce a display-ready report.
@@ -457,7 +489,7 @@ impl Session {
     }
 
     /// Find cut points and produce a display-ready report.
-    pub fn cut_report(&self, target_arg: &str, top: i32, include_dynamic: bool) -> CutReport {
+    pub fn cut_report(&mut self, target_arg: &str, top: i32, include_dynamic: bool) -> CutReport {
         let (resolved, chains, cuts) = self.cut(target_arg, top, include_dynamic);
         CutReport {
             target: resolved.label,
@@ -477,7 +509,7 @@ impl Session {
 
     /// Diff two entry points and produce a display-ready report.
     pub fn diff_report(
-        &self,
+        &mut self,
         other: &Path,
         opts: &TraceOptions,
         limit: i32,
@@ -563,6 +595,53 @@ pub fn entry_label(path: &Path, root: &Path) -> String {
     )
 }
 
+#[allow(clippy::cast_sign_loss)]
+fn build_trace_report(
+    result: &TraceResult,
+    entry_path: &Path,
+    graph: &ModuleGraph,
+    root: &Path,
+    opts: &TraceOptions,
+    top_modules: i32,
+) -> TraceReport {
+    let heavy_packages = result
+        .heavy_packages
+        .iter()
+        .map(|pkg| PackageEntry {
+            name: pkg.name.clone(),
+            total_size_bytes: pkg.total_size,
+            file_count: pkg.file_count,
+            chain: report::chain_display_names(graph, &pkg.chain, root),
+        })
+        .collect();
+
+    let display_count = if top_modules < 0 {
+        result.modules_by_cost.len()
+    } else {
+        result.modules_by_cost.len().min(top_modules as usize)
+    };
+    let modules_by_cost = result.modules_by_cost[..display_count]
+        .iter()
+        .map(|mc| ModuleEntry {
+            path: report::relative_path(&graph.module(mc.module_id).path, root),
+            exclusive_size_bytes: mc.exclusive_size,
+        })
+        .collect();
+
+    TraceReport {
+        entry: report::relative_path(entry_path, root),
+        static_weight_bytes: result.static_weight,
+        static_module_count: result.static_module_count,
+        dynamic_only_weight_bytes: result.dynamic_only_weight,
+        dynamic_only_module_count: result.dynamic_only_module_count,
+        heavy_packages,
+        modules_by_cost,
+        total_modules_with_cost: result.modules_by_cost.len(),
+        include_dynamic: opts.include_dynamic,
+        top: opts.top_n,
+    }
+}
+
 /// Determine whether a chain/cut argument looks like a file path
 /// (as opposed to a package name).
 pub fn looks_like_path(arg: &str, extensions: &[&str]) -> bool {
@@ -641,7 +720,7 @@ mod tests {
     #[test]
     fn cut_finds_no_intermediate_on_direct_import() {
         let (_tmp, entry) = test_project();
-        let session = Session::open(&entry, true).unwrap();
+        let mut session = Session::open(&entry, true).unwrap();
         // index.ts -> a.ts is a 1-hop chain, no intermediate to cut
         let (resolved, chains, cuts) = session.cut("a.ts", 10, false);
         assert!(resolved.exists);
@@ -662,7 +741,7 @@ mod tests {
         std::fs::write(&b, r#"import { bar } from "./extra";"#).unwrap();
         std::fs::write(root.join("extra.ts"), "export const y = 2;").unwrap();
 
-        let session = Session::open(&a, true).unwrap();
+        let mut session = Session::open(&a, true).unwrap();
         let (diff, _) = session.diff_entry(&b, &TraceOptions::default()).unwrap();
         // b.ts trace (b + extra) should have less weight than a.ts trace (a + b + extra)
         assert!(diff.entry_a_weight >= diff.entry_b_weight);
@@ -887,7 +966,7 @@ mod tests {
     #[test]
     fn trace_report_has_display_ready_fields() {
         let (_tmp, entry) = test_project();
-        let session = Session::open(&entry, true).unwrap();
+        let mut session = Session::open(&entry, true).unwrap();
         let opts = TraceOptions::default();
         let report = session.trace_report(&opts, report::DEFAULT_TOP_MODULES);
         assert!(report.entry.contains("index.ts"));
@@ -915,7 +994,7 @@ mod tests {
     #[test]
     fn cut_report_direct_import() {
         let (_tmp, entry) = test_project();
-        let session = Session::open(&entry, true).unwrap();
+        let mut session = Session::open(&entry, true).unwrap();
         let report = session.cut_report("a.ts", 10, false);
         assert!(report.found_in_graph);
         assert_eq!(report.chain_count, 1);
@@ -976,5 +1055,154 @@ mod tests {
         let _changed = session.refresh().unwrap();
         // After refresh, the flag is cleared regardless of changed return value.
         assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn cached_trace_invalidated_on_set_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        let a = root.join("a.ts");
+        std::fs::write(&a, r#"import { x } from "./b";"#).unwrap();
+        let b = root.join("b.ts");
+        std::fs::write(&b, "export const x = 1;").unwrap();
+
+        let mut session = Session::open(&a, true).unwrap();
+        let opts = crate::query::TraceOptions::default();
+
+        let r1 = session.trace_report(&opts, 10);
+        assert_eq!(r1.static_module_count, 2);
+
+        session.set_entry(&b).unwrap();
+
+        let r2 = session.trace_report(&opts, 10);
+        assert_eq!(r2.static_module_count, 1);
+    }
+
+    #[test]
+    fn cached_trace_invalidated_on_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        let entry = root.join("index.ts");
+        std::fs::write(&entry, r#"import { x } from "./a";"#).unwrap();
+        std::fs::write(root.join("a.ts"), "export const x = 1;").unwrap();
+
+        let mut session = Session::open(&entry, true).unwrap();
+        let opts = crate::query::TraceOptions::default();
+
+        let r1 = session.trace_report(&opts, 10);
+        assert_eq!(r1.static_module_count, 2);
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(
+            &entry,
+            r#"import { x } from "./a"; import { y } from "./b";"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("b.ts"), "export const y = 2;").unwrap();
+
+        let changed = session.refresh().unwrap();
+        assert!(changed);
+
+        let r2 = session.trace_report(&opts, 10);
+        assert_eq!(r2.static_module_count, 3);
+    }
+
+    #[test]
+    fn cut_uses_cached_exclusive_weights() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        let entry = root.join("entry.ts");
+        std::fs::write(
+            &entry,
+            r#"import { a } from "./a"; import { b } from "./b";"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("a.ts"),
+            r#"import { c } from "./c"; export const a = 1;"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.ts"),
+            r#"import { c } from "./c"; export const b = 1;"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("c.ts"),
+            r#"import { z } from "./node_modules/zod/index.js"; export const c = 1;"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("node_modules/zod")).unwrap();
+        std::fs::write(
+            root.join("node_modules/zod/index.js"),
+            "export const z = 1;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/zod/package.json"),
+            r#"{"name":"zod"}"#,
+        )
+        .unwrap();
+
+        let mut session = Session::open(&entry, true).unwrap();
+
+        let opts = crate::query::TraceOptions::default();
+        session.trace_report(&opts, 10);
+
+        let (_, chains, cuts) = session.cut("zod", 10, false);
+        assert!(!chains.is_empty());
+        assert!(
+            cuts.iter()
+                .any(|c| session.graph().module(c.module_id).path.ends_with("c.ts"))
+        );
+    }
+
+    /// Verify query cache produces measurable speedup.
+    /// Run: `cargo test --lib session::tests::verify_cache_speedup -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires local wrangler checkout"]
+    fn verify_cache_speedup() {
+        use std::time::Instant;
+
+        let wrangler =
+            Path::new("/Users/hlal/dev/cloudflare/workers-sdk/packages/wrangler/src/index.ts");
+        if !wrangler.exists() {
+            eprintln!("SKIP: wrangler not found");
+            return;
+        }
+        let mut session = Session::open(wrangler, true).unwrap();
+        let opts = crate::query::TraceOptions::default();
+
+        let t1 = Instant::now();
+        let r1 = session.trace_report(&opts, 10);
+        let first = t1.elapsed();
+
+        let t2 = Instant::now();
+        let r2 = session.trace_report(&opts, 10);
+        let second = t2.elapsed();
+
+        assert_eq!(r1.static_weight_bytes, r2.static_weight_bytes);
+        assert_eq!(r1.static_module_count, r2.static_module_count);
+
+        eprintln!(
+            "  first trace_report:  {:.0}us",
+            first.as_secs_f64() * 1_000_000.0
+        );
+        eprintln!(
+            "  second trace_report: {:.0}us",
+            second.as_secs_f64() * 1_000_000.0
+        );
+        eprintln!(
+            "  speedup: {:.1}x",
+            first.as_secs_f64() / second.as_secs_f64()
+        );
+
+        assert!(
+            second < first / 3,
+            "expected cache hit to be at least 3x faster: first={first:?}, second={second:?}"
+        );
     }
 }
