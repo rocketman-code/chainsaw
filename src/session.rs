@@ -495,7 +495,9 @@ impl Session {
             target: resolved.label,
             found_in_graph: resolved.exists,
             chain_count: chains.len(),
-            direct_import: cuts.is_empty() && chains.iter().all(|c| c.len() == 2),
+            direct_import: !chains.is_empty()
+                && cuts.is_empty()
+                && chains.iter().all(|c| c.len() == 2),
             cut_points: cuts
                 .iter()
                 .map(|c| CutEntry {
@@ -1000,6 +1002,16 @@ mod tests {
         assert_eq!(report.chain_count, 1);
         assert!(report.direct_import);
         assert!(report.cut_points.is_empty());
+    }
+
+    #[test]
+    fn cut_report_nonexistent_target() {
+        let (_tmp, entry) = test_project();
+        let mut session = Session::open(&entry, true).unwrap();
+        let report = session.cut_report("nonexistent-pkg", 10, false);
+        assert!(!report.found_in_graph);
+        assert_eq!(report.chain_count, 0);
+        assert!(!report.direct_import);
     }
 
     #[test]
