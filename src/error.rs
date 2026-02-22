@@ -38,6 +38,13 @@ pub enum Error {
     InvalidTopValue(&'static str, i32),
     /// Readline/REPL initialization failed.
     Readline(String),
+    /// --max-weight threshold exceeded.
+    MaxWeightExceeded {
+        kind: &'static str,
+        weight: u64,
+        module_count: usize,
+        threshold: u64,
+    },
 }
 
 impl Error {
@@ -113,6 +120,20 @@ impl std::fmt::Display for Error {
                 write!(f, "invalid value {n} for {flag}: must be -1 (all) or 0+")
             }
             Self::Readline(msg) => write!(f, "readline: {msg}"),
+            Self::MaxWeightExceeded {
+                kind,
+                weight,
+                module_count,
+                threshold,
+            } => {
+                let plural = if *module_count == 1 { "" } else { "s" };
+                write!(
+                    f,
+                    "{kind} transitive weight {} ({module_count} module{plural}) exceeds --max-weight threshold {}",
+                    crate::report::format_size(*weight),
+                    crate::report::format_size(*threshold),
+                )
+            }
         }
     }
 }

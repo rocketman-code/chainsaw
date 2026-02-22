@@ -335,7 +335,11 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         let saved = load_snapshot(snapshot_path)?;
         let diff = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
         let report = report::DiffReport::from_diff(&diff, &saved.entry, &entry_rel, args.limit);
-        print!("{}", report.to_terminal(color));
+        if args.json {
+            println!("{}", report.to_json());
+        } else {
+            print!("{}", report.to_terminal(color));
+        }
         return Ok(());
     }
 
@@ -368,19 +372,12 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         } else {
             "static"
         };
-        eprintln!(
-            "{} {kind} transitive weight {} ({} module{}) exceeds --max-weight threshold {}",
-            sc.error("error:"),
-            report::format_size(report.static_weight_bytes),
-            report.static_module_count,
-            if report.static_module_count == 1 {
-                ""
-            } else {
-                "s"
-            },
-            report::format_size(threshold),
-        );
-        std::process::exit(1);
+        return Err(Error::MaxWeightExceeded {
+            kind,
+            weight: report.static_weight_bytes,
+            module_count: report.static_module_count,
+            threshold,
+        });
     }
 
     if !args.quiet {
@@ -659,13 +656,17 @@ fn build_snapshot_from_ref(
 }
 
 /// Build a snapshot from the current working tree.
+///
+/// Uses `no_cache=true` to avoid polluting the disk cache — the "before"
+/// side of a diff may have written a reduced (git-tree-only) graph, and
+/// the working-tree snapshot must not read or overwrite that entry.
 fn build_snapshot_from_working_tree(
     entry: &Path,
     quiet: bool,
     sc: report::StderrColor,
 ) -> Result<query::TraceSnapshot, Error> {
     let start = Instant::now();
-    let (loaded, _cache_write) = loader::load_graph(entry, false)?;
+    let (loaded, _cache_write) = loader::load_graph(entry, true)?;
     if !quiet {
         print_build_status(&loaded, start, sc);
     }
