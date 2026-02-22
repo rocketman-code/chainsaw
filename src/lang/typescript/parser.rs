@@ -44,6 +44,12 @@ fn extract_all(source: &str, source_type: SourceType) -> ParseResult {
     extract_export_entries(&ret.module_record.star_export_entries, &mut positioned);
     extract_export_entries(&ret.module_record.indirect_export_entries, &mut positioned);
 
+    // --- Side-effect imports from requested_modules ---
+    // import_entries only contains imports with bindings (import { x } from "y").
+    // Side-effect imports (import "polyfill") appear only in requested_modules.
+    // Called after import/export entries so `positioned` already has their offsets.
+    extract_side_effect_imports(&ret.module_record, &mut positioned);
+
     // --- Dynamic imports from ModuleRecord ---
     for di in &ret.module_record.dynamic_imports {
         let start = di.module_request.start as usize;
@@ -128,6 +134,45 @@ fn extract_import_entries(
                 kind,
             },
         });
+    }
+}
+
+/// Pick up side-effect imports (`import "polyfill"`) that have no bindings and
+/// therefore no entry in `import_entries`. These appear in `requested_modules`
+/// but are excluded from import/export entry lists.
+///
+/// Must be called AFTER `extract_import_entries` and `extract_export_entries` so
+/// that `positioned` already contains offsets for all binding-bearing statements.
+fn extract_side_effect_imports(
+    record: &oxc_syntax::module_record::ModuleRecord<'_>,
+    positioned: &mut Vec<PositionedImport>,
+) {
+    // Fast path: if every requested_module occurrence is already covered by an
+    // import/export entry in `positioned`, there are no side-effect-only imports.
+    let total_requested: usize = record.requested_modules.values().map(|v| v.len()).sum();
+    if positioned.len() >= total_requested {
+        return;
+    }
+
+    for (specifier, occurrences) in &record.requested_modules {
+        for req in occurrences {
+            let offset = req.statement_span.start;
+            if positioned.iter().any(|p| p.offset == offset) {
+                continue;
+            }
+            let kind = if req.is_type {
+                EdgeKind::TypeOnly
+            } else {
+                EdgeKind::Static
+            };
+            positioned.push(PositionedImport {
+                offset,
+                import: RawImport {
+                    specifier: specifier.to_string(),
+                    kind,
+                },
+            });
+        }
     }
 }
 
@@ -628,5 +673,46 @@ mod tests {
         assert_eq!(result.imports.len(), 1);
         assert_eq!(result.imports[0].specifier, "./foo");
         assert_eq!(result.unresolvable_dynamic, 0);
+    }
+
+    // --- Side-effect imports (#171) ---
+
+    #[test]
+    fn side_effect_import() {
+        let imports = parse_ts(r#"import "./polyfill";"#);
+        assert_eq!(imports.len(), 1, "side-effect import should be extracted");
+        assert_eq!(imports[0].specifier, "./polyfill");
+        assert_eq!(imports[0].kind, EdgeKind::Static);
+    }
+
+    #[test]
+    fn side_effect_import_with_named() {
+        // Side-effect import alongside named import from a different module
+        let imports = parse_ts(
+            r#"
+            import "./setup";
+            import { foo } from "bar";
+            "#,
+        );
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].specifier, "./setup");
+        assert_eq!(imports[0].kind, EdgeKind::Static);
+        assert_eq!(imports[1].specifier, "bar");
+    }
+
+    #[test]
+    fn side_effect_import_not_duplicated() {
+        // If same module has both side-effect and named import, should produce one entry each
+        let imports = parse_ts(
+            r#"
+            import "./polyfill";
+            import { x } from "./polyfill";
+            "#,
+        );
+        assert_eq!(
+            imports.len(),
+            2,
+            "both import statements should produce entries"
+        );
     }
 }
