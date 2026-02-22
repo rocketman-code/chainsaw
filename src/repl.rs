@@ -48,6 +48,7 @@ pub struct CommandOptions {
     pub top: Option<i32>,
     pub top_modules: Option<i32>,
     pub ignore: Option<Vec<String>>,
+    pub json: bool,
 }
 
 impl CommandOptions {
@@ -69,16 +70,18 @@ impl CommandOptions {
 
 /// Extract known `--flag` tokens from an argument list.
 ///
-/// Returns `(CommandOptions, positional_arg)`. The positional argument is
-/// the first non-flag token that isn't consumed as a flag value. `--ignore`
-/// consumes all subsequent non-flag tokens until the next `--` flag or end
-/// of input, so it must appear after the positional arg or be the last flag.
-fn parse_flags(tokens: &[&str]) -> (CommandOptions, String) {
+/// Returns `Ok((CommandOptions, positional_arg))` or `Err(message)` if an
+/// unknown `--flag` is encountered. The positional argument is the first
+/// non-flag token that isn't consumed as a flag value. `--ignore` consumes
+/// all subsequent non-flag tokens until the next `--` flag or end of input,
+/// so it must appear after the positional arg or be the last flag.
+fn parse_flags(tokens: &[&str]) -> Result<(CommandOptions, String), String> {
     let mut opts = CommandOptions::default();
     let mut positional = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i] {
+            "--json" => opts.json = true,
             "--include-dynamic" => opts.include_dynamic = Some(true),
             "--no-include-dynamic" => opts.include_dynamic = Some(false),
             "--top" => {
@@ -109,11 +112,16 @@ fn parse_flags(tokens: &[&str]) -> (CommandOptions, String) {
                 }
                 continue; // i already advanced past consumed tokens
             }
+            other if other.starts_with("--") => {
+                return Err(format!(
+                    "unknown flag '{other}' (try: --json, --include-dynamic, --top, --top-modules, --ignore)"
+                ));
+            }
             other => positional.push(other),
         }
         i += 1;
     }
-    (opts, positional.join(" "))
+    Ok((opts, positional.join(" ")))
 }
 
 /// A parsed REPL command.
@@ -132,9 +140,9 @@ pub enum Command {
     /// List all third-party packages.
     Packages(CommandOptions),
     /// List direct imports of a file.
-    Imports(String),
+    Imports(String, CommandOptions),
     /// List files that import a given file.
-    Importers(String),
+    Importers(String, CommandOptions),
     /// Show package info by name.
     Info(String),
     /// Set a session option.
@@ -153,6 +161,7 @@ pub enum Command {
 
 impl Command {
     /// Parse a single line of user input into a command.
+    #[allow(clippy::too_many_lines)]
     pub fn parse(line: &str) -> Self {
         /// Extract a non-empty positional or return an error message.
         fn require_positional(positional: &str, msg: &str) -> Result<String, String> {
@@ -185,50 +194,68 @@ impl Command {
             .unwrap_or_default();
 
         match cmd {
-            "trace" => {
-                let (opts, positional) = parse_flags(&tokens);
-                let file = if positional.is_empty() {
-                    None
-                } else {
-                    Some(positional)
-                };
-                Self::Trace(file, opts)
-            }
-            "chain" => {
-                let (opts, positional) = parse_flags(&tokens);
-                match require_positional(&positional, "chain requires a target argument") {
-                    Ok(a) => Self::Chain(a, opts),
-                    Err(e) => Self::Unknown(e),
+            "trace" => match parse_flags(&tokens) {
+                Ok((opts, positional)) => {
+                    let file = if positional.is_empty() {
+                        None
+                    } else {
+                        Some(positional)
+                    };
+                    Self::Trace(file, opts)
                 }
-            }
-            "cut" => {
-                let (opts, positional) = parse_flags(&tokens);
-                match require_positional(&positional, "cut requires a target argument") {
-                    Ok(a) => Self::Cut(a, opts),
-                    Err(e) => Self::Unknown(e),
-                }
-            }
-            "diff" => {
-                let (opts, positional) = parse_flags(&tokens);
-                match require_positional(&positional, "diff requires a file argument") {
-                    Ok(a) => Self::Diff(a, opts),
-                    Err(e) => Self::Unknown(e),
-                }
-            }
-            "packages" => {
-                let (opts, _) = parse_flags(&tokens);
-                Self::Packages(opts)
-            }
+                Err(e) => Self::Unknown(e),
+            },
             "entry" => match require_arg(arg, "entry requires a file argument") {
                 Ok(a) => Self::Entry(a),
                 Err(e) => Self::Unknown(e),
             },
-            "imports" => match require_arg(arg, "imports requires a file argument") {
-                Ok(a) => Self::Imports(a),
+            "chain" => match parse_flags(&tokens) {
+                Ok((opts, positional)) => {
+                    match require_positional(&positional, "chain requires a target argument") {
+                        Ok(a) => Self::Chain(a, opts),
+                        Err(e) => Self::Unknown(e),
+                    }
+                }
                 Err(e) => Self::Unknown(e),
             },
-            "importers" => match require_arg(arg, "importers requires a file argument") {
-                Ok(a) => Self::Importers(a),
+            "cut" => match parse_flags(&tokens) {
+                Ok((opts, positional)) => {
+                    match require_positional(&positional, "cut requires a target argument") {
+                        Ok(a) => Self::Cut(a, opts),
+                        Err(e) => Self::Unknown(e),
+                    }
+                }
+                Err(e) => Self::Unknown(e),
+            },
+            "diff" => match parse_flags(&tokens) {
+                Ok((opts, positional)) => {
+                    match require_positional(&positional, "diff requires a file argument") {
+                        Ok(a) => Self::Diff(a, opts),
+                        Err(e) => Self::Unknown(e),
+                    }
+                }
+                Err(e) => Self::Unknown(e),
+            },
+            "packages" => match parse_flags(&tokens) {
+                Ok((opts, _)) => Self::Packages(opts),
+                Err(e) => Self::Unknown(e),
+            },
+            "imports" => match parse_flags(&tokens) {
+                Ok((opts, positional)) => {
+                    match require_positional(&positional, "imports requires a file argument") {
+                        Ok(a) => Self::Imports(a, opts),
+                        Err(e) => Self::Unknown(e),
+                    }
+                }
+                Err(e) => Self::Unknown(e),
+            },
+            "importers" => match parse_flags(&tokens) {
+                Ok((opts, positional)) => {
+                    match require_positional(&positional, "importers requires a file argument") {
+                        Ok(a) => Self::Importers(a, opts),
+                        Err(e) => Self::Unknown(e),
+                    }
+                }
                 Err(e) => Self::Unknown(e),
             },
             "info" => match require_arg(arg, "info requires a package name") {
@@ -496,8 +523,10 @@ pub fn run(entry: &Path, no_color: bool, sc: StderrColor) -> Result<(), Error> {
             Command::Packages(ref opts) => {
                 dispatch_packages(&session, opts, &settings, color);
             }
-            Command::Imports(path) => dispatch_imports(&session, &path, sc),
-            Command::Importers(path) => dispatch_importers(&session, &path, sc),
+            Command::Imports(path, ref opts) => dispatch_imports(&session, &path, opts, sc),
+            Command::Importers(path, ref opts) => {
+                dispatch_importers(&session, &path, opts, sc);
+            }
             Command::Info(name) => dispatch_info(&session, &name, sc),
             Command::Set(arg) => dispatch_set(&mut settings, &arg, sc),
             Command::Unset(arg) => dispatch_unset(&mut settings, &arg, sc),
@@ -547,7 +576,11 @@ fn dispatch_trace(
     } else {
         session.trace_report(&trace_opts, top_modules)
     };
-    print!("{}", report.to_terminal(color));
+    if opts.json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.to_terminal(color));
+    }
 }
 
 fn dispatch_entry(session: &mut Session, path: &str, sc: StderrColor) {
@@ -574,7 +607,11 @@ fn dispatch_chain(
     }
     let (trace_opts, _) = opts.resolve(settings);
     let report = session.chain_report(target, trace_opts.include_dynamic);
-    print!("{}", report.to_terminal(color));
+    if opts.json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.to_terminal(color));
+    }
 }
 
 fn dispatch_cut(
@@ -592,7 +629,11 @@ fn dispatch_cut(
     }
     let (trace_opts, _) = opts.resolve(settings);
     let report = session.cut_report(target, trace_opts.top_n, trace_opts.include_dynamic);
-    print!("{}", report.to_terminal(color));
+    if opts.json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.to_terminal(color));
+    }
 }
 
 fn dispatch_diff(
@@ -605,7 +646,13 @@ fn dispatch_diff(
 ) {
     let (trace_opts, _) = opts.resolve(settings);
     match session.diff_report(Path::new(path), &trace_opts, trace_opts.top_n) {
-        Ok(report) => print!("{}", report.to_terminal(color)),
+        Ok(report) => {
+            if opts.json {
+                println!("{}", report.to_json());
+            } else {
+                print!("{}", report.to_terminal(color));
+            }
+        }
         Err(e) => eprintln!("{} {e}", sc.error("error:")),
     }
 }
@@ -618,12 +665,33 @@ fn dispatch_packages(
 ) {
     let top = opts.top.unwrap_or(settings.top);
     let report = session.packages_report(top);
-    print!("{}", report.to_terminal(color));
+    if opts.json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.to_terminal(color));
+    }
 }
 
-fn dispatch_imports(session: &Session, path: &str, sc: StderrColor) {
+fn dispatch_imports(session: &Session, path: &str, opts: &CommandOptions, sc: StderrColor) {
     match session.imports(Path::new(path)) {
         Ok(imports) => {
+            if opts.json {
+                let entries: Vec<_> = imports
+                    .iter()
+                    .map(|(p, kind)| {
+                        serde_json::json!({
+                            "path": report::relative_path(p, session.root()),
+                            "kind": match kind {
+                                EdgeKind::Static => "static",
+                                EdgeKind::Dynamic => "dynamic",
+                                EdgeKind::TypeOnly => "type-only",
+                            }
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                return;
+            }
             if imports.is_empty() {
                 println!("  (no imports)");
                 return;
@@ -642,9 +710,26 @@ fn dispatch_imports(session: &Session, path: &str, sc: StderrColor) {
     }
 }
 
-fn dispatch_importers(session: &Session, path: &str, sc: StderrColor) {
+fn dispatch_importers(session: &Session, path: &str, opts: &CommandOptions, sc: StderrColor) {
     match session.importers(Path::new(path)) {
         Ok(importers) => {
+            if opts.json {
+                let entries: Vec<_> = importers
+                    .iter()
+                    .map(|(p, kind)| {
+                        serde_json::json!({
+                            "path": report::relative_path(p, session.root()),
+                            "kind": match kind {
+                                EdgeKind::Static => "static",
+                                EdgeKind::Dynamic => "dynamic",
+                                EdgeKind::TypeOnly => "type-only",
+                            }
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                return;
+            }
             if importers.is_empty() {
                 println!("  (no importers)");
                 return;
@@ -813,6 +898,7 @@ fn print_help() {
     println!("  quit               Exit");
     println!();
     println!("Inline flags (override session settings for one command):");
+    println!("  --json                      Output as JSON instead of terminal format");
     println!("  --include-dynamic / --no-include-dynamic    Include/exclude dynamic imports");
     println!("  --top N                     Limit heavy deps / packages shown");
     println!("  --top-modules N             Limit modules by exclusive weight");
@@ -999,14 +1085,14 @@ mod tests {
     #[test]
     fn parse_imports() {
         assert!(
-            matches!(Command::parse("imports src/foo.ts"), Command::Imports(ref f) if f == "src/foo.ts")
+            matches!(Command::parse("imports src/foo.ts"), Command::Imports(ref f, _) if f == "src/foo.ts")
         );
     }
 
     #[test]
     fn parse_importers() {
         assert!(
-            matches!(Command::parse("importers lib/bar.py"), Command::Importers(ref f) if f == "lib/bar.py")
+            matches!(Command::parse("importers lib/bar.py"), Command::Importers(ref f, _) if f == "lib/bar.py")
         );
     }
 
@@ -1087,6 +1173,7 @@ mod tests {
             top: Some(5),
             top_modules: Some(50),
             ignore: Some(vec!["zod".into()]),
+            json: false,
         };
         let (trace_opts, top_modules) = opts.resolve(&settings);
         assert!(trace_opts.include_dynamic);
@@ -1097,7 +1184,7 @@ mod tests {
 
     #[test]
     fn parse_flags_no_flags() {
-        let (opts, remaining) = parse_flags(&["src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["src/index.ts"]).unwrap();
         assert!(opts.include_dynamic.is_none());
         assert!(opts.top.is_none());
         assert_eq!(remaining, "src/index.ts");
@@ -1105,28 +1192,28 @@ mod tests {
 
     #[test]
     fn parse_flags_dynamic() {
-        let (opts, remaining) = parse_flags(&["--include-dynamic", "src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["--include-dynamic", "src/index.ts"]).unwrap();
         assert_eq!(opts.include_dynamic, Some(true));
         assert_eq!(remaining, "src/index.ts");
     }
 
     #[test]
     fn parse_flags_no_dynamic() {
-        let (opts, remaining) = parse_flags(&["--no-include-dynamic", "src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["--no-include-dynamic", "src/index.ts"]).unwrap();
         assert_eq!(opts.include_dynamic, Some(false));
         assert_eq!(remaining, "src/index.ts");
     }
 
     #[test]
     fn parse_flags_top() {
-        let (opts, remaining) = parse_flags(&["--top", "5", "src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["--top", "5", "src/index.ts"]).unwrap();
         assert_eq!(opts.top, Some(5));
         assert_eq!(remaining, "src/index.ts");
     }
 
     #[test]
     fn parse_flags_top_modules() {
-        let (opts, remaining) = parse_flags(&["--top-modules", "30", "src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["--top-modules", "30", "src/index.ts"]).unwrap();
         assert_eq!(opts.top_modules, Some(30));
         assert_eq!(remaining, "src/index.ts");
     }
@@ -1135,7 +1222,8 @@ mod tests {
     fn parse_flags_ignore() {
         // --ignore is greedy: consumes all non-flag tokens after it.
         // Users should put --ignore last or use `set ignore`.
-        let (opts, remaining) = parse_flags(&["src/index.ts", "--ignore", "zod", "lodash"]);
+        let (opts, remaining) =
+            parse_flags(&["src/index.ts", "--ignore", "zod", "lodash"]).unwrap();
         assert_eq!(opts.ignore, Some(vec!["zod".into(), "lodash".into()]));
         assert_eq!(remaining, "src/index.ts");
     }
@@ -1143,7 +1231,7 @@ mod tests {
     #[test]
     fn parse_flags_ignore_stops_at_next_flag() {
         let (opts, remaining) =
-            parse_flags(&["src/index.ts", "--ignore", "zod", "--include-dynamic"]);
+            parse_flags(&["src/index.ts", "--ignore", "zod", "--include-dynamic"]).unwrap();
         assert_eq!(opts.ignore, Some(vec!["zod".to_string()]));
         assert_eq!(opts.include_dynamic, Some(true));
         assert_eq!(remaining, "src/index.ts");
@@ -1151,7 +1239,7 @@ mod tests {
 
     #[test]
     fn parse_flags_multiple() {
-        let (opts, remaining) = parse_flags(&["--include-dynamic", "--top", "5", "zod"]);
+        let (opts, remaining) = parse_flags(&["--include-dynamic", "--top", "5", "zod"]).unwrap();
         assert_eq!(opts.include_dynamic, Some(true));
         assert_eq!(opts.top, Some(5));
         assert_eq!(remaining, "zod");
@@ -1159,21 +1247,21 @@ mod tests {
 
     #[test]
     fn parse_flags_empty() {
-        let (opts, remaining) = parse_flags(&[]);
+        let (opts, remaining) = parse_flags(&[]).unwrap();
         assert!(opts.include_dynamic.is_none());
         assert!(remaining.is_empty());
     }
 
     #[test]
     fn parse_flags_only_flags_no_positional() {
-        let (opts, remaining) = parse_flags(&["--include-dynamic"]);
+        let (opts, remaining) = parse_flags(&["--include-dynamic"]).unwrap();
         assert_eq!(opts.include_dynamic, Some(true));
         assert!(remaining.is_empty());
     }
 
     #[test]
     fn parse_flags_scoped_package_not_treated_as_flag() {
-        let (opts, remaining) = parse_flags(&["@scope/pkg"]);
+        let (opts, remaining) = parse_flags(&["@scope/pkg"]).unwrap();
         assert!(opts.include_dynamic.is_none());
         assert_eq!(remaining, "@scope/pkg");
     }
@@ -1182,40 +1270,53 @@ mod tests {
     fn parse_flags_top_non_numeric_preserves_positional() {
         // When --top is followed by a non-numeric token, the token should not
         // be consumed as the --top value — it stays as a positional arg.
-        let (opts, remaining) = parse_flags(&["--top", "src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["--top", "src/index.ts"]).unwrap();
         assert!(opts.top.is_none());
         assert_eq!(remaining, "src/index.ts");
     }
 
     #[test]
     fn parse_flags_top_modules_non_numeric_preserves_positional() {
-        let (opts, remaining) = parse_flags(&["--top-modules", "src/index.ts"]);
+        let (opts, remaining) = parse_flags(&["--top-modules", "src/index.ts"]).unwrap();
         assert!(opts.top_modules.is_none());
         assert_eq!(remaining, "src/index.ts");
     }
 
     #[test]
     fn parse_flags_top_rejects_negative_below_minus_one() {
-        let (opts, _) = parse_flags(&["--top", "-5", "src/index.ts"]);
+        let (opts, _) = parse_flags(&["--top", "-5", "src/index.ts"]).unwrap();
         assert!(opts.top.is_none());
     }
 
     #[test]
     fn parse_flags_top_accepts_negative_one() {
-        let (opts, _) = parse_flags(&["--top", "-1", "src/index.ts"]);
+        let (opts, _) = parse_flags(&["--top", "-1", "src/index.ts"]).unwrap();
         assert_eq!(opts.top, Some(-1));
     }
 
     #[test]
     fn parse_flags_top_modules_rejects_negative_below_minus_one() {
-        let (opts, _) = parse_flags(&["--top-modules", "-5", "src/index.ts"]);
+        let (opts, _) = parse_flags(&["--top-modules", "-5", "src/index.ts"]).unwrap();
         assert!(opts.top_modules.is_none());
     }
 
     #[test]
     fn parse_flags_top_modules_accepts_negative_one() {
-        let (opts, _) = parse_flags(&["--top-modules", "-1", "src/index.ts"]);
+        let (opts, _) = parse_flags(&["--top-modules", "-1", "src/index.ts"]).unwrap();
         assert_eq!(opts.top_modules, Some(-1));
+    }
+
+    #[test]
+    fn parse_flags_json() {
+        let (opts, remaining) = parse_flags(&["--json", "src/index.ts"]).unwrap();
+        assert!(opts.json);
+        assert_eq!(remaining, "src/index.ts");
+    }
+
+    #[test]
+    fn parse_flags_unknown_flag_returns_error() {
+        let err = parse_flags(&["--bogus", "src/index.ts"]).unwrap_err();
+        assert!(err.contains("unknown flag '--bogus'"));
     }
 
     #[test]
