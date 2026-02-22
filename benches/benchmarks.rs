@@ -416,13 +416,15 @@ fn register_benchmarks() -> Vec<Benchmark> {
     }
 
     // build_graph/ts_cold
+    // Fresh TypeScriptSupport per iteration so the resolver's internal
+    // per-path OnceLock cache starts cold — matching real CLI invocations.
     if ts_entry_path.exists() {
-        let lang = TypeScriptSupport::new(&ts);
         let root = ts.clone();
         let entry = ts_entry_path.clone();
         benches.push(Benchmark {
             name: "build_graph/ts_cold",
             run: Box::new(move || {
+                let lang = TypeScriptSupport::new(black_box(&root));
                 let mut cache = ParseCache::new();
                 chainsaw::walker::build_graph(
                     black_box(&entry),
@@ -437,12 +439,12 @@ fn register_benchmarks() -> Vec<Benchmark> {
 
     // build_graph/py_cold
     if py_entry_path.exists() {
-        let lang = PythonSupport::new(&py);
         let root = py.clone();
         let entry = py_entry_path.clone();
         benches.push(Benchmark {
             name: "build_graph/py_cold",
             run: Box::new(move || {
+                let lang = PythonSupport::new(black_box(&root));
                 let mut cache = ParseCache::new();
                 chainsaw::walker::build_graph(
                     black_box(&entry),
