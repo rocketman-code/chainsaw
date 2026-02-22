@@ -126,6 +126,21 @@ pub const COMMAND_NAMES: &[&str] = &[
 
 const MAX_COMPLETIONS: usize = 20;
 
+/// Binary-search a sorted slice for entries starting with `prefix`, returning
+/// up to `limit` matches.
+fn sorted_prefix_matches<'a>(sorted: &'a [String], prefix: &str, limit: usize) -> Vec<&'a str> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let start = sorted.partition_point(|s| s.as_str() < prefix);
+    sorted[start..]
+        .iter()
+        .take_while(|s| s.starts_with(prefix))
+        .take(limit)
+        .map(String::as_str)
+        .collect()
+}
+
 struct ChainsawHelper {
     file_paths: Vec<String>,
     package_names: Vec<String>,
@@ -146,7 +161,9 @@ impl ChainsawHelper {
             .iter()
             .map(|m| report::relative_path(&m.path, session.root()))
             .collect();
+        self.file_paths.sort_unstable();
         self.package_names = session.graph().package_map.keys().cloned().collect();
+        self.package_names.sort_unstable();
     }
 }
 
@@ -180,37 +197,34 @@ impl Completer for ChainsawHelper {
         let start = pos - partial.len();
 
         let matches: Vec<Pair> = match cmd {
-            "chain" | "cut" => self
-                .package_names
-                .iter()
-                .chain(self.file_paths.iter())
-                .filter(|c| c.starts_with(partial))
-                .take(MAX_COMPLETIONS)
+            "chain" | "cut" => {
+                let pkgs = sorted_prefix_matches(&self.package_names, partial, MAX_COMPLETIONS);
+                let remaining = MAX_COMPLETIONS - pkgs.len();
+                let files = sorted_prefix_matches(&self.file_paths, partial, remaining);
+                pkgs.into_iter()
+                    .chain(files)
+                    .map(|c| Pair {
+                        display: c.to_string(),
+                        replacement: c.to_string(),
+                    })
+                    .collect()
+            }
+            "info" => sorted_prefix_matches(&self.package_names, partial, MAX_COMPLETIONS)
+                .into_iter()
                 .map(|c| Pair {
-                    display: c.clone(),
-                    replacement: c.clone(),
+                    display: c.to_string(),
+                    replacement: c.to_string(),
                 })
                 .collect(),
-            "info" => self
-                .package_names
-                .iter()
-                .filter(|c| c.starts_with(partial))
-                .take(MAX_COMPLETIONS)
-                .map(|c| Pair {
-                    display: c.clone(),
-                    replacement: c.clone(),
-                })
-                .collect(),
-            "trace" | "entry" | "imports" | "importers" | "diff" => self
-                .file_paths
-                .iter()
-                .filter(|c| c.starts_with(partial))
-                .take(MAX_COMPLETIONS)
-                .map(|c| Pair {
-                    display: c.clone(),
-                    replacement: c.clone(),
-                })
-                .collect(),
+            "trace" | "entry" | "imports" | "importers" | "diff" => {
+                sorted_prefix_matches(&self.file_paths, partial, MAX_COMPLETIONS)
+                    .into_iter()
+                    .map(|c| Pair {
+                        display: c.to_string(),
+                        replacement: c.to_string(),
+                    })
+                    .collect()
+            }
             _ => return Ok((start, vec![])),
         };
 
@@ -469,6 +483,150 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // sorted_prefix_matches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prefix_empty_list() {
+        let empty: Vec<String> = vec![];
+        assert!(sorted_prefix_matches(&empty, "foo", 10).is_empty());
+    }
+
+    #[test]
+    fn prefix_no_matches() {
+        let list = vec!["alpha".into(), "beta".into(), "gamma".into()];
+        assert!(sorted_prefix_matches(&list, "delta", 10).is_empty());
+    }
+
+    #[test]
+    fn prefix_exact_match() {
+        let list = vec!["alpha".into(), "beta".into(), "gamma".into()];
+        assert_eq!(sorted_prefix_matches(&list, "beta", 10), vec!["beta"]);
+    }
+
+    #[test]
+    fn prefix_multiple_matches() {
+        let list = vec![
+            "src/a.ts".into(),
+            "src/b.ts".into(),
+            "src/c.ts".into(),
+            "test/d.ts".into(),
+        ];
+        assert_eq!(
+            sorted_prefix_matches(&list, "src/", 10),
+            vec!["src/a.ts", "src/b.ts", "src/c.ts"]
+        );
+    }
+
+    #[test]
+    fn prefix_respects_limit() {
+        let list = vec![
+            "src/a.ts".into(),
+            "src/b.ts".into(),
+            "src/c.ts".into(),
+            "src/d.ts".into(),
+        ];
+        assert_eq!(
+            sorted_prefix_matches(&list, "src/", 2),
+            vec!["src/a.ts", "src/b.ts"]
+        );
+    }
+
+    #[test]
+    fn prefix_empty_prefix_matches_all_up_to_limit() {
+        let list = vec!["a".into(), "b".into(), "c".into()];
+        assert_eq!(sorted_prefix_matches(&list, "", 2), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn prefix_zero_limit_returns_empty() {
+        let list = vec!["a".into(), "b".into()];
+        assert!(sorted_prefix_matches(&list, "", 0).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ChainsawHelper completion
+    // -----------------------------------------------------------------------
+
+    fn helper_with(files: Vec<&str>, packages: Vec<&str>) -> ChainsawHelper {
+        let mut file_paths: Vec<String> = files.into_iter().map(String::from).collect();
+        let mut package_names: Vec<String> = packages.into_iter().map(String::from).collect();
+        file_paths.sort_unstable();
+        package_names.sort_unstable();
+        ChainsawHelper {
+            file_paths,
+            package_names,
+        }
+    }
+
+    fn complete_line(helper: &ChainsawHelper, line: &str) -> Vec<String> {
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let (_, pairs) = helper.complete(line, line.len(), &ctx).unwrap();
+        pairs.into_iter().map(|p| p.replacement).collect()
+    }
+
+    #[test]
+    fn complete_command_names() {
+        let h = helper_with(vec![], vec![]);
+        let results = complete_line(&h, "tr");
+        assert_eq!(results, vec!["trace"]);
+    }
+
+    #[test]
+    fn complete_trace_file_paths() {
+        let h = helper_with(vec!["src/a.ts", "src/b.ts", "lib/c.ts"], vec![]);
+        let results = complete_line(&h, "trace src/");
+        assert_eq!(results, vec!["src/a.ts", "src/b.ts"]);
+    }
+
+    #[test]
+    fn complete_chain_packages_then_files() {
+        let h = helper_with(vec!["zod-utils.ts"], vec!["zod", "zustand"]);
+        let results = complete_line(&h, "chain z");
+        // packages first, then files
+        assert_eq!(results, vec!["zod", "zustand", "zod-utils.ts"]);
+    }
+
+    #[test]
+    fn complete_info_packages_only() {
+        let h = helper_with(vec!["src/react.ts"], vec!["react", "react-dom"]);
+        let results = complete_line(&h, "info react");
+        assert_eq!(results, vec!["react", "react-dom"]);
+    }
+
+    #[test]
+    fn complete_no_matches() {
+        let h = helper_with(vec!["src/a.ts"], vec!["zod"]);
+        let results = complete_line(&h, "trace zzz");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn complete_unknown_command_returns_empty() {
+        let h = helper_with(vec!["src/a.ts"], vec!["zod"]);
+        let results = complete_line(&h, "bogus src/");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn complete_max_completions_truncates() {
+        let files: Vec<&str> = (0..30)
+            .map(|i| {
+                // Leak is fine in tests — avoids lifetime gymnastics.
+                Box::leak(format!("src/{i:02}.ts").into_boxed_str()) as &str
+            })
+            .collect();
+        let h = helper_with(files, vec![]);
+        let results = complete_line(&h, "trace src/");
+        assert_eq!(results.len(), MAX_COMPLETIONS);
+    }
+
+    // -----------------------------------------------------------------------
+    // Command parsing
+    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_trace_no_arg() {
