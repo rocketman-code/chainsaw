@@ -26,6 +26,7 @@ pub mod query;
 pub mod repl;
 pub mod report;
 pub mod session;
+pub mod vfs;
 pub mod walker;
 
 /// Compile-time guard: all public types must be Send + Sync + Unpin.
@@ -56,12 +57,13 @@ mod auto_trait_tests {
         is_normal::<crate::lang::ParseResult>();
         is_normal::<crate::lang::ProjectKind>();
         is_normal::<crate::git::DiffArg>();
-        is_normal::<crate::git::TempWorktree>();
         is_normal::<crate::repl::Command>();
         is_normal::<crate::report::TraceReport>();
         is_normal::<crate::report::ChainReport>();
         is_normal::<crate::report::CutReport>();
         is_normal::<crate::report::DiffReport>();
         is_normal::<crate::report::PackagesReport>();
+        is_normal::<crate::vfs::VfsMetadata>();
+        is_normal::<crate::vfs::OsVfs>();
     }
 }
