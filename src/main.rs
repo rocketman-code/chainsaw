@@ -276,7 +276,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         return Err(Error::InvalidTopValue("--limit", args.limit));
     }
 
-    let session = Session::open(&args.entry, args.no_cache)?;
+    let mut session = Session::open(&args.entry, args.no_cache)?;
     if !args.quiet {
         print_session_status(&session, start, sc);
     }

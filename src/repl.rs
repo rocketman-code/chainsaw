@@ -317,11 +317,11 @@ pub fn run(entry: &Path, no_color: bool, sc: StderrColor) -> Result<(), Error> {
         rl.add_history_entry(trimmed).ok();
 
         match Command::parse(trimmed) {
-            Command::Trace(file) => dispatch_trace(&session, file.as_deref(), color, sc),
+            Command::Trace(file) => dispatch_trace(&mut session, file.as_deref(), color, sc),
             Command::Entry(path) => dispatch_entry(&mut session, &path, sc),
             Command::Chain(target) => dispatch_chain(&session, &target, color, sc),
-            Command::Cut(target) => dispatch_cut(&session, &target, color, sc),
-            Command::Diff(path) => dispatch_diff(&session, &path, color, sc),
+            Command::Cut(target) => dispatch_cut(&mut session, &target, color, sc),
+            Command::Diff(path) => dispatch_diff(&mut session, &path, color, sc),
             Command::Packages => dispatch_packages(&session, color),
             Command::Imports(path) => dispatch_imports(&session, &path, sc),
             Command::Importers(path) => dispatch_importers(&session, &path, sc),
@@ -351,7 +351,7 @@ fn history_file() -> Option<PathBuf> {
 // Command dispatch
 // ---------------------------------------------------------------------------
 
-fn dispatch_trace(session: &Session, file: Option<&str>, color: bool, sc: StderrColor) {
+fn dispatch_trace(session: &mut Session, file: Option<&str>, color: bool, sc: StderrColor) {
     let opts = query::TraceOptions::default();
     let report = if let Some(f) = file {
         match session.trace_from_report(Path::new(f), &opts, report::DEFAULT_TOP_MODULES) {
@@ -386,7 +386,7 @@ fn dispatch_chain(session: &Session, target: &str, color: bool, sc: StderrColor)
     print!("{}", report.to_terminal(color));
 }
 
-fn dispatch_cut(session: &Session, target: &str, color: bool, sc: StderrColor) {
+fn dispatch_cut(session: &mut Session, target: &str, color: bool, sc: StderrColor) {
     let resolved = session.resolve_target(target);
     if resolved.target == ChainTarget::Module(session.entry_id()) {
         eprintln!("{} target is the entry point itself", sc.error("error:"));
@@ -396,7 +396,7 @@ fn dispatch_cut(session: &Session, target: &str, color: bool, sc: StderrColor) {
     print!("{}", report.to_terminal(color));
 }
 
-fn dispatch_diff(session: &Session, path: &str, color: bool, sc: StderrColor) {
+fn dispatch_diff(session: &mut Session, path: &str, color: bool, sc: StderrColor) {
     let opts = query::TraceOptions::default();
     match session.diff_report(Path::new(path), &opts, report::DEFAULT_TOP) {
         Ok(report) => print!("{}", report.to_terminal(color)),
