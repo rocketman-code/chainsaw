@@ -29,16 +29,17 @@ Batch related changes, release when there's a meaningful set of user-facing chan
 ## Release Checklist
 
 1. All milestone issues closed
-2. `cargo test --workspace` passes
-3. `cargo clippy --workspace --all-targets -- -D warnings` clean
-4. `cargo publish --dry-run` clean
-5. Perf validation passes locally (`cargo xtask perf-validate`)
-6. Bump version in `Cargo.toml` + run `cargo generate-lockfile`
-7. Commit: `chore(cargo): bump version to 0.x.y`
-8. Tag: `git tag v0.x.y`
-9. Push: `git push && git push --tags`
-10. Publish: `cargo publish`
-11. Close the milestone on GitHub
+2. Update `CHANGELOG.md` with the new release entry
+3. `cargo test --workspace` passes
+4. `cargo clippy --workspace --all-targets -- -D warnings` clean
+5. `cargo publish --dry-run` clean
+6. Perf validation passes locally (`cargo xtask perf-validate`)
+7. Bump version in `Cargo.toml` + run `cargo generate-lockfile`
+8. Commit: `chore(cargo): bump version to 0.x.y`
+9. Tag: `git tag v0.x.y`
+10. Push: `git push && git push --tags`
+11. Publish: `cargo publish`
+12. Close the milestone on GitHub
 
 ## Git Tags
 
@@ -46,4 +47,5 @@ Format: `v0.x.y` (e.g., `v0.1.0`, `v0.2.0`, `v0.3.0`). Tag the version bump comm
 
 ## Changelog
 
-No CHANGELOG.md file. Commit messages use conventional commits. GitHub releases with auto-generated notes from tags are sufficient.
+`CHANGELOG.md` in the repo root, following [Keep a Changelog](https://keepachangelog.com/) format.
+Each release maps to a closed GitHub milestone. Update the changelog as part of the release checklist.
