@@ -119,7 +119,10 @@ fn concurrent_discover(
                             imports,
                             unresolvable_dynamic: result.unresolvable_dynamic,
                         };
-                        results.lock().unwrap().push(file_result);
+                        results
+                            .lock()
+                            .expect("results mutex not poisoned")
+                            .push(file_result);
 
                         if active.fetch_sub(1, Ordering::AcqRel) == 1 {
                             // This was the last active item; all work is done
@@ -139,7 +142,7 @@ fn concurrent_discover(
         }
     });
 
-    let mut files = results.into_inner().unwrap();
+    let mut files = results.into_inner().expect("results mutex not poisoned");
     files.par_sort_unstable_by(|a, b| a.path.cmp(&b.path));
     let warnings = std::iter::from_fn(|| warnings.pop()).collect();
     DiscoverResult { files, warnings }

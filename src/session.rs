@@ -201,7 +201,11 @@ impl Session {
             include_dynamic,
         );
         self.ensure_weights(include_dynamic);
-        let weights = &self.cached_weights.as_ref().unwrap().weights;
+        let weights = &self
+            .cached_weights
+            .as_ref()
+            .expect("ensure_weights populates cache")
+            .weights;
         let cuts = query::find_cut_modules(
             &self.graph,
             &chains,
@@ -233,7 +237,7 @@ impl Session {
         let snap_a = self
             .cached_trace
             .as_ref()
-            .unwrap()
+            .expect("ensure_trace populates cache")
             .result
             .to_snapshot(&self.entry_label());
         let snap_b = query::trace(&self.graph, other_id, opts)
@@ -448,7 +452,11 @@ impl Session {
     /// Trace and produce a display-ready report.
     pub fn trace_report(&mut self, opts: &TraceOptions, top_modules: i32) -> TraceReport {
         self.ensure_trace(opts);
-        let result = &self.cached_trace.as_ref().unwrap().result;
+        let result = &self
+            .cached_trace
+            .as_ref()
+            .expect("ensure_trace populates cache")
+            .result;
         build_trace_report(
             result,
             &self.entry,
