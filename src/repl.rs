@@ -689,7 +689,10 @@ fn dispatch_imports(session: &Session, path: &str, opts: &CommandOptions, sc: St
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries).expect("entries serialize to JSON")
+                );
                 return;
             }
             if imports.is_empty() {
@@ -727,7 +730,10 @@ fn dispatch_importers(session: &Session, path: &str, opts: &CommandOptions, sc: 
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries).expect("entries serialize to JSON")
+                );
                 return;
             }
             if importers.is_empty() {
