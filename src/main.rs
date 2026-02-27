@@ -1,6 +1,10 @@
 // compact_str 0.8 (oxc_span) + 0.9 (oxc_resolver) — transitive, out of our control.
 #![allow(clippy::multiple_crate_versions)]
 
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
