@@ -34,7 +34,7 @@ crossbeam-queue = "0.3"
 dashmap = "6"
 rustyline = "15"
 gix = { version = "0.79.0", default-features = false, features = ["max-performance-safe"] }
-notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify = "7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemallocator = "0.6"
