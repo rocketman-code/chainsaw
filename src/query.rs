@@ -568,7 +568,7 @@ fn all_shortest_chains(
             let mut capped = false;
 
             for path in &partial_paths {
-                let &head = path.last().unwrap();
+                let &head = path.last().expect("partial paths are non-empty");
                 if head == entry {
                     next_partial.push(path.clone());
                     continue;

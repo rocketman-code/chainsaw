@@ -485,7 +485,7 @@ fn save_snapshot(
     sc: report::StderrColor,
 ) -> Result<(), Error> {
     let snapshot = result.to_snapshot(entry_rel);
-    let data = serde_json::to_string_pretty(&snapshot).unwrap();
+    let data = serde_json::to_string_pretty(&snapshot).expect("snapshot serializes to JSON");
     std::fs::write(path, &data).map_err(|e| Error::SnapshotWrite(path.to_path_buf(), e))?;
     if !quiet {
         eprintln!("{} to {}", sc.status("Snapshot saved"), path.display());

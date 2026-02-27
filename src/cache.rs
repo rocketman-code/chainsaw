@@ -190,12 +190,13 @@ impl ParseCache {
         if data.len() < HEADER_SIZE {
             return Self::new();
         }
-        let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let magic = u32::from_le_bytes(data[0..4].try_into().expect("4-byte slice fits u32"));
+        let version = u32::from_le_bytes(data[4..8].try_into().expect("4-byte slice fits u32"));
         if magic != CACHE_MAGIC || version != CACHE_VERSION {
             return Self::new();
         }
-        let graph_len = u64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
+        let graph_len =
+            u64::from_le_bytes(data[8..16].try_into().expect("8-byte slice fits u64")) as usize;
         let graph_end = HEADER_SIZE + graph_len;
         if data.len() < graph_end {
             return Self::new();
@@ -288,7 +289,10 @@ impl ParseCache {
         }
 
         if changed_files.is_empty() {
-            let cached = self.cached_graph.take().unwrap();
+            let cached = self
+                .cached_graph
+                .take()
+                .expect("cached_graph populated by load");
             return GraphCacheResult::Hit {
                 graph: cached.graph,
                 unresolvable_dynamic: cached.unresolvable_dynamic,
@@ -299,7 +303,10 @@ impl ParseCache {
         }
 
         // Files changed — extract graph and preserve mtimes for incremental save
-        let cached = self.cached_graph.take().unwrap();
+        let cached = self
+            .cached_graph
+            .take()
+            .expect("cached_graph populated by load");
         self.stale_file_mtimes = Some(cached.file_mtimes);
         self.stale_unresolved = Some(cached.unresolved_specifiers);
         GraphCacheResult::Stale {
