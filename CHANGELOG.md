@@ -3,6 +3,20 @@
 All notable changes to chainsaw are documented here. Each release corresponds to a
 [milestone](https://github.com/rocketman-code/chainsaw/milestones?state=closed) on GitHub.
 
+## [0.4.1] - 2026-02-27
+
+Packaging fixes, Linux performance, cross-platform file watching.
+
+### Added
+
+- jemalloc as global allocator on Linux, reducing cold-build syscalls ~100x vs musl ([#178])
+
+### Fixed
+
+- REPL file watching silently degraded on Linux -- only macOS FSEvents backend was compiled ([#176])
+- `tempfile` crate shipped in production binary despite being test-only ([#176])
+- Bare `.unwrap()` calls in production code now document their invariants via `expect()` ([#176])
+
 ## [0.4.0] - 2026-02-22
 
 Structured output layer, REPL polish, file watching.
@@ -168,6 +182,7 @@ First publish. Dependency graph analysis for TypeScript/JavaScript and Python.
 - Python: C extension loader precedence matching CPython
 - `--chain`/`--cut` when target is the entry point itself ([#69])
 
+[0.4.1]: https://github.com/rocketman-code/chainsaw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rocketman-code/chainsaw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rocketman-code/chainsaw/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rocketman-code/chainsaw/compare/819d7f1...v0.2.0
@@ -266,3 +281,5 @@ First publish. Dependency graph analysis for TypeScript/JavaScript and Python.
 [#172]: https://github.com/rocketman-code/chainsaw/issues/172
 [#173]: https://github.com/rocketman-code/chainsaw/pull/173
 [#174]: https://github.com/rocketman-code/chainsaw/pull/174
+[#176]: https://github.com/rocketman-code/chainsaw/issues/176
+[#178]: https://github.com/rocketman-code/chainsaw/issues/178
