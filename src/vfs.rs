@@ -273,7 +273,7 @@ impl GitTreeVfs {
 
 fn resolve_ref_to_sha(repo_path: &Path, git_ref: &str) -> io::Result<String> {
     let output = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", git_ref])
+        .args(["rev-parse", "--verify", &format!("{git_ref}^{{commit}}")])
         .current_dir(repo_path)
         .output()
         .map_err(|e| io::Error::other(format!("git rev-parse: {e}")))?;
