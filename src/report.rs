@@ -361,6 +361,24 @@ pub struct PackageListEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Emit helper — centralizes --json dispatch
+// ---------------------------------------------------------------------------
+
+/// Emit a report to stdout, choosing JSON or terminal format.
+///
+/// Centralizes the `--json` / terminal dispatch so every CLI output path
+/// goes through a single function. New output paths that forget the json
+/// flag will be caught in code review: the pattern is always
+/// `report::emit(json, ...)` rather than ad-hoc if/else.
+pub fn emit(json: bool, json_fn: impl FnOnce() -> String, terminal_fn: impl FnOnce() -> String) {
+    if json {
+        println!("{}", json_fn());
+    } else {
+        print!("{}", terminal_fn());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Report rendering
 // ---------------------------------------------------------------------------
 

@@ -307,6 +307,57 @@ fn unsupported_file_type() {
         .stderr(predicate::str::contains("unsupported file type"));
 }
 
+// --- diff --json ---
+
+#[test]
+fn trace_diff_json() {
+    let p = common::TestProject::new();
+    let output = chainsaw()
+        .args(["trace", "--diff"])
+        .arg(p.root().join("b.ts"))
+        .args(["--json", "--no-cache"])
+        .arg(&p.entry)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(v["weight_delta"].is_number());
+    assert!(v["entry_a"].is_string());
+    assert!(v["entry_b"].is_string());
+}
+
+#[test]
+fn diff_snapshot_json() {
+    let p = common::TestProject::new();
+    // Save two snapshots from different entry points.
+    let snap_a = p.root().join("snap_a.json");
+    let snap_b = p.root().join("snap_b.json");
+    chainsaw()
+        .args(["trace", "--save", snap_a.to_str().unwrap(), "--no-cache"])
+        .arg(&p.entry)
+        .assert()
+        .success();
+    chainsaw()
+        .args(["trace", "--save", snap_b.to_str().unwrap(), "--no-cache"])
+        .arg(p.root().join("b.ts"))
+        .assert()
+        .success();
+    // diff subcommand with --json
+    let output = chainsaw()
+        .args([
+            "diff",
+            snap_a.to_str().unwrap(),
+            snap_b.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(v["weight_delta"].is_number());
+    assert!(v["entry_a"].is_string());
+}
+
 // --- quiet flag ---
 
 #[test]
