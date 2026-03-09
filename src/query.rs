@@ -724,7 +724,7 @@ impl TraceResult {
 #[non_exhaustive]
 pub struct DiffPackage {
     pub name: String,
-    pub size: u64,
+    pub total_size_bytes: u64,
 }
 
 /// Compute a diff between two trace snapshots.
@@ -754,19 +754,19 @@ pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
         .difference(&keys_b)
         .map(|&name| DiffPackage {
             name: name.to_string(),
-            size: a.packages[name],
+            total_size_bytes: a.packages[name],
         })
         .collect();
-    only_in_a.sort_by(|x, y| y.size.cmp(&x.size));
+    only_in_a.sort_by(|x, y| y.total_size_bytes.cmp(&x.total_size_bytes));
 
     let mut only_in_b: Vec<DiffPackage> = keys_b
         .difference(&keys_a)
         .map(|&name| DiffPackage {
             name: name.to_string(),
-            size: b.packages[name],
+            total_size_bytes: b.packages[name],
         })
         .collect();
-    only_in_b.sort_by(|x, y| y.size.cmp(&x.size));
+    only_in_b.sort_by(|x, y| y.total_size_bytes.cmp(&x.total_size_bytes));
 
     let dyn_keys_a: HashSet<&str> = a.dynamic_packages.keys().map(String::as_str).collect();
     let dyn_keys_b: HashSet<&str> = b.dynamic_packages.keys().map(String::as_str).collect();
@@ -775,19 +775,19 @@ pub fn diff_snapshots(a: &TraceSnapshot, b: &TraceSnapshot) -> DiffResult {
         .difference(&dyn_keys_b)
         .map(|&name| DiffPackage {
             name: name.to_string(),
-            size: a.dynamic_packages[name],
+            total_size_bytes: a.dynamic_packages[name],
         })
         .collect();
-    dynamic_only_in_a.sort_by(|x, y| y.size.cmp(&x.size));
+    dynamic_only_in_a.sort_by(|x, y| y.total_size_bytes.cmp(&x.total_size_bytes));
 
     let mut dynamic_only_in_b: Vec<DiffPackage> = dyn_keys_b
         .difference(&dyn_keys_a)
         .map(|&name| DiffPackage {
             name: name.to_string(),
-            size: b.dynamic_packages[name],
+            total_size_bytes: b.dynamic_packages[name],
         })
         .collect();
-    dynamic_only_in_b.sort_by(|x, y| y.size.cmp(&x.size));
+    dynamic_only_in_b.sort_by(|x, y| y.total_size_bytes.cmp(&x.total_size_bytes));
 
     DiffResult {
         entry_a_weight: a.static_weight,
@@ -1212,10 +1212,10 @@ mod tests {
         assert_eq!(diff.weight_delta, -200);
         assert_eq!(diff.only_in_a.len(), 1);
         assert_eq!(diff.only_in_a[0].name, "zod");
-        assert_eq!(diff.only_in_a[0].size, 500);
+        assert_eq!(diff.only_in_a[0].total_size_bytes, 500);
         assert_eq!(diff.only_in_b.len(), 1);
         assert_eq!(diff.only_in_b[0].name, "ajv");
-        assert_eq!(diff.only_in_b[0].size, 100);
+        assert_eq!(diff.only_in_b[0].total_size_bytes, 100);
         assert_eq!(diff.shared_count, 2);
     }
 
