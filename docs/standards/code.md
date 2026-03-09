@@ -4,7 +4,7 @@
 
 - Edition 2024
 - `#![warn(clippy::pedantic)]` with targeted `#[allow(...)]` where justified
-- Idiomatic Rust: prefer stdlib patterns (iterators, windows, if-let chains, Result propagation with `?`) over manual indexing, `process::exit` (except at the CLI boundary in `main.rs`), or hand-rolled logic
+- Idiomatic Rust: prefer stdlib patterns (iterators, windows, if-let chains, Result propagation with `?`) over manual indexing, `process::exit`, or hand-rolled logic
 - No bash scripts in the project: use `cargo xtask` for Rust logic, `Justfile` for external tool orchestration
 
 ## API Hygiene
