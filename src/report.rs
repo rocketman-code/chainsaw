@@ -343,7 +343,7 @@ pub struct DiffReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffPackageEntry {
     pub name: String,
-    pub size: u64,
+    pub total_size_bytes: u64,
 }
 
 /// Display-ready packages list. Produced by `Session::packages_report()`.
@@ -632,7 +632,7 @@ impl DiffReport {
                 .iter()
                 .map(|p| DiffPackageEntry {
                     name: p.name.clone(),
-                    size: p.size,
+                    total_size_bytes: p.total_size_bytes,
                 })
                 .collect(),
             only_in_b: diff
@@ -640,7 +640,7 @@ impl DiffReport {
                 .iter()
                 .map(|p| DiffPackageEntry {
                     name: p.name.clone(),
-                    size: p.size,
+                    total_size_bytes: p.total_size_bytes,
                 })
                 .collect(),
             dynamic_only_in_a: diff
@@ -648,7 +648,7 @@ impl DiffReport {
                 .iter()
                 .map(|p| DiffPackageEntry {
                     name: p.name.clone(),
-                    size: p.size,
+                    total_size_bytes: p.total_size_bytes,
                 })
                 .collect(),
             dynamic_only_in_b: diff
@@ -656,7 +656,7 @@ impl DiffReport {
                 .iter()
                 .map(|p| DiffPackageEntry {
                     name: p.name.clone(),
-                    size: p.size,
+                    total_size_bytes: p.total_size_bytes,
                 })
                 .collect(),
             limit,
@@ -729,7 +729,11 @@ impl DiffReport {
                 writeln!(
                     out,
                     "{}",
-                    c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size)))
+                    c.red(&format!(
+                        "  - {:<35} {}",
+                        pkg.name,
+                        format_size(pkg.total_size_bytes)
+                    ))
                 )
                 .unwrap();
             }
@@ -745,7 +749,11 @@ impl DiffReport {
                 writeln!(
                     out,
                     "{}",
-                    c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size)))
+                    c.green(&format!(
+                        "  + {:<35} {}",
+                        pkg.name,
+                        format_size(pkg.total_size_bytes)
+                    ))
                 )
                 .unwrap();
             }
@@ -767,7 +775,11 @@ impl DiffReport {
                 writeln!(
                     out,
                     "{}",
-                    c.red(&format!("  - {:<35} {}", pkg.name, format_size(pkg.size)))
+                    c.red(&format!(
+                        "  - {:<35} {}",
+                        pkg.name,
+                        format_size(pkg.total_size_bytes)
+                    ))
                 )
                 .unwrap();
             }
@@ -788,7 +800,11 @@ impl DiffReport {
                 writeln!(
                     out,
                     "{}",
-                    c.green(&format!("  + {:<35} {}", pkg.name, format_size(pkg.size)))
+                    c.green(&format!(
+                        "  + {:<35} {}",
+                        pkg.name,
+                        format_size(pkg.total_size_bytes)
+                    ))
                 )
                 .unwrap();
             }
@@ -1019,6 +1035,33 @@ mod tests {
         assert!(json["weight_delta"].is_number());
         // limit should not appear in JSON (serde skip)
         assert!(json.get("limit").is_none());
+    }
+
+    #[test]
+    fn diff_report_json_package_fields() {
+        let report = DiffReport {
+            entry_a: "a.ts".into(),
+            entry_b: "b.ts".into(),
+            weight_a: 1000,
+            weight_b: 800,
+            weight_delta: -200,
+            dynamic_weight_a: 0,
+            dynamic_weight_b: 0,
+            dynamic_weight_delta: 0,
+            shared_count: 0,
+            only_in_a: vec![DiffPackageEntry {
+                name: "zod".into(),
+                total_size_bytes: 500,
+            }],
+            only_in_b: vec![],
+            dynamic_only_in_a: vec![],
+            dynamic_only_in_b: vec![],
+            limit: 10,
+        };
+        let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        assert_eq!(json["only_in_a"][0]["name"], "zod");
+        assert_eq!(json["only_in_a"][0]["total_size_bytes"], 500);
+        assert!(json["only_in_a"][0].get("size").is_none());
     }
 
     #[test]
