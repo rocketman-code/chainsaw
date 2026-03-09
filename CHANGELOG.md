@@ -3,6 +3,27 @@
 All notable changes to chainsaw are documented here. Each release corresponds to a
 [milestone](https://github.com/rocketman-code/chainsaw/milestones?state=closed) on GitHub.
 
+## [0.4.2] - 2026-03-08
+
+CLI polish and JSON output consistency.
+
+### Added
+
+- Animated demo GIF in README hero position ([#184])
+- `report::emit()` helper centralizing JSON/terminal output dispatch across all CLI paths ([#187])
+- `--json` flag on `diff` subcommand ([#187])
+- Structural regression test preventing `process::exit` reintroduction ([#186])
+
+### Fixed
+
+- `DiffPackageEntry` JSON field `size` renamed to `total_size_bytes` to match `PackageEntry` and `PackageListEntry` conventions ([#185])
+- `trace --diff` and `diff` subcommand silently ignored `--json` flag ([#187])
+- `process::exit` in `--chain`/`--cut` paths bypassed `Drop`, risking cache file corruption -- replaced with `ExitCode` returns ([#186])
+
+### Changed
+
+- Code standard updated: `process::exit` no longer permitted even at CLI boundary ([#186])
+
 ## [0.4.1] - 2026-02-27
 
 Packaging fixes, Linux performance, cross-platform file watching.
@@ -182,6 +203,7 @@ First publish. Dependency graph analysis for TypeScript/JavaScript and Python.
 - Python: C extension loader precedence matching CPython
 - `--chain`/`--cut` when target is the entry point itself ([#69])
 
+[0.4.2]: https://github.com/rocketman-code/chainsaw/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/rocketman-code/chainsaw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rocketman-code/chainsaw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rocketman-code/chainsaw/compare/v0.2.0...v0.3.0
@@ -282,4 +304,8 @@ First publish. Dependency graph analysis for TypeScript/JavaScript and Python.
 [#173]: https://github.com/rocketman-code/chainsaw/pull/173
 [#174]: https://github.com/rocketman-code/chainsaw/pull/174
 [#176]: https://github.com/rocketman-code/chainsaw/issues/176
+[#184]: https://github.com/rocketman-code/chainsaw/pull/184
+[#185]: https://github.com/rocketman-code/chainsaw/pull/185
+[#186]: https://github.com/rocketman-code/chainsaw/pull/186
+[#187]: https://github.com/rocketman-code/chainsaw/pull/187
 [#178]: https://github.com/rocketman-code/chainsaw/issues/178
