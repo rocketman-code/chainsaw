@@ -2,37 +2,17 @@
 
 Trace the transitive import weight of any TypeScript or Python entry point. Point it at a file, get back what gets pulled in at startup and how much code it costs.
 
-```
-$ chainsaw trace src/index.ts
-
-src/index.ts
-Static transitive weight: 8.2 MB (2140 modules)
-Dynamic-only weight: 120 KB (34 modules, not loaded at startup)
-
-Heavy dependencies (static):
-  undici                              1.1 MB  108 files
-    -> src/index.ts -> src/http/client.ts -> undici
-  date-fns                            619 KB  304 files
-    -> src/index.ts -> src/jobs/scheduler.ts -> date-fns
-  zod                                 537 KB  76 files
-    -> src/index.ts -> src/api/routes.ts -> src/api/validation.ts -> zod
-
-Modules (sorted by exclusive weight):
-  src/generated/api-types.ts                                412 KB
-  src/i18n/locales.ts                                       238 KB
-  src/api/routes.ts                                         127 KB
-  ...
-```
+![chainsaw demo](docs/demo.gif)
 
 Only static imports count toward the weight. Dynamic `import()` and type-only imports are tracked separately.
 
 ## Install
 
-Requires Rust 1.91+:
-
 ```
 cargo install chainsaw-cli
 ```
+
+Requires Rust 1.91+.
 
 ## Usage
 
