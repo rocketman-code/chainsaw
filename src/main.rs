@@ -7,6 +7,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -197,7 +198,7 @@ fn resolve_color(no_color: bool) -> bool {
 /// cold builds and 21% faster on cached builds, with 2x less total kernel time.
 const MAX_WALKER_THREADS: usize = 8;
 
-fn main() {
+fn main() -> ExitCode {
     let cpus = std::thread::available_parallelism()
         .map(std::num::NonZero::get)
         .unwrap_or(1);
@@ -211,16 +212,19 @@ fn main() {
     let no_color = cli.no_color;
     let sc = report::StderrColor::new(no_color);
 
-    if let Err(e) = run(cli.command, no_color, sc) {
-        eprintln!("{} {e}", sc.error("error:"));
-        if let Some(hint) = e.hint() {
-            eprintln!("hint: {hint}");
+    match run(cli.command, no_color, sc) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{} {e}", sc.error("error:"));
+            if let Some(hint) = e.hint() {
+                eprintln!("hint: {hint}");
+            }
+            ExitCode::FAILURE
         }
-        std::process::exit(1);
     }
 }
 
-fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(), Error> {
+fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<ExitCode, Error> {
     let color = resolve_color(no_color);
     match command {
         Commands::Trace(args) => run_trace(args, color, sc),
@@ -231,11 +235,11 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
             entry,
             limit,
             quiet,
-        } => run_diff(a, b, entry, limit, quiet, color, sc),
+        } => run_diff(a, b, entry, limit, quiet, color, sc).map(|()| ExitCode::SUCCESS),
 
-        Commands::Packages(ref args) => run_packages(args, color, sc),
+        Commands::Packages(ref args) => run_packages(args, color, sc).map(|()| ExitCode::SUCCESS),
 
-        Commands::Repl { ref entry } => repl::run(entry, no_color, sc),
+        Commands::Repl { ref entry } => repl::run(entry, no_color, sc).map(|()| ExitCode::SUCCESS),
 
         Commands::Completions { shell } => {
             clap_complete::generate(
@@ -244,7 +248,7 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
                 "chainsaw",
                 &mut std::io::stdout(),
             );
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
@@ -253,7 +257,7 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<(),
 // trace subcommand
 // ---------------------------------------------------------------------------
 
-fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<(), Error> {
+fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<ExitCode, Error> {
     let start = Instant::now();
 
     // Validate mutually exclusive flags before loading graph
@@ -311,9 +315,9 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
             print!("{}", report.to_terminal(color));
         }
         if report.chains.is_empty() {
-            std::process::exit(1);
+            return Ok(ExitCode::FAILURE);
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     // --cut
@@ -329,9 +333,9 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
             print!("{}", report.to_terminal(color));
         }
         if report.chain_count == 0 {
-            std::process::exit(1);
+            return Ok(ExitCode::FAILURE);
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     // --diff-from
@@ -344,12 +348,12 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         } else {
             print!("{}", report.to_terminal(color));
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     // --diff
     if let Some(ref diff_path) = args.diff {
-        return handle_trace_diff(
+        handle_trace_diff(
             &session,
             diff_path,
             &result,
@@ -359,7 +363,8 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
             args.limit,
             color,
             sc,
-        );
+        )?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     // Normal trace output
@@ -392,7 +397,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<()
         );
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Handle `trace --diff <file>` by comparing two entry points.
@@ -726,6 +731,32 @@ mod tests {
         assert!(
             msg.contains("--limit"),
             "expected flag name in error: {msg}"
+        );
+    }
+
+    /// Guard against process::exit in production code. process::exit bypasses
+    /// Drop, which skips joining the cache-write background thread and can
+    /// corrupt the on-disk cache. All exit codes flow through ExitCode instead.
+    #[test]
+    fn no_process_exit_in_production_code() {
+        let source = include_str!("main.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let violations: Vec<_> = production
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let t = line.trim();
+                !t.starts_with("//") && t.contains("process::exit")
+            })
+            .collect();
+        assert!(
+            violations.is_empty(),
+            "process::exit in production code (use ExitCode instead):\n{}",
+            violations
+                .iter()
+                .map(|(i, line)| format!("  line {}: {}", i + 1, line.trim()))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 }
