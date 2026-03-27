@@ -194,12 +194,19 @@ fn trace_diff_from_json() {
 fn trace_max_weight_exceeded() {
     let p = common::TestProject::new();
     // Threshold of 1 byte -- guaranteed to exceed
-    chainsaw()
+    let output = chainsaw()
         .args(["trace", "--max-weight", "1", "--no-cache"])
         .arg(&p.entry)
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("exceeds --max-weight"));
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The error must appear exactly once (not duplicated by both eprintln and main handler).
+    let count = stderr.matches("exceeds --max-weight").count();
+    assert_eq!(
+        count, 1,
+        "expected error to appear exactly once, got {count}; stderr:\n{stderr}"
+    );
 }
 
 #[test]
