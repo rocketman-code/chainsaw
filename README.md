@@ -156,4 +156,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ## License
 
-MIT
+GPLv3. See [LICENSE](LICENSE).
