@@ -60,6 +60,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
+        /// JSON output schema version (pin this in CI scripts)
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=2))]
+        format_version: Option<u8>,
+
         /// Max packages to show in diff output (-1 for all)
         #[arg(long, default_value_t = report::DEFAULT_TOP, allow_hyphen_values = true)]
         limit: i32,
@@ -127,6 +131,10 @@ struct TraceArgs {
     #[arg(long)]
     json: bool,
 
+    /// JSON output schema version (pin this in CI scripts)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=2))]
+    format_version: Option<u8>,
+
     /// Force full re-parse, ignoring cache
     #[arg(long)]
     no_cache: bool,
@@ -156,6 +164,10 @@ struct PackagesArgs {
     /// Output machine-readable JSON
     #[arg(long)]
     json: bool,
+
+    /// JSON output schema version (pin this in CI scripts)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=2))]
+    format_version: Option<u8>,
 
     /// Force full re-parse, ignoring cache
     #[arg(long)]
@@ -192,6 +204,28 @@ fn resolve_color(no_color: bool) -> bool {
         std::env::var_os("NO_COLOR").is_some(),
         std::env::var("TERM").is_ok_and(|v| v == "dumb"),
     )
+}
+
+fn resolve_format_version(
+    flag: Option<u8>,
+    json: bool,
+    sc: report::StderrColor,
+) -> report::FormatVersion {
+    if !json {
+        return report::FormatVersion::V2;
+    }
+    match flag {
+        Some(1) => report::FormatVersion::V1,
+        Some(_) => report::FormatVersion::V2,
+        None => {
+            eprintln!(
+                "{} --format-version not specified, defaulting to 2. \
+                 Pin --format-version 2 in scripts to avoid future breaks.",
+                sc.warning("warning:"),
+            );
+            report::FormatVersion::V2
+        }
+    }
 }
 
 /// Cap the rayon thread pool to avoid VFS lock contention in the kernel.
@@ -238,9 +272,13 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<Exi
             b,
             entry,
             json,
+            format_version,
             limit,
             quiet,
-        } => run_diff(a, b, entry, json, limit, quiet, color, sc).map(|()| ExitCode::SUCCESS),
+        } => {
+            let fv = resolve_format_version(format_version, json, sc);
+            run_diff(a, b, entry, json, fv, limit, quiet, color, sc).map(|()| ExitCode::SUCCESS)
+        }
 
         Commands::Packages(ref args) => run_packages(args, color, sc).map(|()| ExitCode::SUCCESS),
 
@@ -264,6 +302,7 @@ fn run(command: Commands, no_color: bool, sc: report::StderrColor) -> Result<Exi
 
 fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<ExitCode, Error> {
     let start = Instant::now();
+    let fv = resolve_format_version(args.format_version, args.json, sc);
 
     // Validate mutually exclusive flags before loading graph
     let query_flags: Vec<&str> = [
@@ -314,7 +353,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
             return Err(Error::TargetIsEntryPoint("--chain".into()));
         }
         let report = session.chain_report(chain_arg, args.include_dynamic);
-        report::emit(args.json, || report.to_json(), || report.to_terminal(color));
+        report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
         if report.chains.is_empty() {
             return Ok(ExitCode::FAILURE);
         }
@@ -328,7 +367,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
             return Err(Error::TargetIsEntryPoint("--cut".into()));
         }
         let report = session.cut_report(cut_arg, args.top, args.include_dynamic);
-        report::emit(args.json, || report.to_json(), || report.to_terminal(color));
+        report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
         if report.chain_count == 0 {
             return Ok(ExitCode::FAILURE);
         }
@@ -340,7 +379,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
         let saved = load_snapshot(snapshot_path)?;
         let diff = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
         let report = report::DiffReport::from_diff(&diff, &saved.entry, &entry_rel, args.limit);
-        report::emit(args.json, || report.to_json(), || report.to_terminal(color));
+        report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -355,6 +394,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
             args.no_cache,
             args.limit,
             args.json,
+            fv,
             color,
             sc,
         )?;
@@ -363,7 +403,7 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
 
     // Normal trace output
     let report = session.trace_report(&opts, args.top_modules);
-    report::emit(args.json, || report.to_json(), || report.to_terminal(color));
+    report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
 
     if let Some(threshold) = args.max_weight.filter(|&t| report.static_weight_bytes > t) {
         let kind = if args.include_dynamic {
@@ -401,6 +441,7 @@ fn handle_trace_diff(
     no_cache: bool,
     limit: i32,
     json: bool,
+    fv: report::FormatVersion,
     color: bool,
     sc: report::StderrColor,
 ) -> Result<(), Error> {
@@ -429,7 +470,7 @@ fn handle_trace_diff(
     let diff_output = query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
     let report =
         report::DiffReport::from_diff(&diff_output, entry_rel, &diff_snapshot.entry, limit);
-    report::emit(json, || report.to_json(), || report.to_terminal(color));
+    report::emit(json, || report.to_json_versioned(fv), || report.to_terminal(color));
     Ok(())
 }
 
@@ -454,6 +495,7 @@ fn run_packages(args: &PackagesArgs, color: bool, sc: report::StderrColor) -> Re
     if args.top < -1 {
         return Err(Error::InvalidTopValue("--top", args.top));
     }
+    let fv = resolve_format_version(args.format_version, args.json, sc);
     let start = Instant::now();
     let session = Session::open(&args.entry, args.no_cache)?;
     if !args.quiet {
@@ -461,7 +503,7 @@ fn run_packages(args: &PackagesArgs, color: bool, sc: report::StderrColor) -> Re
     }
 
     let report = session.packages_report(args.top);
-    report::emit(args.json, || report.to_json(), || report.to_terminal(color));
+    report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
     Ok(())
 }
 
@@ -514,6 +556,7 @@ fn run_diff(
     b: Option<String>,
     entry: Option<PathBuf>,
     json: bool,
+    fv: report::FormatVersion,
     limit: i32,
     quiet: bool,
     color: bool,
@@ -556,13 +599,13 @@ fn run_diff(
             let wt_snap = build_snapshot_from_working_tree(entry_path, quiet, sc)?;
             let wt_label = wt_snap.entry.clone();
             return finish_diff(
-                &snap_a, &label_a, &wt_snap, &wt_label, json, limit, color, start, quiet, sc,
+                &snap_a, &label_a, &wt_snap, &wt_label, json, fv, limit, color, start, quiet, sc,
             );
         }
     };
 
     finish_diff(
-        &snap_a, &label_a, &snap_b, &label_b, json, limit, color, start, quiet, sc,
+        &snap_a, &label_a, &snap_b, &label_b, json, fv, limit, color, start, quiet, sc,
     )
 }
 
@@ -573,6 +616,7 @@ fn finish_diff(
     snap_b: &query::TraceSnapshot,
     label_b: &str,
     json: bool,
+    fv: report::FormatVersion,
     limit: i32,
     color: bool,
     start: Instant,
@@ -581,7 +625,7 @@ fn finish_diff(
 ) -> Result<(), Error> {
     let diff_output = query::diff_snapshots(snap_a, snap_b);
     let report = report::DiffReport::from_diff(&diff_output, label_a, label_b, limit);
-    report::emit(json, || report.to_json(), || report.to_terminal(color));
+    report::emit(json, || report.to_json_versioned(fv), || report.to_terminal(color));
     if !quiet {
         eprintln!(
             "\n{} in {:.1}ms",
