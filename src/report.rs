@@ -7,8 +7,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::graph::{ModuleGraph, ModuleId};
-use crate::query::DiffResult;
+use crate::graph::{EdgeKind, ModuleGraph, ModuleId};
+use crate::query::{AnnotatedChain, ChainClassification, DiffResult};
 
 /// Default number of heavy dependencies to display.
 pub const DEFAULT_TOP: i32 = 10;
@@ -253,6 +253,28 @@ pub(crate) fn chain_display_names(
         .collect()
 }
 
+pub(crate) fn annotated_chain_display(
+    graph: &ModuleGraph,
+    chain: &AnnotatedChain,
+    root: &Path,
+) -> AnnotatedChainReport {
+    let names = chain_display_names(graph, chain.modules(), root);
+    let edge_kinds: Vec<String> = chain
+        .edge_kinds()
+        .iter()
+        .map(|k| match k {
+            EdgeKind::Static => "static".into(),
+            EdgeKind::Dynamic => "dynamic".into(),
+            _ => unreachable!("only Static and Dynamic edges appear in chains"),
+        })
+        .collect();
+    AnnotatedChainReport {
+        modules: names,
+        edge_kinds,
+        classification: chain.classify(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Structured report types
 // ---------------------------------------------------------------------------
@@ -283,12 +305,22 @@ pub struct PackageEntry {
     pub total_size_bytes: u64,
     pub file_count: u32,
     pub chain: Vec<String>,
+    pub edge_kinds: Vec<String>,
+    pub classification: ChainClassification,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModuleEntry {
     pub path: String,
     pub exclusive_size_bytes: u64,
+}
+
+/// A single annotated chain for display.
+#[derive(Debug, Clone, Serialize)]
+pub struct AnnotatedChainReport {
+    pub modules: Vec<String>,
+    pub edge_kinds: Vec<String>,
+    pub classification: ChainClassification,
 }
 
 /// Display-ready chain result. Produced by `Session::chain_report()`.
@@ -298,7 +330,7 @@ pub struct ChainReport {
     pub found_in_graph: bool,
     pub chain_count: usize,
     pub hop_count: usize,
-    pub chains: Vec<Vec<String>>,
+    pub chains: Vec<AnnotatedChainReport>,
 }
 
 /// Display-ready cut result. Produced by `Session::cut_report()`.
@@ -449,7 +481,12 @@ impl TraceReport {
                     )
                     .unwrap();
                     if pkg.chain.len() > 1 {
-                        writeln!(out, "    -> {}", pkg.chain.join(" -> ")).unwrap();
+                        let mut chain_str = pkg.chain[0].clone();
+                        for (j, module) in pkg.chain.iter().skip(1).enumerate() {
+                            let kind = pkg.edge_kinds.get(j).map_or("static", String::as_str);
+                            write!(chain_str, " -[{kind}]-> {module}").unwrap();
+                        }
+                        writeln!(out, "    -> {chain_str}").unwrap();
                     }
                 }
             }
@@ -529,7 +566,27 @@ impl ChainReport {
         )
         .unwrap();
         for (i, chain) in self.chains.iter().enumerate() {
-            writeln!(out, "  {}. {}", i + 1, chain.join(" -> ")).unwrap();
+            let mut line = format!("  {}. {}", i + 1, chain.modules[0]);
+            for (j, module) in chain.modules.iter().skip(1).enumerate() {
+                let kind = &chain.edge_kinds[j];
+                write!(line, " -[{kind}]-> {module}").unwrap();
+            }
+            writeln!(out, "{line}").unwrap();
+
+            let summary = match chain.classification {
+                ChainClassification::AllStatic => "all static".to_string(),
+                ChainClassification::AllDynamic => "all dynamic".to_string(),
+                ChainClassification::Mixed {
+                    first_dynamic_hop: 0,
+                } => "dynamic from entry".to_string(),
+                ChainClassification::Mixed { first_dynamic_hop } => {
+                    format!(
+                        "static until {}, then dynamic",
+                        chain.modules[first_dynamic_hop]
+                    )
+                }
+            };
+            writeln!(out, "     {}", c.dim(&summary)).unwrap();
         }
 
         out
@@ -975,6 +1032,8 @@ mod tests {
                 total_size_bytes: 500,
                 file_count: 3,
                 chain: vec!["src/index.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into()],
+                classification: ChainClassification::AllStatic,
             }],
             modules_by_cost: vec![ModuleEntry {
                 path: "src/utils.ts".into(),
@@ -988,6 +1047,11 @@ mod tests {
         assert!(json["entry"].is_string());
         assert!(json["static_weight_bytes"].is_number());
         assert!(json["heavy_packages"][0]["total_size_bytes"].is_number());
+        assert!(json["heavy_packages"][0]["edge_kinds"].is_array());
+        assert_eq!(
+            json["heavy_packages"][0]["classification"]["type"],
+            "all_static"
+        );
         assert!(json["modules_by_cost"][0]["exclusive_size_bytes"].is_number());
         assert_eq!(json["total_modules_with_cost"], 10);
         // include_dynamic should not appear in JSON (serde skip)
@@ -1001,16 +1065,39 @@ mod tests {
             found_in_graph: true,
             chain_count: 1,
             hop_count: 2,
-            chains: vec![vec![
-                "src/index.ts".into(),
-                "src/lib.ts".into(),
-                "zod".into(),
-            ]],
+            chains: vec![AnnotatedChainReport {
+                modules: vec!["src/index.ts".into(), "src/lib.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into(), "static".into()],
+                classification: ChainClassification::AllStatic,
+            }],
         };
         let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
         assert!(json["target"].is_string());
         assert!(json["found_in_graph"].is_boolean());
-        assert!(json["chains"][0].is_array());
+        assert_eq!(json["chains"][0]["modules"][0], "src/index.ts");
+        assert_eq!(json["chains"][0]["edge_kinds"][0], "static");
+        assert_eq!(json["chains"][0]["classification"]["type"], "all_static");
+    }
+
+    #[test]
+    fn chain_report_mixed_classification_json() {
+        let report = ChainReport {
+            target: "zod".into(),
+            found_in_graph: true,
+            chain_count: 1,
+            hop_count: 2,
+            chains: vec![AnnotatedChainReport {
+                modules: vec!["src/index.ts".into(), "src/lazy.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into(), "dynamic".into()],
+                classification: ChainClassification::Mixed {
+                    first_dynamic_hop: 1,
+                },
+            }],
+        };
+        let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        let cls = &json["chains"][0]["classification"];
+        assert_eq!(cls["type"], "mixed");
+        assert_eq!(cls["first_dynamic_hop"], 1);
     }
 
     #[test]
@@ -1180,5 +1267,44 @@ mod tests {
         assert_eq!(report.weight_delta, -200);
         assert_eq!(report.only_in_a.len(), 1);
         assert_eq!(report.only_in_a[0].name, "zod");
+    }
+
+    #[test]
+    fn chain_terminal_shows_edge_kinds() {
+        let report = ChainReport {
+            target: "zod".into(),
+            found_in_graph: true,
+            chain_count: 1,
+            hop_count: 2,
+            chains: vec![AnnotatedChainReport {
+                modules: vec!["src/index.ts".into(), "src/lib.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into(), "static".into()],
+                classification: ChainClassification::AllStatic,
+            }],
+        };
+        let output = report.to_terminal(false);
+        assert!(output.contains("[static]"));
+        assert!(output.contains("all static"));
+    }
+
+    #[test]
+    fn chain_terminal_mixed_classification() {
+        let report = ChainReport {
+            target: "zod".into(),
+            found_in_graph: true,
+            chain_count: 1,
+            hop_count: 2,
+            chains: vec![AnnotatedChainReport {
+                modules: vec!["src/index.ts".into(), "src/lazy.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into(), "dynamic".into()],
+                classification: ChainClassification::Mixed {
+                    first_dynamic_hop: 1,
+                },
+            }],
+        };
+        let output = report.to_terminal(false);
+        assert!(output.contains("[static]"));
+        assert!(output.contains("[dynamic]"));
+        assert!(output.contains("then dynamic"));
     }
 }

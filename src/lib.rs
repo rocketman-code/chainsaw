@@ -60,6 +60,8 @@ mod auto_trait_tests {
         is_normal::<crate::repl::Command>();
         is_normal::<crate::repl::ReplSettings>();
         is_normal::<crate::repl::CommandOptions>();
+        is_normal::<crate::query::AnnotatedChain>();
+        is_normal::<crate::query::ChainClassification>();
         is_normal::<crate::report::TraceReport>();
         is_normal::<crate::report::ChainReport>();
         is_normal::<crate::report::CutReport>();

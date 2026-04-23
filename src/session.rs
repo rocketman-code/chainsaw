@@ -15,7 +15,10 @@ use crate::cache::{CacheWriteHandle, LOCKFILES};
 use crate::error::Error;
 use crate::graph::{EdgeId, EdgeKind, ModuleGraph, ModuleId, PackageInfo};
 use crate::loader;
-use crate::query::{self, ChainTarget, CutModule, DiffResult, TraceOptions, TraceResult};
+use crate::query::{
+    self, AnnotatedChain, ChainClassification, ChainTarget, CutModule, DiffResult, TraceOptions,
+    TraceResult,
+};
 use crate::report::{
     self, ChainReport, CutEntry, CutReport, DiffReport, ModuleEntry, PackageEntry,
     PackageListEntry, PackagesReport, TraceReport,
@@ -175,7 +178,7 @@ impl Session {
         &self,
         target_arg: &str,
         include_dynamic: bool,
-    ) -> (ResolvedTarget, Vec<Vec<ModuleId>>) {
+    ) -> (ResolvedTarget, Vec<AnnotatedChain>) {
         let resolved = self.resolve_target(target_arg);
         let chains = query::find_all_chains(
             &self.graph,
@@ -192,7 +195,7 @@ impl Session {
         target_arg: &str,
         top: i32,
         include_dynamic: bool,
-    ) -> (ResolvedTarget, Vec<Vec<ModuleId>>, Vec<CutModule>) {
+    ) -> (ResolvedTarget, Vec<AnnotatedChain>, Vec<CutModule>) {
         let resolved = self.resolve_target(target_arg);
         let chains = query::find_all_chains(
             &self.graph,
@@ -206,9 +209,11 @@ impl Session {
             .as_ref()
             .expect("ensure_weights populates cache")
             .weights;
+        let module_chains: Vec<Vec<ModuleId>> =
+            chains.iter().map(|c| c.modules().to_vec()).collect();
         let cuts = query::find_cut_modules(
             &self.graph,
-            &chains,
+            &module_chains,
             self.entry_id,
             &resolved.target,
             top,
@@ -488,10 +493,10 @@ impl Session {
             target: resolved.label,
             found_in_graph: resolved.exists,
             chain_count: chains.len(),
-            hop_count: chains.first().map_or(0, |c| c.len().saturating_sub(1)),
+            hop_count: chains.first().map_or(0, AnnotatedChain::hop_count),
             chains: chains
                 .iter()
-                .map(|chain| report::chain_display_names(&self.graph, chain, &self.root))
+                .map(|chain| report::annotated_chain_display(&self.graph, chain, &self.root))
                 .collect(),
         }
     }
@@ -505,7 +510,7 @@ impl Session {
             chain_count: chains.len(),
             direct_import: !chains.is_empty()
                 && cuts.is_empty()
-                && chains.iter().all(|c| c.len() == 2),
+                && chains.iter().all(|c| c.modules().len() == 2),
             cut_points: cuts
                 .iter()
                 .map(|c| CutEntry {
@@ -622,6 +627,8 @@ fn build_trace_report(
             total_size_bytes: pkg.total_size,
             file_count: pkg.file_count,
             chain: report::chain_display_names(graph, &pkg.chain, root),
+            edge_kinds: vec!["static".into(); pkg.chain.len().saturating_sub(1)],
+            classification: ChainClassification::AllStatic,
         })
         .collect();
 
@@ -998,7 +1005,8 @@ mod tests {
         let report = session.chain_report("a.ts", false);
         assert!(report.found_in_graph);
         assert_eq!(report.chain_count, 1);
-        assert!(report.chains[0].iter().any(|s| s.contains("a.ts")));
+        assert!(report.chains[0].modules.iter().any(|s| s.contains("a.ts")));
+        assert!(report.chains[0].edge_kinds.iter().all(|k| k == "static"));
     }
 
     #[test]
