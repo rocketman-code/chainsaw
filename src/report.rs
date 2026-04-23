@@ -437,13 +437,13 @@ impl TraceReport {
 
     pub fn to_json_versioned(&self, version: FormatVersion) -> String {
         let mut value = serde_json::to_value(self).unwrap();
-        if version == FormatVersion::V1 {
-            if let Some(pkgs) = value["heavy_packages"].as_array_mut() {
-                for pkg in pkgs {
-                    if let Some(obj) = pkg.as_object_mut() {
-                        obj.remove("edge_kinds");
-                        obj.remove("classification");
-                    }
+        if version == FormatVersion::V1
+            && let Some(pkgs) = value["heavy_packages"].as_array_mut()
+        {
+            for pkg in pkgs {
+                if let Some(obj) = pkg.as_object_mut() {
+                    obj.remove("edge_kinds");
+                    obj.remove("classification");
                 }
             }
         }
