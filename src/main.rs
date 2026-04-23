@@ -353,7 +353,11 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
             return Err(Error::TargetIsEntryPoint("--chain".into()));
         }
         let report = session.chain_report(chain_arg, args.include_dynamic);
-        report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
+        report::emit(
+            args.json,
+            || report.to_json_versioned(fv),
+            || report.to_terminal(color),
+        );
         if report.chains.is_empty() {
             return Ok(ExitCode::FAILURE);
         }
@@ -367,7 +371,11 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
             return Err(Error::TargetIsEntryPoint("--cut".into()));
         }
         let report = session.cut_report(cut_arg, args.top, args.include_dynamic);
-        report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
+        report::emit(
+            args.json,
+            || report.to_json_versioned(fv),
+            || report.to_terminal(color),
+        );
         if report.chain_count == 0 {
             return Ok(ExitCode::FAILURE);
         }
@@ -379,7 +387,11 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
         let saved = load_snapshot(snapshot_path)?;
         let diff = query::diff_snapshots(&saved, &result.to_snapshot(&entry_rel));
         let report = report::DiffReport::from_diff(&diff, &saved.entry, &entry_rel, args.limit);
-        report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
+        report::emit(
+            args.json,
+            || report.to_json_versioned(fv),
+            || report.to_terminal(color),
+        );
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -403,7 +415,11 @@ fn run_trace(args: TraceArgs, color: bool, sc: report::StderrColor) -> Result<Ex
 
     // Normal trace output
     let report = session.trace_report(&opts, args.top_modules);
-    report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
+    report::emit(
+        args.json,
+        || report.to_json_versioned(fv),
+        || report.to_terminal(color),
+    );
 
     if let Some(threshold) = args.max_weight.filter(|&t| report.static_weight_bytes > t) {
         let kind = if args.include_dynamic {
@@ -470,7 +486,11 @@ fn handle_trace_diff(
     let diff_output = query::diff_snapshots(&result.to_snapshot(entry_rel), &diff_snapshot);
     let report =
         report::DiffReport::from_diff(&diff_output, entry_rel, &diff_snapshot.entry, limit);
-    report::emit(json, || report.to_json_versioned(fv), || report.to_terminal(color));
+    report::emit(
+        json,
+        || report.to_json_versioned(fv),
+        || report.to_terminal(color),
+    );
     Ok(())
 }
 
@@ -503,7 +523,11 @@ fn run_packages(args: &PackagesArgs, color: bool, sc: report::StderrColor) -> Re
     }
 
     let report = session.packages_report(args.top);
-    report::emit(args.json, || report.to_json_versioned(fv), || report.to_terminal(color));
+    report::emit(
+        args.json,
+        || report.to_json_versioned(fv),
+        || report.to_terminal(color),
+    );
     Ok(())
 }
 
@@ -625,7 +649,11 @@ fn finish_diff(
 ) -> Result<(), Error> {
     let diff_output = query::diff_snapshots(snap_a, snap_b);
     let report = report::DiffReport::from_diff(&diff_output, label_a, label_b, limit);
-    report::emit(json, || report.to_json_versioned(fv), || report.to_terminal(color));
+    report::emit(
+        json,
+        || report.to_json_versioned(fv),
+        || report.to_terminal(color),
+    );
     if !quiet {
         eprintln!(
             "\n{} in {:.1}ms",
