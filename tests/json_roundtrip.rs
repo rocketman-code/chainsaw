@@ -1,6 +1,7 @@
 mod common;
 
 use chainsaw::query::TraceOptions;
+use chainsaw::report::FormatVersion;
 use chainsaw::session::Session;
 
 /// Parse JSON, assert a field exists with the expected type.
@@ -152,4 +153,51 @@ fn packages_report_json_schema() {
     // Old field names must NOT appear
     assert_no_field(pkg, "size");
     assert_no_field(pkg, "files");
+}
+
+// --- FormatVersion round-trips ---
+
+#[test]
+fn chain_report_format_version_1() {
+    let (_p, session) = open();
+    let report = session.chain_report("lodash", false);
+    let json: serde_json::Value =
+        serde_json::from_str(&report.to_json_versioned(FormatVersion::V1)).unwrap();
+    assert_eq!(json["format_version"], 1);
+    let chain = &json["chains"][0];
+    assert!(chain.is_array(), "V1 chains should be string arrays");
+    assert!(chain[0].is_string());
+}
+
+#[test]
+fn chain_report_format_version_2() {
+    let (_p, session) = open();
+    let report = session.chain_report("lodash", false);
+    let json: serde_json::Value =
+        serde_json::from_str(&report.to_json_versioned(FormatVersion::V2)).unwrap();
+    assert_eq!(json["format_version"], 2);
+    let chain = &json["chains"][0];
+    assert!(chain.is_object(), "V2 chains should be annotated objects");
+    assert_field(chain, "modules", |v| v.is_array());
+    assert_field(chain, "edge_kinds", |v| v.is_array());
+    assert_field(chain, "classification", |v| v.is_object());
+}
+
+#[test]
+fn trace_report_format_version_1_no_edge_fields() {
+    let (_p, mut session) = open();
+    let report = session.trace_report(
+        &TraceOptions::default(),
+        chainsaw::report::DEFAULT_TOP_MODULES,
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&report.to_json_versioned(FormatVersion::V1)).unwrap();
+    assert_eq!(json["format_version"], 1);
+    if let Some(pkg) = json["heavy_packages"].as_array().and_then(|a| a.first()) {
+        assert!(pkg.get("edge_kinds").is_none(), "V1 should omit edge_kinds");
+        assert!(
+            pkg.get("classification").is_none(),
+            "V1 should omit classification"
+        );
+    }
 }
