@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::graph::{EdgeKind, ModuleGraph, ModuleId};
+use crate::graph::{EdgeId, EdgeKind, ModuleGraph, ModuleId};
 
 /// Results of tracing transitive import weight from an entry module.
 #[derive(Debug)]
@@ -37,6 +37,62 @@ pub struct HeavyPackage {
     pub file_count: u32,
     /// Shortest chain from entry point to the first module in this package
     pub chain: Vec<ModuleId>,
+}
+
+/// A shortest import chain with edge-kind annotations per hop.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct AnnotatedChain {
+    nodes: Vec<ModuleId>,
+    edge_kinds: Vec<EdgeKind>,
+}
+
+impl AnnotatedChain {
+    pub fn new(nodes: Vec<ModuleId>, edge_kinds: Vec<EdgeKind>) -> Self {
+        debug_assert_eq!(
+            edge_kinds.len(),
+            nodes.len().saturating_sub(1),
+            "edge_kinds.len() must be nodes.len() - 1"
+        );
+        Self { nodes, edge_kinds }
+    }
+
+    pub fn modules(&self) -> &[ModuleId] {
+        &self.nodes
+    }
+
+    pub fn edge_kinds(&self) -> &[EdgeKind] {
+        &self.edge_kinds
+    }
+
+    pub fn hop_count(&self) -> usize {
+        self.edge_kinds.len()
+    }
+
+    pub fn classify(&self) -> ChainClassification {
+        if self.edge_kinds.is_empty() || self.edge_kinds.iter().all(|&k| k == EdgeKind::Static) {
+            return ChainClassification::AllStatic;
+        }
+        if self.edge_kinds.iter().all(|&k| k == EdgeKind::Dynamic) {
+            return ChainClassification::AllDynamic;
+        }
+        let first_dynamic_hop = self
+            .edge_kinds
+            .iter()
+            .position(|&k| k == EdgeKind::Dynamic)
+            .expect("mixed chain has at least one dynamic edge");
+        ChainClassification::Mixed { first_dynamic_hop }
+    }
+}
+
+/// Classification of a chain based on its edge kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChainClassification {
+    AllStatic,
+    Mixed { first_dynamic_hop: usize },
+    AllDynamic,
 }
 
 /// A module with its exclusive weight (bytes only it contributes to the graph).
@@ -451,7 +507,7 @@ pub fn find_all_chains(
     entry: ModuleId,
     target: &ChainTarget,
     include_dynamic: bool,
-) -> Vec<Vec<ModuleId>> {
+) -> Vec<AnnotatedChain> {
     let raw = all_shortest_chains(graph, entry, target, 10, include_dynamic);
     dedup_chains_by_package(graph, raw)
 }
@@ -460,12 +516,16 @@ pub fn find_all_chains(
 /// Two chains that differ only by which internal file within a package
 /// they pass through will have the same package-level key and only the
 /// first is kept.
-fn dedup_chains_by_package(graph: &ModuleGraph, chains: Vec<Vec<ModuleId>>) -> Vec<Vec<ModuleId>> {
+fn dedup_chains_by_package(
+    graph: &ModuleGraph,
+    chains: Vec<AnnotatedChain>,
+) -> Vec<AnnotatedChain> {
     let mut seen: HashSet<Vec<String>> = HashSet::new();
     let mut result = Vec::new();
 
     for chain in chains {
         let key: Vec<String> = chain
+            .modules()
             .iter()
             .map(|&mid| {
                 let m = graph.module(mid);
@@ -491,9 +551,9 @@ fn all_shortest_chains(
     target: &ChainTarget,
     max_chains: usize,
     include_dynamic: bool,
-) -> Vec<Vec<ModuleId>> {
+) -> Vec<AnnotatedChain> {
     let n = graph.modules.len();
-    let mut parents: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut parents: Vec<Vec<(u32, EdgeId)>> = vec![Vec::new(); n];
     let mut depth: Vec<u32> = vec![u32::MAX; n];
     let mut queue: VecDeque<ModuleId> = VecDeque::new();
 
@@ -534,16 +594,14 @@ fn all_shortest_chains(
             let idx = edge.to.0 as usize;
             match depth[idx] {
                 d if d == next_depth => {
-                    // Same depth -- add as alternate parent
-                    parents[idx].push(mid.0);
+                    parents[idx].push((mid.0, edge_id));
                 }
                 u32::MAX => {
-                    // First visit
                     depth[idx] = next_depth;
-                    parents[idx].push(mid.0);
+                    parents[idx].push((mid.0, edge_id));
                     queue.push_back(edge.to);
                 }
-                _ => {} // Already visited at shorter depth, skip
+                _ => {}
             }
         }
     }
@@ -552,35 +610,29 @@ fn all_shortest_chains(
         return Vec::new();
     }
 
-    // Backtrack from each target to reconstruct all paths.
-    // `limit` caps *expansion* per iteration (not total paths) —
-    // capped paths extend with a single parent to avoid discarding
-    // reachable paths. Total paths grow linearly with depth, not
-    // exponentially.
     let limit = max_chains * 2;
-    let mut all_chains: Vec<Vec<ModuleId>> = Vec::new();
+    let mut all_chains: Vec<AnnotatedChain> = Vec::new();
     for &target_mid in &targets {
-        let mut partial_paths: Vec<Vec<ModuleId>> = vec![vec![target_mid]];
+        let mut partial_paths: Vec<Vec<(ModuleId, Option<EdgeId>)>> =
+            vec![vec![(target_mid, None)]];
 
         loop {
-            let mut next_partial: Vec<Vec<ModuleId>> = Vec::new();
+            let mut next_partial: Vec<Vec<(ModuleId, Option<EdgeId>)>> = Vec::new();
             let mut any_extended = false;
             let mut capped = false;
 
             for path in &partial_paths {
-                let &head = path.last().expect("partial paths are non-empty");
+                let &(head, _) = path.last().expect("partial paths are non-empty");
                 if head == entry {
                     next_partial.push(path.clone());
                     continue;
                 }
                 if capped {
-                    // Over budget — only keep the first partial for this branch
-                    // so it can still reach entry in future iterations.
                     let pars = &parents[head.0 as usize];
-                    if let Some(&p) = pars.first() {
+                    if let Some(&(p, eid)) = pars.first() {
                         any_extended = true;
                         let mut new_path = path.clone();
-                        new_path.push(ModuleId(p));
+                        new_path.push((ModuleId(p), Some(eid)));
                         next_partial.push(new_path);
                     }
                     continue;
@@ -588,9 +640,9 @@ fn all_shortest_chains(
                 let pars = &parents[head.0 as usize];
                 if !pars.is_empty() {
                     any_extended = true;
-                    for &p in pars {
+                    for &(p, eid) in pars {
                         let mut new_path = path.clone();
-                        new_path.push(ModuleId(p));
+                        new_path.push((ModuleId(p), Some(eid)));
                         next_partial.push(new_path);
                         if next_partial.len() > limit {
                             capped = true;
@@ -606,10 +658,20 @@ fn all_shortest_chains(
             }
         }
 
-        for mut path in partial_paths {
-            path.reverse();
-            if path.first() == Some(&entry) {
-                all_chains.push(path);
+        for path in partial_paths {
+            let mut reversed = path;
+            reversed.reverse();
+            if reversed.first().map(|&(m, _)| m) == Some(entry) {
+                let nodes: Vec<ModuleId> = reversed.iter().map(|&(m, _)| m).collect();
+                let edge_kinds: Vec<EdgeKind> = reversed[..reversed.len() - 1]
+                    .iter()
+                    .map(|&(_, eid)| {
+                        graph
+                            .edge(eid.expect("non-target nodes have edge ids"))
+                            .kind
+                    })
+                    .collect();
+                all_chains.push(AnnotatedChain::new(nodes, edge_kinds));
                 if all_chains.len() >= max_chains {
                     return all_chains;
                 }
@@ -911,8 +973,8 @@ mod tests {
         );
         assert_eq!(chains.len(), 1);
         assert_eq!(
-            chains[0],
-            vec![ModuleId(0), ModuleId(1), ModuleId(2), ModuleId(3)]
+            chains[0].modules(),
+            &[ModuleId(0), ModuleId(1), ModuleId(2), ModuleId(3)]
         );
     }
 
@@ -992,8 +1054,102 @@ mod tests {
         );
         assert_eq!(chains_dynamic.len(), 1);
         assert_eq!(
-            chains_dynamic[0],
-            vec![ModuleId(0), ModuleId(1), ModuleId(2)]
+            chains_dynamic[0].modules(),
+            &[ModuleId(0), ModuleId(1), ModuleId(2)]
+        );
+    }
+
+    #[test]
+    fn chain_returns_edge_kinds() {
+        let graph = make_graph(
+            &[
+                ("a.ts", 100, None),
+                ("b.ts", 100, None),
+                ("node_modules/zod/index.js", 500, Some("zod")),
+            ],
+            &[(0, 1, EdgeKind::Static), (1, 2, EdgeKind::Static)],
+        );
+        let chains = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            false,
+        );
+        assert_eq!(chains.len(), 1);
+        assert_eq!(
+            chains[0].modules(),
+            &[ModuleId(0), ModuleId(1), ModuleId(2)]
+        );
+        assert_eq!(
+            chains[0].edge_kinds(),
+            &[EdgeKind::Static, EdgeKind::Static]
+        );
+    }
+
+    #[test]
+    fn chain_mixed_edge_kinds() {
+        let graph = make_graph(
+            &[
+                ("a.ts", 100, None),
+                ("b.ts", 100, None),
+                ("node_modules/zod/index.js", 500, Some("zod")),
+            ],
+            &[(0, 1, EdgeKind::Dynamic), (1, 2, EdgeKind::Static)],
+        );
+        let chains = find_all_chains(
+            &graph,
+            ModuleId(0),
+            &ChainTarget::Package("zod".to_string()),
+            true,
+        );
+        assert_eq!(chains.len(), 1);
+        assert_eq!(
+            chains[0].edge_kinds(),
+            &[EdgeKind::Dynamic, EdgeKind::Static]
+        );
+    }
+
+    #[test]
+    fn chain_classification() {
+        assert_eq!(
+            AnnotatedChain::new(vec![ModuleId(0)], vec![]).classify(),
+            ChainClassification::AllStatic,
+        );
+        assert_eq!(
+            AnnotatedChain::new(
+                vec![ModuleId(0), ModuleId(1), ModuleId(2)],
+                vec![EdgeKind::Static, EdgeKind::Static],
+            )
+            .classify(),
+            ChainClassification::AllStatic,
+        );
+        assert_eq!(
+            AnnotatedChain::new(
+                vec![ModuleId(0), ModuleId(1), ModuleId(2)],
+                vec![EdgeKind::Dynamic, EdgeKind::Dynamic],
+            )
+            .classify(),
+            ChainClassification::AllDynamic,
+        );
+        assert_eq!(
+            AnnotatedChain::new(
+                vec![ModuleId(0), ModuleId(1), ModuleId(2)],
+                vec![EdgeKind::Static, EdgeKind::Dynamic],
+            )
+            .classify(),
+            ChainClassification::Mixed {
+                first_dynamic_hop: 1
+            },
+        );
+        assert_eq!(
+            AnnotatedChain::new(
+                vec![ModuleId(0), ModuleId(1), ModuleId(2)],
+                vec![EdgeKind::Dynamic, EdgeKind::Static],
+            )
+            .classify(),
+            ChainClassification::Mixed {
+                first_dynamic_hop: 0
+            },
         );
     }
 
@@ -1045,8 +1201,8 @@ mod tests {
         );
         // Every chain must start at entry and end at target
         for chain in &chains {
-            assert_eq!(chain.first(), Some(&ModuleId(0)));
-            assert_eq!(chain.last(), Some(&ModuleId(target_idx)));
+            assert_eq!(chain.modules().first(), Some(&ModuleId(0)));
+            assert_eq!(chain.modules().last(), Some(&ModuleId(target_idx)));
         }
     }
 
@@ -1078,7 +1234,9 @@ mod tests {
         assert_eq!(chains.len(), 2);
 
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
+        let module_chains: Vec<Vec<ModuleId>> =
+            chains.iter().map(|c| c.modules().to_vec()).collect();
+        let cuts = find_cut_modules(&graph, &module_chains, ModuleId(0), &target, 10, &weights);
         assert!(!cuts.is_empty());
         assert!(cuts.iter().any(|c| c.module_id == ModuleId(3)));
     }
@@ -1107,7 +1265,9 @@ mod tests {
         let target = ChainTarget::Package("zod".to_string());
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
+        let module_chains: Vec<Vec<ModuleId>> =
+            chains.iter().map(|c| c.modules().to_vec()).collect();
+        let cuts = find_cut_modules(&graph, &module_chains, ModuleId(0), &target, 10, &weights);
         assert!(cuts.is_empty());
     }
 
@@ -1125,10 +1285,12 @@ mod tests {
         let target = ChainTarget::Package("zod".to_string());
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         assert_eq!(chains.len(), 1);
-        assert_eq!(chains[0].len(), 2); // 1 hop = 2 nodes
+        assert_eq!(chains[0].modules().len(), 2); // 1 hop = 2 nodes
 
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
+        let module_chains: Vec<Vec<ModuleId>> =
+            chains.iter().map(|c| c.modules().to_vec()).collect();
+        let cuts = find_cut_modules(&graph, &module_chains, ModuleId(0), &target, 10, &weights);
         assert!(cuts.is_empty());
     }
 
@@ -1154,7 +1316,9 @@ mod tests {
         assert_eq!(chains.len(), 1);
 
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
+        let module_chains: Vec<Vec<ModuleId>> =
+            chains.iter().map(|c| c.modules().to_vec()).collect();
+        let cuts = find_cut_modules(&graph, &module_chains, ModuleId(0), &target, 10, &weights);
         assert!(cuts.len() >= 2);
         // First cut should have smaller exclusive_size (more surgical)
         assert!(cuts[0].exclusive_size <= cuts[1].exclusive_size);
@@ -1419,8 +1583,8 @@ mod tests {
         let target_id = graph.path_to_id[&PathBuf::from("b.ts")];
         let chains = find_all_chains(&graph, ModuleId(0), &ChainTarget::Module(target_id), false);
         assert_eq!(chains.len(), 1);
-        assert_eq!(chains[0].len(), 3);
-        assert_eq!(*chains[0].last().unwrap(), target_id);
+        assert_eq!(chains[0].modules().len(), 3);
+        assert_eq!(*chains[0].modules().last().unwrap(), target_id);
     }
 
     #[test]
@@ -1437,7 +1601,9 @@ mod tests {
         let target = ChainTarget::Module(target_id);
         let chains = find_all_chains(&graph, ModuleId(0), &target, false);
         let weights = compute_exclusive_weights(&graph, ModuleId(0), false);
-        let cuts = find_cut_modules(&graph, &chains, ModuleId(0), &target, 10, &weights);
+        let module_chains: Vec<Vec<ModuleId>> =
+            chains.iter().map(|c| c.modules().to_vec()).collect();
+        let cuts = find_cut_modules(&graph, &module_chains, ModuleId(0), &target, 10, &weights);
         assert_eq!(cuts.len(), 1);
         assert_eq!(
             cuts[0].module_id,

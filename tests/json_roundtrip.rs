@@ -52,6 +52,8 @@ fn trace_report_json_schema() {
     assert_field(pkg, "total_size_bytes", |v| v.is_number());
     assert_field(pkg, "file_count", |v| v.is_number());
     assert_field(pkg, "chain", |v| v.is_array());
+    assert_field(pkg, "edge_kinds", |v| v.is_array());
+    assert_field(pkg, "classification", |v| v.is_object());
 
     // Nested: modules_by_cost entries
     let mod_entry = &v["modules_by_cost"][0];
@@ -73,10 +75,13 @@ fn chain_report_json_schema() {
     assert_field(&v, "hop_count", |v| v.is_number());
     assert_field(&v, "chains", |v| v.is_array());
 
-    // Each chain is an array of strings
+    // Each chain is an object with modules, edge_kinds, classification
     let chain = &v["chains"][0];
-    assert!(chain.is_array());
-    assert!(chain[0].is_string());
+    assert!(chain.is_object());
+    assert_field(chain, "modules", |v| v.is_array());
+    assert_field(chain, "edge_kinds", |v| v.is_array());
+    assert_field(chain, "classification", |v| v.is_object());
+    assert!(chain["modules"][0].is_string());
 }
 
 // --- CutReport ---
