@@ -396,6 +396,22 @@ pub struct PackageListEntry {
 // Emit helper — centralizes --json dispatch
 // ---------------------------------------------------------------------------
 
+/// JSON output schema version. Consumers pass `--format-version N` to pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatVersion {
+    V1,
+    V2,
+}
+
+impl FormatVersion {
+    pub fn number(self) -> u8 {
+        match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        }
+    }
+}
+
 /// Emit a report to stdout, choosing JSON or terminal format.
 ///
 /// Centralizes the `--json` / terminal dispatch so every CLI output path
@@ -416,7 +432,23 @@ pub fn emit(json: bool, json_fn: impl FnOnce() -> String, terminal_fn: impl FnOn
 
 impl TraceReport {
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap()
+        self.to_json_versioned(FormatVersion::V2)
+    }
+
+    pub fn to_json_versioned(&self, version: FormatVersion) -> String {
+        let mut value = serde_json::to_value(self).unwrap();
+        if version == FormatVersion::V1 {
+            if let Some(pkgs) = value["heavy_packages"].as_array_mut() {
+                for pkg in pkgs {
+                    if let Some(obj) = pkg.as_object_mut() {
+                        obj.remove("edge_kinds");
+                        obj.remove("classification");
+                    }
+                }
+            }
+        }
+        value["format_version"] = serde_json::json!(version.number());
+        serde_json::to_string_pretty(&value).unwrap()
     }
 
     pub fn to_terminal(&self, color: bool) -> String {
@@ -526,7 +558,29 @@ impl TraceReport {
 
 impl ChainReport {
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap()
+        self.to_json_versioned(FormatVersion::V2)
+    }
+
+    pub fn to_json_versioned(&self, version: FormatVersion) -> String {
+        let mut value = match version {
+            FormatVersion::V1 => {
+                let legacy_chains: Vec<Vec<&str>> = self
+                    .chains
+                    .iter()
+                    .map(|c| c.modules.iter().map(String::as_str).collect())
+                    .collect();
+                serde_json::json!({
+                    "target": self.target,
+                    "found_in_graph": self.found_in_graph,
+                    "chain_count": self.chain_count,
+                    "hop_count": self.hop_count,
+                    "chains": legacy_chains,
+                })
+            }
+            FormatVersion::V2 => serde_json::to_value(self).unwrap(),
+        };
+        value["format_version"] = serde_json::json!(version.number());
+        serde_json::to_string_pretty(&value).unwrap()
     }
 
     pub fn to_terminal(&self, color: bool) -> String {
@@ -595,7 +649,13 @@ impl ChainReport {
 
 impl CutReport {
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap()
+        self.to_json_versioned(FormatVersion::V2)
+    }
+
+    pub fn to_json_versioned(&self, version: FormatVersion) -> String {
+        let mut value = serde_json::to_value(self).unwrap();
+        value["format_version"] = serde_json::json!(version.number());
+        serde_json::to_string_pretty(&value).unwrap()
     }
 
     pub fn to_terminal(&self, color: bool) -> String {
@@ -688,7 +748,13 @@ impl CutReport {
 
 impl DiffReport {
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap()
+        self.to_json_versioned(FormatVersion::V2)
+    }
+
+    pub fn to_json_versioned(&self, version: FormatVersion) -> String {
+        let mut value = serde_json::to_value(self).unwrap();
+        value["format_version"] = serde_json::json!(version.number());
+        serde_json::to_string_pretty(&value).unwrap()
     }
 
     pub fn from_diff(diff: &DiffResult, entry_a: &str, entry_b: &str, limit: i32) -> Self {
@@ -908,7 +974,13 @@ impl DiffReport {
 
 impl PackagesReport {
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap()
+        self.to_json_versioned(FormatVersion::V2)
+    }
+
+    pub fn to_json_versioned(&self, version: FormatVersion) -> String {
+        let mut value = serde_json::to_value(self).unwrap();
+        value["format_version"] = serde_json::json!(version.number());
+        serde_json::to_string_pretty(&value).unwrap()
     }
 
     #[allow(clippy::cast_sign_loss)]
@@ -1306,5 +1378,75 @@ mod tests {
         assert!(output.contains("[static]"));
         assert!(output.contains("[dynamic]"));
         assert!(output.contains("then dynamic"));
+    }
+
+    #[test]
+    fn chain_report_v1_json_is_flat_arrays() {
+        let report = ChainReport {
+            target: "zod".into(),
+            found_in_graph: true,
+            chain_count: 1,
+            hop_count: 2,
+            chains: vec![AnnotatedChainReport {
+                modules: vec!["src/index.ts".into(), "src/lib.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into(), "static".into()],
+                classification: ChainClassification::AllStatic,
+            }],
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&report.to_json_versioned(FormatVersion::V1)).unwrap();
+        assert_eq!(json["format_version"], 1);
+        assert!(json["chains"][0].is_array());
+        assert!(json["chains"][0][0].is_string());
+        assert_eq!(json["chains"][0][0], "src/index.ts");
+    }
+
+    #[test]
+    fn chain_report_v2_json_is_annotated_objects() {
+        let report = ChainReport {
+            target: "zod".into(),
+            found_in_graph: true,
+            chain_count: 1,
+            hop_count: 2,
+            chains: vec![AnnotatedChainReport {
+                modules: vec!["src/index.ts".into(), "src/lib.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into(), "static".into()],
+                classification: ChainClassification::AllStatic,
+            }],
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&report.to_json_versioned(FormatVersion::V2)).unwrap();
+        assert_eq!(json["format_version"], 2);
+        assert!(json["chains"][0].is_object());
+        assert_eq!(json["chains"][0]["modules"][0], "src/index.ts");
+        assert_eq!(json["chains"][0]["edge_kinds"][0], "static");
+    }
+
+    #[test]
+    fn trace_report_v1_json_omits_edge_fields() {
+        let report = TraceReport {
+            entry: "src/index.ts".into(),
+            static_weight_bytes: 1000,
+            static_module_count: 5,
+            dynamic_only_weight_bytes: 0,
+            dynamic_only_module_count: 0,
+            heavy_packages: vec![PackageEntry {
+                name: "zod".into(),
+                total_size_bytes: 500,
+                file_count: 3,
+                chain: vec!["src/index.ts".into(), "zod".into()],
+                edge_kinds: vec!["static".into()],
+                classification: ChainClassification::AllStatic,
+            }],
+            modules_by_cost: vec![],
+            total_modules_with_cost: 0,
+            include_dynamic: false,
+            top: 10,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&report.to_json_versioned(FormatVersion::V1)).unwrap();
+        assert_eq!(json["format_version"], 1);
+        assert!(json["heavy_packages"][0].get("edge_kinds").is_none());
+        assert!(json["heavy_packages"][0].get("classification").is_none());
     }
 }
