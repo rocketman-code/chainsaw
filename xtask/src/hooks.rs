@@ -64,9 +64,15 @@ pub fn pre_commit() -> i32 {
 }
 
 /// Pre-push hook logic: blocks pushes without perf attestation.
+/// Skipped on non-main branches (attestation only gates merges to main).
 /// Returns exit code.
 pub fn pre_push() -> i32 {
     let root = project_root();
+
+    let branch = current_branch(&root);
+    if branch.as_deref() != Some("main") {
+        return 0;
+    }
 
     let Some(registry) = Registry::load(&root) else {
         return 0;
