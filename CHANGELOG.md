@@ -3,6 +3,26 @@
 All notable changes to chainsaw are documented here. Each release corresponds to a
 [milestone](https://github.com/rocketman-code/chainsaw/milestones?state=closed) on GitHub.
 
+## [0.5.0] - 2026-04-23
+
+Per-edge import kind annotations and JSON schema versioning.
+
+### Added
+
+- Edge-kind annotations on chain and trace output: every import edge shows `-[static]->` or `-[dynamic]->` with a classification summary per chain ([#189])
+- `AnnotatedChain` struct carrying per-hop `EdgeKind` through the query layer
+- `ChainClassification` enum (`AllStatic`, `Mixed`, `AllDynamic`) derived from edge-kind sequences, using internally tagged serde for uniform JSON objects
+- `--format-version <N>` flag on all subcommands with `--json` for JSON schema versioning ([#191])
+- `format_version` field in all JSON output
+- Format-version 1 emits the pre-0.5.0 JSON shape for migration; format-version 2 is the current schema
+- Stderr warning when `--json` is used without `--format-version`
+
+### Changed
+
+- **Breaking:** `ChainReport.chains` JSON field changed from array of string arrays to array of annotated objects with `modules`, `edge_kinds`, and `classification` fields. Use `--format-version 1` for the old shape.
+- `PackageEntry` in trace JSON output gained `edge_kinds` and `classification` fields (additive, non-breaking)
+- Pre-push hook skips perf attestation gate on non-main branches ([#190])
+
 ## [0.4.2] - 2026-03-08
 
 CLI polish and JSON output consistency.
@@ -203,6 +223,7 @@ First publish. Dependency graph analysis for TypeScript/JavaScript and Python.
 - Python: C extension loader precedence matching CPython
 - `--chain`/`--cut` when target is the entry point itself ([#69])
 
+[0.5.0]: https://github.com/rocketman-code/chainsaw/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/rocketman-code/chainsaw/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/rocketman-code/chainsaw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rocketman-code/chainsaw/compare/v0.3.0...v0.4.0
@@ -309,3 +330,6 @@ First publish. Dependency graph analysis for TypeScript/JavaScript and Python.
 [#186]: https://github.com/rocketman-code/chainsaw/pull/186
 [#187]: https://github.com/rocketman-code/chainsaw/pull/187
 [#178]: https://github.com/rocketman-code/chainsaw/issues/178
+[#189]: https://github.com/rocketman-code/chainsaw/pull/189
+[#190]: https://github.com/rocketman-code/chainsaw/pull/190
+[#191]: https://github.com/rocketman-code/chainsaw/pull/191
